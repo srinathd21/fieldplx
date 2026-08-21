@@ -1,0 +1,22 @@
+.bi {
+  display: inline-block;
+  font-style: normal;
+  font-weight: 700;
+  font-variant: normal;
+  line-height: 1;
+  text-rendering: auto;
+}
+.bi-check-circle-fill::before { content: "\2714"; }
+.bi-arrow-right::before { content: "\2192"; }
+.bi-gift::before { content: "\1F381"; }
+.bi-cpu::before { content: "\2699"; }
+.bi-people-fill::before { content: "\1F465"; }
+.bi-headset::before { content: "\1F3A7"; }
+.bi-currency-dollar::before { content: "$"; }
+.bi-telephone::before,
+.bi-telephone-fill::before { content: "\260E"; }
+.bi-envelope::before,
+.bi-envelope-fill::before { content: "\2709"; }
+.bi-geo-alt::before,
+.bi-geo-alt-fill::before { content: "\25CF"; }
+.bi-heart-fill::before { content: "\2665"; }

@@ -1,0 +1,26 @@
+RewriteEngine On
+
+# --------------------------------------------------
+# 1. Redirect direct .php requests to extensionless
+# --------------------------------------------------
+RewriteCond %{THE_REQUEST} \s/+(.+?)\.php(?:[\s?]|$) [NC]
+RewriteRule ^(.+)\.php$ /$1 [R=301,L,NE]
+
+# --------------------------------------------------
+# 2. Internally map extensionless URLs to .php files
+# Works in nested directories too
+# --------------------------------------------------
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteCond %{REQUEST_FILENAME}.php -f
+RewriteRule ^(.+?)/?$ $1.php [L,QSA]
+
+# --------------------------------------------------
+# 3. Default index page
+# --------------------------------------------------
+DirectoryIndex index.php
+
+# --------------------------------------------------
+# 4. Disable directory listing
+# --------------------------------------------------
+Options -Indexes
