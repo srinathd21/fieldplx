@@ -906,7 +906,7 @@ try {
             'subscription_id' =>
                 $subscriptionId,
             'redirect' =>
-                '../tenants.php'
+                'tenants.php'
         )
     );
 

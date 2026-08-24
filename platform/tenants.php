@@ -11,6 +11,33 @@ require_once __DIR__ . '/includes/db.php';
 $pageTitle = 'All Tenants';
 $activePage = 'tenants';
 
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+/*
+|--------------------------------------------------------------------------
+| Flash Toast
+|--------------------------------------------------------------------------
+|
+| Other pages / APIs can redirect here after setting:
+|
+| $_SESSION['platform_toast'] = array(
+|     'type' => 'success',
+|     'message' => 'Tenant saved successfully.'
+| );
+|
+*/
+$platformToast = null;
+
+if (
+    isset($_SESSION['platform_toast']) &&
+    is_array($_SESSION['platform_toast'])
+) {
+    $platformToast = $_SESSION['platform_toast'];
+    unset($_SESSION['platform_toast']);
+}
+
 /*
 |--------------------------------------------------------------------------
 | Helpers
@@ -1252,6 +1279,106 @@ $paginationEnd = min(
             cursor: not-allowed;
         }
 
+
+        /* =========================================================
+           FIELDPLX TOP-RIGHT TOAST
+           success / error / warning / info
+           no left border
+        ========================================================= */
+
+        .tenant-toast {
+            position: fixed;
+            top: 82px;
+            right: 20px;
+            z-index: 20000;
+            width: min(380px, calc(100vw - 24px));
+            padding: 12px 14px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            border: 0;
+            border-radius: 11px;
+            color: #ffffff;
+            box-shadow:
+                0 16px 34px
+                rgba(16, 24, 40, .18);
+            opacity: 0;
+            visibility: hidden;
+            transform: translateY(-10px);
+            transition:
+                opacity .2s ease,
+                transform .2s ease,
+                visibility .2s ease;
+            font-size: 10px;
+            line-height: 1.45;
+        }
+
+        .tenant-toast.show {
+            opacity: 1;
+            visibility: visible;
+            transform: translateY(0);
+        }
+
+        .tenant-toast.success {
+            background: #059669;
+        }
+
+        .tenant-toast.error {
+            background: #dc2626;
+        }
+
+        .tenant-toast.warning {
+            background: #d97706;
+        }
+
+        .tenant-toast.info {
+            background: #4f46e5;
+        }
+
+        .tenant-toast-icon {
+            width: 24px;
+            height: 24px;
+            flex: 0 0 24px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 999px;
+            background:
+                rgba(255, 255, 255, .18);
+            color: #ffffff;
+            font-size: 12px;
+        }
+
+        .tenant-toast-message {
+            flex: 1;
+            min-width: 0;
+            color: #ffffff;
+            font-weight: 600;
+        }
+
+        .tenant-toast-close {
+            width: 24px;
+            height: 24px;
+            padding: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border: 0;
+            border-radius: 7px;
+            background: transparent;
+            color: #ffffff;
+            font-size: 15px;
+            line-height: 1;
+            cursor: pointer;
+            opacity: .82;
+        }
+
+        .tenant-toast-close:hover {
+            background:
+                rgba(255, 255, 255, .12);
+            opacity: 1;
+        }
+
         @media (max-width: 1100px) {
             .tenant-summary {
                 grid-template-columns:
@@ -1321,6 +1448,13 @@ $paginationEnd = min(
         }
 
         @media (max-width: 575.98px) {
+            .tenant-toast {
+                top: 74px;
+                right: 12px;
+                left: 12px;
+                width: auto;
+            }
+
             .fp-topbar-inner {
                 padding: 8px 11px;
             }
@@ -2079,6 +2213,38 @@ $paginationEnd = min(
 
 </div>
 
+
+<div
+    id="tenantToast"
+    class="tenant-toast"
+    role="status"
+    aria-live="polite"
+    aria-atomic="true"
+>
+    <span class="tenant-toast-icon">
+        <i
+            id="tenantToastIcon"
+            class="bi bi-check-lg"
+        ></i>
+    </span>
+
+    <span
+        id="tenantToastMessage"
+        class="tenant-toast-message"
+    >
+        Notification
+    </span>
+
+    <button
+        type="button"
+        id="tenantToastClose"
+        class="tenant-toast-close"
+        aria-label="Close"
+    >
+        <i class="bi bi-x-lg"></i>
+    </button>
+</div>
+
 <?php
 require_once __DIR__ . '/includes/footer.php';
 ?>
@@ -2090,6 +2256,139 @@ require_once __DIR__ . '/includes/footer.php';
 <script>
 (function () {
     'use strict';
+
+    /*
+    |--------------------------------------------------------------------------
+    | Top-Right Toast
+    |--------------------------------------------------------------------------
+    */
+
+    var tenantToast =
+        document.getElementById(
+            'tenantToast'
+        );
+
+    var tenantToastMessage =
+        document.getElementById(
+            'tenantToastMessage'
+        );
+
+    var tenantToastIcon =
+        document.getElementById(
+            'tenantToastIcon'
+        );
+
+    var tenantToastClose =
+        document.getElementById(
+            'tenantToastClose'
+        );
+
+    var tenantToastTimer = null;
+
+    function showTenantToast(
+        type,
+        message,
+        duration
+    ) {
+        if (!tenantToast) {
+            return;
+        }
+
+        if (tenantToastTimer) {
+            window.clearTimeout(
+                tenantToastTimer
+            );
+        }
+
+        var icons = {
+            success: 'bi-check-lg',
+            error: 'bi-x-lg',
+            warning: 'bi-exclamation-lg',
+            info: 'bi-info-lg'
+        };
+
+        var toastType =
+            type || 'info';
+
+        if (
+            !icons[toastType]
+        ) {
+            toastType = 'info';
+        }
+
+        tenantToast.className =
+            'tenant-toast ' +
+            toastType;
+
+        tenantToastMessage.textContent =
+            message || 'Notification';
+
+        tenantToastIcon.className =
+            'bi ' +
+            icons[toastType];
+
+        tenantToast.classList.add(
+            'show'
+        );
+
+        tenantToastTimer =
+            window.setTimeout(
+                function () {
+                    tenantToast.classList.remove(
+                        'show'
+                    );
+
+                    tenantToastTimer = null;
+                },
+                typeof duration === 'number'
+                    ? duration
+                    : 3000
+            );
+    }
+
+    window.showTenantToast =
+        showTenantToast;
+
+    if (tenantToastClose) {
+        tenantToastClose.addEventListener(
+            'click',
+            function () {
+                if (tenantToastTimer) {
+                    window.clearTimeout(
+                        tenantToastTimer
+                    );
+                }
+
+                tenantToast.classList.remove(
+                    'show'
+                );
+            }
+        );
+    }
+
+    <?php if (
+        is_array($platformToast) &&
+        !empty($platformToast['message'])
+    ): ?>
+
+    showTenantToast(
+        <?= json_encode(
+            isset($platformToast['type'])
+                ? $platformToast['type']
+                : 'info',
+            JSON_UNESCAPED_UNICODE |
+            JSON_UNESCAPED_SLASHES
+        ); ?>,
+        <?= json_encode(
+            $platformToast['message'],
+            JSON_UNESCAPED_UNICODE |
+            JSON_UNESCAPED_SLASHES
+        ); ?>,
+        3000
+    );
+
+    <?php endif; ?>
+
 
     /*
     |--------------------------------------------------------------------------
