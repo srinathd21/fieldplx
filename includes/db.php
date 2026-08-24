@@ -17,7 +17,7 @@ if (session_status() === PHP_SESSION_NONE) {
 |--------------------------------------------------------------------------
 */
 
-define('DB_HOST', 'srv483.hstgr.io');
+define('DB_HOST', 'srv1336.hstgr.io');
 define('DB_PORT', 3306);
 define('DB_NAME', 'u923280188_fieldplx');
 define('DB_USER', 'u923280188_fieldplx');
