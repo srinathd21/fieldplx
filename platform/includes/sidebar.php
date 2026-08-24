@@ -5,6 +5,23 @@
         {
             return $page === $activePage ? 'active' : '';
         }
+
+        function fpMenuOpen($pages, $activePage)
+        {
+            return in_array($activePage, $pages, true) ? 'open' : '';
+        }
+
+        $tenantMenuPages = array(
+            'tenants',
+            'tenant-add',
+            'tenant-edit',
+            'tenant-view'
+        );
+
+        $settingsMenuPages = array(
+            'platform-settings',
+            'country-currency-master'
+        );
         ?>
         <style>
             .fp-sidebar {
@@ -87,7 +104,43 @@
                 flex: 1;
                 min-height: 0;
                 overflow-y: auto;
+                overflow-x: hidden;
                 padding: 12px 10px 18px;
+
+                /* Firefox */
+                scrollbar-width: thin;
+                scrollbar-color:
+                    rgba(243, 242, 246, 0.81)
+                    rgba(255,255,255,.05);
+            }
+
+            /* Chrome / Edge / Safari */
+            .fp-sidebar-body::-webkit-scrollbar {
+                width: 0.5px;
+            }
+
+            .fp-sidebar-body::-webkit-scrollbar-track {
+                background: rgba(255,255,255,.04);
+                border-radius: 999px;
+            }
+
+            .fp-sidebar-body::-webkit-scrollbar-thumb {
+                background:
+                    linear-gradient(
+                        180deg,
+                        rgba(167,139,250,.65),
+                        rgba(124,58,237,.72)
+                    );
+                border-radius: 999px;
+            }
+
+            .fp-sidebar-body::-webkit-scrollbar-thumb:hover {
+                background:
+                    linear-gradient(
+                        180deg,
+                        rgba(196,181,253,.80),
+                        rgba(139,92,246,.88)
+                    );
             }
 
             .fp-sidebar-section {
@@ -296,7 +349,7 @@
         </button>
     </div>
 
-    <div class="fp-sidebar-body">
+    <div class="fp-sidebar-body" id="fpSidebarBody">
 
         <div class="fp-sidebar-section">Overview</div>
 
@@ -308,8 +361,8 @@
 
             <div class="fp-sidebar-section">Platform</div>
 
-            <div class="fp-sidebar-menu open">
-                <button type="button" class="fp-sidebar-link fp-sidebar-menu-toggle">
+            <div class="fp-sidebar-menu <?= fpMenuOpen($tenantMenuPages, $activePage); ?>">
+                <button type="button" class="fp-sidebar-link fp-sidebar-menu-toggle <?= in_array($activePage, $tenantMenuPages, true) ? 'active' : ''; ?>">
                     <span class="fp-sidebar-link-icon"><i class="bi bi-buildings"></i></span>
                     <span class="fp-sidebar-link-text">Tenants</span>
                     <span class="fp-sidebar-badge">128</span>
@@ -317,8 +370,8 @@
                 </button>
 
                 <div class="fp-sidebar-submenu">
-                    <a href="tenants.php" class="fp-sidebar-sublink">All Tenants</a>
-                    <a href="tenant-add.php" class="fp-sidebar-sublink">Add Tenant</a>
+                    <a href="tenants.php" class="fp-sidebar-sublink <?= fpActive('tenants', $activePage); ?>">All Tenants</a>
+                    <a href="tenant-add.php" class="fp-sidebar-sublink <?= fpActive('tenant-add', $activePage); ?>">Add Tenant</a>
                     <a href="#" class="fp-sidebar-sublink">Active Tenants</a>
                     <a href="#" class="fp-sidebar-sublink">Trial Tenants</a>
                     <a href="#" class="fp-sidebar-sublink">Suspended Tenants</a>
@@ -405,3 +458,69 @@
 </aside>
 
 <div class="fp-sidebar-overlay" id="fpSidebarOverlay"></div>
+
+<script>
+(function () {
+    'use strict';
+
+    var sidebarBody =
+        document.getElementById('fpSidebarBody');
+
+    if (!sidebarBody) {
+        return;
+    }
+
+    function keepActiveSidebarItemVisible() {
+        var activeItem =
+            sidebarBody.querySelector(
+                '.fp-sidebar-sublink.active, .fp-sidebar-link.active'
+            );
+
+        if (!activeItem) {
+            return;
+        }
+
+        var bodyRect =
+            sidebarBody.getBoundingClientRect();
+
+        var itemRect =
+            activeItem.getBoundingClientRect();
+
+        var topPadding = 18;
+        var bottomPadding = 18;
+
+        if (
+            itemRect.top <
+            bodyRect.top + topPadding
+        ) {
+            sidebarBody.scrollTop -=
+                (
+                    bodyRect.top +
+                    topPadding -
+                    itemRect.top
+                );
+        } else if (
+            itemRect.bottom >
+            bodyRect.bottom -
+            bottomPadding
+        ) {
+            sidebarBody.scrollTop +=
+                (
+                    itemRect.bottom -
+                    (
+                        bodyRect.bottom -
+                        bottomPadding
+                    )
+                );
+        }
+    }
+
+    window.requestAnimationFrame(
+        function () {
+            window.requestAnimationFrame(
+                keepActiveSidebarItemVisible
+            );
+        }
+    );
+})();
+</script>
