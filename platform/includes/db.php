@@ -1,10 +1,10 @@
 <?php
 /**
- * FieldPlx Database Connection
+ * FieldPlx PDO Database Connection
  *
  * PHP 7.2+
  * MySQL / MariaDB
- * MySQLi
+ * PDO
  */
 
 if (session_status() === PHP_SESSION_NONE) {
@@ -18,85 +18,73 @@ if (session_status() === PHP_SESSION_NONE) {
 */
 
 define('DB_HOST', 'srv483.hstgr.io');
-define('DB_PORT', 3306);
-define('DB_NAME', 'u399080022_fieldplx');
-define('DB_USER', 'u399080022_fieldplx');
-define('DB_PASS', '/b26IsrN');
+define('DB_PORT', '3306');
+define('DB_NAME', 'u923280188_fieldplx');
+define('DB_USER', 'u923280188_fieldplx');
+
+/*
+ * Keep the real password in this server-side file only.
+ * Do not expose this file publicly or commit it to a public repository.
+ */
+define('DB_PASS', 'Hifi@2026');
+
 define('DB_CHARSET', 'utf8mb4');
 
 /*
 |--------------------------------------------------------------------------
-| Database Connection
+| PDO Connection
 |--------------------------------------------------------------------------
 */
 
-mysqli_report(MYSQLI_REPORT_OFF);
+$dsn = 'mysql:host=' . DB_HOST .
+       ';port=' . DB_PORT .
+       ';dbname=' . DB_NAME .
+       ';charset=' . DB_CHARSET;
 
-$conn = new mysqli(
-    DB_HOST,
-    DB_USER,
-    DB_PASS,
-    DB_NAME,
-    DB_PORT
+$options = array(
+    PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+    PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+    PDO::ATTR_EMULATE_PREPARES   => false,
+    PDO::ATTR_STRINGIFY_FETCHES  => false
 );
 
-if ($conn->connect_errno) {
+try {
+    $pdo = new PDO(
+        $dsn,
+        DB_USER,
+        DB_PASS,
+        $options
+    );
+} catch (PDOException $exception) {
     error_log(
-        'FieldPlx database connection failed: ' .
-        $conn->connect_error
+        'FieldPlx PDO connection failed: ' .
+        $exception->getMessage()
     );
 
     http_response_code(500);
-    exit('Unable to connect to the database.');
+
+    exit(
+        'Unable to connect to the database.'
+    );
 }
 
 /*
 |--------------------------------------------------------------------------
-| Character Set
+| Common Helpers
 |--------------------------------------------------------------------------
 */
 
-if (!$conn->set_charset(DB_CHARSET)) {
-    error_log(
-        'FieldPlx character set error: ' .
-        $conn->error
-    );
-
-    http_response_code(500);
-    exit('Unable to configure the database connection.');
-}
-
-/*
-|--------------------------------------------------------------------------
-| Common Helper Functions
-|--------------------------------------------------------------------------
-*/
-
-/**
- * Escape a value before displaying it in HTML.
- *
- * @param mixed $value
- * @return string
- */
 if (!function_exists('e')) {
     function e($value)
     {
         return htmlspecialchars(
-            (string) ($value ?? ''),
+            (string) ($value === null ? '' : $value),
             ENT_QUOTES,
             'UTF-8'
         );
     }
 }
 
-/**
- * Return the logged-in tenant ID.
- *
- * Tenant ID must always come from the session,
- * never directly from GET or POST data.
- *
- * @return int
- */
 if (!function_exists('currentTenantId')) {
     function currentTenantId()
     {
@@ -106,11 +94,6 @@ if (!function_exists('currentTenantId')) {
     }
 }
 
-/**
- * Return the logged-in user ID.
- *
- * @return int
- */
 if (!function_exists('currentUserId')) {
     function currentUserId()
     {
@@ -120,11 +103,6 @@ if (!function_exists('currentUserId')) {
     }
 }
 
-/**
- * Return the logged-in role ID.
- *
- * @return int
- */
 if (!function_exists('currentRoleId')) {
     function currentRoleId()
     {

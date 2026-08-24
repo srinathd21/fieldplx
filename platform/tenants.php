@@ -1,29 +1,15 @@
 <?php
 /**
- * FieldPlx Platform - Tenant Management
+ * FieldPlx Platform - All Tenants
  *
- * File:
- * platform/tenants.php
- *
- * Compatible with:
- * - PHP 7.2
- * - MySQLi
- * - platform_users authentication
+ * Dynamic PDO version.
+ * PHP 7.2+
  */
 
-require_once __DIR__ . '/includes/auth.php';
+require_once __DIR__ . '/includes/db.php';
 
-requirePlatformRole(array(
-    'super_admin',
-    'platform_admin',
-    'support_admin',
-    'billing_admin',
-    'platform_read_only'
-));
-
-$pageTitle = 'Tenants - FieldPlx';
+$pageTitle = 'All Tenants';
 $activePage = 'tenants';
-$basePath = '';
 
 /*
 |--------------------------------------------------------------------------
@@ -31,8 +17,8 @@ $basePath = '';
 |--------------------------------------------------------------------------
 */
 
-if (!function_exists('tenantPageEscape')) {
-    function tenantPageEscape($value)
+if (!function_exists('tenantEscape')) {
+    function tenantEscape($value)
     {
         return htmlspecialchars(
             (string) ($value === null ? '' : $value),
@@ -42,106 +28,58 @@ if (!function_exists('tenantPageEscape')) {
     }
 }
 
-if (!function_exists('tenantPageColumnExists')) {
-    function tenantPageColumnExists(mysqli $conn, $table, $column)
+if (!function_exists('tenantGet')) {
+    function tenantGet($key, $default = '')
     {
-        $stmt = $conn->prepare("
-            SELECT COUNT(*) AS total
-            FROM information_schema.columns
-            WHERE table_schema = DATABASE()
-              AND table_name = ?
-              AND column_name = ?
-        ");
-
-        if (!$stmt) {
-            return false;
+        if (
+            !isset($_GET[$key]) ||
+            is_array($_GET[$key])
+        ) {
+            return $default;
         }
 
-        $stmt->bind_param('ss', $table, $column);
-
-        if (!$stmt->execute()) {
-            $stmt->close();
-            return false;
-        }
-
-        $result = $stmt->get_result();
-        $row = $result->fetch_assoc();
-
-        $stmt->close();
-
-        return !empty($row['total']);
+        return trim((string) $_GET[$key]);
     }
 }
 
-if (!function_exists('tenantPageFirstColumn')) {
-    function tenantPageFirstColumn(
-        mysqli $conn,
-        $table,
-        array $candidates
-    ) {
-        foreach ($candidates as $candidate) {
-            if (
-                tenantPageColumnExists(
-                    $conn,
-                    $table,
-                    $candidate
-                )
-            ) {
-                return $candidate;
+if (!function_exists('tenantUrl')) {
+    function tenantUrl($changes = array())
+    {
+        $query = $_GET;
+
+        foreach ($changes as $key => $value) {
+            if ($value === '' || $value === null) {
+                unset($query[$key]);
+            } else {
+                $query[$key] = $value;
             }
         }
 
-        return '';
+        return '?' . http_build_query($query);
     }
 }
 
-if (!function_exists('tenantPageStatusLabel')) {
-    function tenantPageStatusLabel($status)
+if (!function_exists('tenantLabel')) {
+    function tenantLabel($value)
     {
-        $status = trim((string) $status);
+        $value = trim((string) $value);
 
-        if ($status === '') {
-            return 'Unknown';
+        if ($value === '') {
+            return '—';
         }
 
         return ucwords(
             str_replace(
                 array('_', '-'),
                 ' ',
-                $status
+                $value
             )
         );
     }
 }
 
-if (!function_exists('tenantPageStatusClass')) {
-    function tenantPageStatusClass($status)
-    {
-        switch (strtolower(trim((string) $status))) {
-            case 'active':
-                return 'success';
-
-            case 'trial':
-                return 'info';
-
-            case 'pending':
-            case 'pending_approval':
-                return 'warning';
-
-            case 'suspended':
-            case 'inactive':
-            case 'expired':
-            case 'cancelled':
-                return 'danger';
-
-            default:
-                return 'secondary';
-        }
-    }
-}
-
-if (!function_exists('tenantPageDate')) {
-    function tenantPageDate($value)
+if (!function_exists('tenantDate')) {
+    function tenantDate($value)
     {
         if (empty($value)) {
             return '—';
@@ -157,13 +95,13 @@ if (!function_exists('tenantPageDate')) {
     }
 }
 
-if (!function_exists('tenantPageInitials')) {
-    function tenantPageInitials($name)
+if (!function_exists('tenantInitials')) {
+    function tenantInitials($name)
     {
         $name = trim((string) $name);
 
         if ($name === '') {
-            return 'TN';
+            return 'T';
         }
 
         $parts = preg_split('/\s+/', $name);
@@ -176,435 +114,292 @@ if (!function_exists('tenantPageInitials')) {
         }
 
         if (count($parts) > 1) {
-            $lastPart = end($parts);
+            $last = end($parts);
 
-            if ($lastPart !== '') {
+            if ($last !== '') {
                 $initials .= strtoupper(
-                    substr($lastPart, 0, 1)
+                    substr($last, 0, 1)
                 );
             }
         }
 
         return $initials !== ''
             ? $initials
-            : 'TN';
-    }
-}
-
-if (!function_exists('tenantPageBuildQuery')) {
-    function tenantPageBuildQuery(array $changes = array())
-    {
-        $parameters = $_GET;
-
-        unset($parameters['page']);
-
-        foreach ($changes as $key => $value) {
-            if (
-                $value === '' ||
-                $value === null
-            ) {
-                unset($parameters[$key]);
-            } else {
-                $parameters[$key] = $value;
-            }
-        }
-
-        return http_build_query($parameters);
+            : 'T';
     }
 }
 
 /*
 |--------------------------------------------------------------------------
-| Check tenant table
+| Filters
 |--------------------------------------------------------------------------
 */
 
-$tableCheck = $conn->query("
-    SHOW TABLES LIKE 'tenants'
-");
+$search = tenantGet('search');
+$status = strtolower(tenantGet('status'));
+$plan = tenantGet('plan');
 
-$tenantTableExists =
-    $tableCheck &&
-    $tableCheck->num_rows > 0;
-
-if ($tableCheck) {
-    $tableCheck->free();
-}
-
-if (!$tenantTableExists) {
-    http_response_code(500);
-
-    exit(
-        'The tenants table does not exist.'
-    );
-}
-
-/*
-|--------------------------------------------------------------------------
-| Detect tenant columns
-|--------------------------------------------------------------------------
-*/
-
-$idColumn = tenantPageFirstColumn(
-    $conn,
-    'tenants',
-    array('id', 'tenant_id')
+$page = max(
+    1,
+    (int) tenantGet('page', '1')
 );
 
-$nameColumn = tenantPageFirstColumn(
-    $conn,
-    'tenants',
-    array(
-        'company_name',
-        'business_name',
-        'tenant_name',
-        'name'
+$perPage = (int) tenantGet(
+    'per_page',
+    '10'
+);
+
+$allowedPerPage = array(
+    10,
+    15,
+    25,
+    50,
+    100
+);
+
+if (
+    !in_array(
+        $perPage,
+        $allowedPerPage,
+        true
     )
-);
-
-$emailColumn = tenantPageFirstColumn(
-    $conn,
-    'tenants',
-    array(
-        'email',
-        'contact_email',
-        'billing_email'
-    )
-);
-
-$phoneColumn = tenantPageFirstColumn(
-    $conn,
-    'tenants',
-    array(
-        'phone',
-        'mobile',
-        'contact_phone',
-        'contact_mobile'
-    )
-);
-
-$codeColumn = tenantPageFirstColumn(
-    $conn,
-    'tenants',
-    array(
-        'tenant_code',
-        'code',
-        'business_code'
-    )
-);
-
-$statusColumn = tenantPageFirstColumn(
-    $conn,
-    'tenants',
-    array('status')
-);
-
-$createdColumn = tenantPageFirstColumn(
-    $conn,
-    'tenants',
-    array(
-        'created_at',
-        'created_on'
-    )
-);
-
-$trialEndColumn = tenantPageFirstColumn(
-    $conn,
-    'tenants',
-    array(
-        'trial_ends_at',
-        'trial_end_date',
-        'trial_end'
-    )
-);
-
-$deletedColumn = tenantPageFirstColumn(
-    $conn,
-    'tenants',
-    array('deleted_at')
-);
-
-$logoColumn = tenantPageFirstColumn(
-    $conn,
-    'tenants',
-    array(
-        'logo_path',
-        'logo',
-        'company_logo'
-    )
-);
-
-if ($idColumn === '' || $nameColumn === '') {
-    http_response_code(500);
-
-    exit(
-        'The tenants table requires an ID and tenant name column.'
-    );
-}
-
-/*
-|--------------------------------------------------------------------------
-| Input
-|--------------------------------------------------------------------------
-*/
-
-$search = isset($_GET['search']) &&
-    !is_array($_GET['search'])
-        ? trim((string) $_GET['search'])
-        : '';
-
-$statusFilter = isset($_GET['status']) &&
-    !is_array($_GET['status'])
-        ? strtolower(trim((string) $_GET['status']))
-        : '';
-
-$sort = isset($_GET['sort']) &&
-    !is_array($_GET['sort'])
-        ? trim((string) $_GET['sort'])
-        : 'latest';
-
-$page = isset($_GET['page'])
-    ? max(1, (int) $_GET['page'])
-    : 1;
-
-$perPage = isset($_GET['per_page'])
-    ? (int) $_GET['per_page']
-    : 15;
-
-$allowedPerPage = array(10, 15, 25, 50);
-
-if (!in_array($perPage, $allowedPerPage, true)) {
-    $perPage = 15;
+) {
+    $perPage = 10;
 }
 
 $allowedStatuses = array(
     '',
-    'active',
     'trial',
-    'pending',
-    'pending_approval',
-    'suspended',
-    'inactive',
+    'active',
     'expired',
-    'cancelled'
+    'suspended',
+    'cancelled',
+    'archived'
 );
 
-if (!in_array($statusFilter, $allowedStatuses, true)) {
-    $statusFilter = '';
-}
-
-$allowedSorts = array(
-    'latest',
-    'oldest',
-    'name_asc',
-    'name_desc'
-);
-
-if (!in_array($sort, $allowedSorts, true)) {
-    $sort = 'latest';
+if (
+    !in_array(
+        $status,
+        $allowedStatuses,
+        true
+    )
+) {
+    $status = '';
 }
 
 /*
 |--------------------------------------------------------------------------
-| Summary counts
+| Summary Counts
 |--------------------------------------------------------------------------
 */
-
-$summary = array(
-    'total' => 0,
-    'active' => 0,
-    'trial' => 0,
-    'pending' => 0,
-    'suspended' => 0
-);
-
-$summaryWhere = $deletedColumn !== ''
-    ? "WHERE `{$deletedColumn}` IS NULL"
-    : '';
-
-$summarySelect = array(
-    'COUNT(*) AS total'
-);
-
-if ($statusColumn !== '') {
-    $summarySelect[] = "
-        SUM(
-            CASE
-                WHEN `{$statusColumn}` = 'active'
-                THEN 1 ELSE 0
-            END
-        ) AS active_count
-    ";
-
-    $summarySelect[] = "
-        SUM(
-            CASE
-                WHEN `{$statusColumn}` = 'trial'
-                THEN 1 ELSE 0
-            END
-        ) AS trial_count
-    ";
-
-    $summarySelect[] = "
-        SUM(
-            CASE
-                WHEN `{$statusColumn}` IN (
-                    'pending',
-                    'pending_approval'
-                )
-                THEN 1 ELSE 0
-            END
-        ) AS pending_count
-    ";
-
-    $summarySelect[] = "
-        SUM(
-            CASE
-                WHEN `{$statusColumn}` = 'suspended'
-                THEN 1 ELSE 0
-            END
-        ) AS suspended_count
-    ";
-}
 
 $summarySql = "
-    SELECT " . implode(',', $summarySelect) . "
+    SELECT
+        COUNT(*) AS total,
+        SUM(
+            CASE
+                WHEN status = 'active' THEN 1
+                ELSE 0
+            END
+        ) AS active_count,
+        SUM(
+            CASE
+                WHEN status = 'trial' THEN 1
+                ELSE 0
+            END
+        ) AS trial_count,
+        SUM(
+            CASE
+                WHEN status = 'suspended' THEN 1
+                ELSE 0
+            END
+        ) AS suspended_count
     FROM tenants
-    {$summaryWhere}
+    WHERE deleted_at IS NULL
 ";
 
-$summaryResult = $conn->query($summarySql);
+$summaryStmt = $pdo->query($summarySql);
+$summary = $summaryStmt->fetch();
 
-if ($summaryResult) {
-    $summaryRow = $summaryResult->fetch_assoc();
-
-    $summary['total'] = isset($summaryRow['total'])
-        ? (int) $summaryRow['total']
-        : 0;
-
-    $summary['active'] = isset($summaryRow['active_count'])
-        ? (int) $summaryRow['active_count']
-        : 0;
-
-    $summary['trial'] = isset($summaryRow['trial_count'])
-        ? (int) $summaryRow['trial_count']
-        : 0;
-
-    $summary['pending'] = isset($summaryRow['pending_count'])
-        ? (int) $summaryRow['pending_count']
-        : 0;
-
-    $summary['suspended'] = isset($summaryRow['suspended_count'])
-        ? (int) $summaryRow['suspended_count']
-        : 0;
-
-    $summaryResult->free();
+if (!$summary) {
+    $summary = array();
 }
+
+$totalTenants = isset($summary['total'])
+    ? (int) $summary['total']
+    : 0;
+
+$activeTenants = isset($summary['active_count'])
+    ? (int) $summary['active_count']
+    : 0;
+
+$trialTenants = isset($summary['trial_count'])
+    ? (int) $summary['trial_count']
+    : 0;
+
+$suspendedTenants = isset($summary['suspended_count'])
+    ? (int) $summary['suspended_count']
+    : 0;
 
 /*
 |--------------------------------------------------------------------------
-| Build filters
+| Plan Filter Options
 |--------------------------------------------------------------------------
 */
 
-$where = array();
-$params = array();
-$types = '';
+$planOptions = array();
 
-if ($deletedColumn !== '') {
-    $where[] = "`{$deletedColumn}` IS NULL";
+$planStmt = $pdo->query("
+    SELECT
+        name
+    FROM plans
+    WHERE deleted_at IS NULL
+      AND status <> 'archived'
+    ORDER BY name ASC
+");
+
+while ($planRow = $planStmt->fetch()) {
+    $planOptions[] = (string) $planRow['name'];
 }
-
-if ($statusFilter !== '' && $statusColumn !== '') {
-    if ($statusFilter === 'pending') {
-        $where[] = "`{$statusColumn}` IN (
-            'pending',
-            'pending_approval'
-        )";
-    } else {
-        $where[] = "`{$statusColumn}` = ?";
-        $types .= 's';
-        $params[] = $statusFilter;
-    }
-}
-
-if ($search !== '') {
-    $searchConditions = array();
-
-    $searchableColumns = array_filter(array(
-        $nameColumn,
-        $emailColumn,
-        $phoneColumn,
-        $codeColumn
-    ));
-
-    foreach ($searchableColumns as $searchableColumn) {
-        $searchConditions[] =
-            "`{$searchableColumn}` LIKE ?";
-        $types .= 's';
-        $params[] = '%' . $search . '%';
-    }
-
-    if (!empty($searchConditions)) {
-        $where[] =
-            '(' .
-            implode(' OR ', $searchConditions) .
-            ')';
-    }
-}
-
-$whereSql = !empty($where)
-    ? 'WHERE ' . implode(' AND ', $where)
-    : '';
 
 /*
 |--------------------------------------------------------------------------
-| Count filtered records
+| Build WHERE Conditions
+|--------------------------------------------------------------------------
+*/
+
+$where = array(
+    't.deleted_at IS NULL'
+);
+
+$params = array();
+
+if ($search !== '') {
+    $where[] = "(
+        t.tenant_code LIKE :search
+        OR t.legal_name LIKE :search
+        OR t.display_name LIKE :search
+        OR t.email LIKE :search
+        OR t.phone LIKE :search
+        OR t.alternate_phone LIKE :search
+        OR t.business_type LIKE :search
+        OR t.city LIKE :search
+        OR t.state LIKE :search
+        OR COALESCE(c.name, '') LIKE :search
+        OR COALESCE(cur.currency_code, '') LIKE :search
+        OR COALESCE(p.name, '') LIKE :search
+    )";
+
+    $params[':search'] = '%' . $search . '%';
+}
+
+if ($status !== '') {
+    $where[] = 't.status = :status';
+    $params[':status'] = $status;
+}
+
+if ($plan !== '') {
+    $where[] = 'LOWER(COALESCE(p.name, \'\')) = LOWER(:plan)';
+    $params[':plan'] = $plan;
+}
+
+$whereSql = implode(
+    ' AND ',
+    $where
+);
+
+/*
+|--------------------------------------------------------------------------
+| Shared JOIN SQL
+|--------------------------------------------------------------------------
+|
+| Current FieldPlx schema:
+|   tenants.country_id   -> countries.id
+|   tenants.currency_id  -> currencies.id
+|   subscriptions.plan_id -> plans.id
+|   users.tenant_id      -> tenants.id
+|   branches.tenant_id   -> tenants.id
+|
+*/
+
+$joinSql = "
+    LEFT JOIN (
+        SELECT s1.*
+        FROM subscriptions s1
+        INNER JOIN (
+            SELECT
+                tenant_id,
+                MAX(id) AS max_id
+            FROM subscriptions
+            GROUP BY tenant_id
+        ) latest_subscription
+            ON latest_subscription.max_id = s1.id
+    ) s
+        ON s.tenant_id = t.id
+
+    LEFT JOIN plans p
+        ON p.id = s.plan_id
+       AND p.deleted_at IS NULL
+
+    LEFT JOIN countries c
+        ON c.id = t.country_id
+
+    LEFT JOIN currencies cur
+        ON cur.id = t.currency_id
+
+    LEFT JOIN (
+        SELECT
+            tenant_id,
+            COUNT(*) AS user_count
+        FROM users
+        WHERE deleted_at IS NULL
+        GROUP BY tenant_id
+    ) uc
+        ON uc.tenant_id = t.id
+
+    LEFT JOIN (
+        SELECT
+            tenant_id,
+            COUNT(*) AS branch_count
+        FROM branches
+        WHERE status <> 'archived'
+        GROUP BY tenant_id
+    ) bc
+        ON bc.tenant_id = t.id
+";
+
+/*
+|--------------------------------------------------------------------------
+| Count Filtered Records
 |--------------------------------------------------------------------------
 */
 
 $countSql = "
-    SELECT COUNT(*) AS total
-    FROM tenants
-    {$whereSql}
+    SELECT COUNT(*)
+    FROM tenants t
+    {$joinSql}
+    WHERE {$whereSql}
 ";
 
-$countStmt = $conn->prepare($countSql);
+$countStmt = $pdo->prepare($countSql);
 
-if (!$countStmt) {
-    exit(
-        'Unable to prepare tenant count: ' .
-        tenantPageEscape($conn->error)
-    );
-}
-
-if ($types !== '') {
-    $bindValues = array($types);
-
-    foreach ($params as $key => $value) {
-        $bindValues[] = &$params[$key];
-    }
-
-    call_user_func_array(
-        array($countStmt, 'bind_param'),
-        $bindValues
+foreach ($params as $key => $value) {
+    $countStmt->bindValue(
+        $key,
+        $value,
+        PDO::PARAM_STR
     );
 }
 
 $countStmt->execute();
 
-$countResult = $countStmt->get_result();
-$countRow = $countResult->fetch_assoc();
-
-$totalRecords = isset($countRow['total'])
-    ? (int) $countRow['total']
-    : 0;
-
-$countStmt->close();
+$totalRecords = (int) $countStmt->fetchColumn();
 
 $totalPages = max(
     1,
-    (int) ceil($totalRecords / $perPage)
+    (int) ceil(
+        $totalRecords / $perPage
+    )
 );
 
 if ($page > $totalPages) {
@@ -615,130 +410,103 @@ $offset = ($page - 1) * $perPage;
 
 /*
 |--------------------------------------------------------------------------
-| Sorting
+| Tenant List
 |--------------------------------------------------------------------------
 */
-
-switch ($sort) {
-    case 'oldest':
-        $orderColumn = $createdColumn !== ''
-            ? $createdColumn
-            : $idColumn;
-
-        $orderSql =
-            "ORDER BY `{$orderColumn}` ASC";
-        break;
-
-    case 'name_asc':
-        $orderSql =
-            "ORDER BY `{$nameColumn}` ASC";
-        break;
-
-    case 'name_desc':
-        $orderSql =
-            "ORDER BY `{$nameColumn}` DESC";
-        break;
-
-    case 'latest':
-    default:
-        $orderColumn = $createdColumn !== ''
-            ? $createdColumn
-            : $idColumn;
-
-        $orderSql =
-            "ORDER BY `{$orderColumn}` DESC";
-        break;
-}
-
-/*
-|--------------------------------------------------------------------------
-| Select tenant data
-|--------------------------------------------------------------------------
-*/
-
-$select = array(
-    "`{$idColumn}` AS tenant_id",
-    "`{$nameColumn}` AS tenant_name"
-);
-
-$select[] = $emailColumn !== ''
-    ? "`{$emailColumn}` AS tenant_email"
-    : "'' AS tenant_email";
-
-$select[] = $phoneColumn !== ''
-    ? "`{$phoneColumn}` AS tenant_phone"
-    : "'' AS tenant_phone";
-
-$select[] = $codeColumn !== ''
-    ? "`{$codeColumn}` AS tenant_code"
-    : "'' AS tenant_code";
-
-$select[] = $statusColumn !== ''
-    ? "`{$statusColumn}` AS tenant_status"
-    : "'active' AS tenant_status";
-
-$select[] = $createdColumn !== ''
-    ? "`{$createdColumn}` AS tenant_created_at"
-    : "NULL AS tenant_created_at";
-
-$select[] = $trialEndColumn !== ''
-    ? "`{$trialEndColumn}` AS trial_ends_at"
-    : "NULL AS trial_ends_at";
-
-$select[] = $logoColumn !== ''
-    ? "`{$logoColumn}` AS tenant_logo"
-    : "'' AS tenant_logo";
 
 $listSql = "
     SELECT
-        " . implode(',', $select) . "
-    FROM tenants
-    {$whereSql}
-    {$orderSql}
-    LIMIT ? OFFSET ?
+        t.id,
+        t.tenant_code,
+        t.legal_name,
+        t.display_name,
+        t.business_type,
+        t.registration_number,
+        t.tax_number,
+        t.email,
+        t.phone,
+        t.alternate_phone,
+        t.website_url,
+        t.timezone,
+        t.date_format,
+        t.logo_path,
+        t.invoice_logo_path,
+        t.address_line1,
+        t.address_line2,
+        t.city,
+        t.state,
+        t.postal_code,
+        t.status,
+        t.created_at,
+
+        c.name AS country,
+        c.iso2 AS country_iso2,
+
+        cur.currency_code,
+        cur.currency_name,
+        cur.symbol AS currency_symbol,
+
+        COALESCE(
+            p.name,
+            'No Plan'
+        ) AS plan_name,
+
+        s.id AS subscription_id,
+        s.status AS subscription_status,
+        s.start_date AS subscription_start_date,
+        s.expiry_date AS subscription_expiry_date,
+        s.trial_end_date AS subscription_trial_end_date,
+        s.amount AS subscription_amount,
+
+        COALESCE(
+            uc.user_count,
+            0
+        ) AS user_count,
+
+        COALESCE(
+            bc.branch_count,
+            0
+        ) AS branch_count
+
+    FROM tenants t
+
+    {$joinSql}
+
+    WHERE {$whereSql}
+
+    ORDER BY
+        t.created_at DESC,
+        t.id DESC
+
+    LIMIT :limit
+    OFFSET :offset
 ";
 
-$listStmt = $conn->prepare($listSql);
+$listStmt = $pdo->prepare($listSql);
 
-if (!$listStmt) {
-    exit(
-        'Unable to prepare tenant list: ' .
-        tenantPageEscape($conn->error)
+foreach ($params as $key => $value) {
+    $listStmt->bindValue(
+        $key,
+        $value,
+        PDO::PARAM_STR
     );
 }
 
-$listTypes = $types . 'ii';
-$listParams = $params;
-$listParams[] = $perPage;
-$listParams[] = $offset;
+$listStmt->bindValue(
+    ':limit',
+    $perPage,
+    PDO::PARAM_INT
+);
 
-$bindValues = array($listTypes);
-
-foreach ($listParams as $key => $value) {
-    $bindValues[] = &$listParams[$key];
-}
-
-call_user_func_array(
-    array($listStmt, 'bind_param'),
-    $bindValues
+$listStmt->bindValue(
+    ':offset',
+    $offset,
+    PDO::PARAM_INT
 );
 
 $listStmt->execute();
 
-$listResult = $listStmt->get_result();
-$tenants = array();
-
-while ($row = $listResult->fetch_assoc()) {
-    $tenants[] = $row;
-}
-
-$listStmt->close();
-
-/*
-|--------------------------------------------------------------------------
-| Pagination range
-|--------------------------------------------------------------------------
-*/
+$tenants = $listStmt->fetchAll();
 
 $startRecord = $totalRecords > 0
     ? $offset + 1
@@ -749,1218 +517,1859 @@ $endRecord = min(
     $totalRecords
 );
 
-$paginationStart = max(1, $page - 2);
+$paginationStart = max(
+    1,
+    $page - 2
+);
+
 $paginationEnd = min(
     $totalPages,
     $page + 2
 );
-
-/*
-|--------------------------------------------------------------------------
-| Layout
-|--------------------------------------------------------------------------
-*/
-
-require __DIR__ . '/includes/topbar.php';
 ?>
+<!DOCTYPE html>
+<html lang="en">
 
-<style>
-    .tenant-page {
-        display: grid;
-        gap: 15px;
-    }
+<head>
+    <meta charset="UTF-8">
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
 
-    .tenant-page-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 15px;
-    }
+    <title>
+        <?= tenantEscape($pageTitle); ?> - FieldPlx
+    </title>
 
-    .tenant-page-title {
-        margin: 0;
-        color: #111827;
-        font-size: 18px;
-        font-weight: 800;
-    }
+    <?php
+    require_once __DIR__ . '/includes/links.php';
+    ?>
 
-    .tenant-page-description {
-        margin-top: 4px;
-        color: #6b7280;
-        font-size: 10px;
-    }
-
-    .tenant-add-button {
-        min-height: 38px;
-        padding: 8px 14px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 7px;
-        border-radius: 9px;
-        background: #7c3aed;
-        color: #ffffff;
-        font-size: 10px;
-        font-weight: 700;
-        text-decoration: none;
-    }
-
-    .tenant-add-button:hover {
-        background: #6d28d9;
-        color: #ffffff;
-    }
-
-    .tenant-summary-grid {
-        display: grid;
-        grid-template-columns: repeat(5, minmax(0, 1fr));
-        gap: 10px;
-    }
-
-    .tenant-summary-card {
-        padding: 13px 14px;
-        display: flex;
-        align-items: center;
-        gap: 11px;
-        border: 1px solid #e5e7eb;
-        border-radius: 11px;
-        background: #ffffff;
-        text-decoration: none;
-        box-shadow: 0 4px 15px rgba(31, 41, 55, 0.03);
-    }
-
-    .tenant-summary-card:hover {
-        border-color: #ddd6fe;
-        background: #fcfbff;
-    }
-
-    .tenant-summary-card.selected {
-        border-color: #c4b5fd;
-        background: #faf8ff;
-    }
-
-    .tenant-summary-icon {
-        width: 35px;
-        height: 35px;
-        flex: 0 0 35px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: 9px;
-        font-size: 14px;
-    }
-
-    .tenant-summary-icon.total {
-        background: #f3e8ff;
-        color: #7c3aed;
-    }
-
-    .tenant-summary-icon.active {
-        background: #ecfdf5;
-        color: #059669;
-    }
-
-    .tenant-summary-icon.trial {
-        background: #eff6ff;
-        color: #2563eb;
-    }
-
-    .tenant-summary-icon.pending {
-        background: #fff7ed;
-        color: #d97706;
-    }
-
-    .tenant-summary-icon.suspended {
-        background: #fef2f2;
-        color: #dc2626;
-    }
-
-    .tenant-summary-label {
-        display: block;
-        color: #6b7280;
-        font-size: 8px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.4px;
-    }
-
-    .tenant-summary-value {
-        margin-top: 3px;
-        display: block;
-        color: #111827;
-        font-size: 17px;
-        font-weight: 800;
-    }
-
-    .tenant-list-card {
-        overflow: hidden;
-        border: 1px solid #e5e7eb;
-        border-radius: 12px;
-        background: #ffffff;
-        box-shadow: 0 5px 20px rgba(31, 41, 55, 0.035);
-    }
-
-    .tenant-toolbar {
-        padding: 12px 14px;
-        display: flex;
-        align-items: center;
-        gap: 9px;
-        border-bottom: 1px solid #eef0f3;
-    }
-
-    .tenant-search {
-        min-width: 220px;
-        position: relative;
-        flex: 1;
-    }
-
-    .tenant-search i {
-        position: absolute;
-        top: 50%;
-        left: 11px;
-        transform: translateY(-50%);
-        color: #9ca3af;
-        font-size: 12px;
-    }
-
-    .tenant-control {
-        height: 36px;
-        border: 1px solid #e5e7eb;
-        border-radius: 8px;
-        background: #fafafa;
-        box-shadow: none;
-        color: #374151;
-        font-size: 10px;
-    }
-
-    .tenant-search .tenant-control {
-        padding-left: 33px;
-    }
-
-    .tenant-control:focus {
-        border-color: #c4b5fd;
-        background: #ffffff;
-        box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.08);
-    }
-
-    .tenant-filter-button {
-        height: 36px;
-        padding: 7px 12px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 6px;
-        border: 0;
-        border-radius: 8px;
-        background: #111827;
-        color: #ffffff;
-        font-size: 9px;
-        font-weight: 700;
-    }
-
-    .tenant-clear-button {
-        height: 36px;
-        padding: 7px 11px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        border: 1px solid #e5e7eb;
-        border-radius: 8px;
-        background: #ffffff;
-        color: #6b7280;
-        font-size: 9px;
-        text-decoration: none;
-    }
-
-    .tenant-table-wrap {
-        overflow-x: auto;
-    }
-
-    .tenant-table {
-        width: 100%;
-        margin: 0;
-        border-collapse: collapse;
-    }
-
-    .tenant-table th {
-        padding: 10px 13px;
-        border-bottom: 1px solid #e9ebef;
-        background: #fafafa;
-        color: #6b7280;
-        font-size: 8px;
-        font-weight: 700;
-        letter-spacing: 0.4px;
-        text-transform: uppercase;
-        white-space: nowrap;
-    }
-
-    .tenant-table td {
-        padding: 11px 13px;
-        border-bottom: 1px solid #f0f1f3;
-        color: #374151;
-        font-size: 9px;
-        vertical-align: middle;
-    }
-
-    .tenant-table tbody tr:last-child td {
-        border-bottom: 0;
-    }
-
-    .tenant-table tbody tr:hover {
-        background: #fcfbff;
-    }
-
-    .tenant-business {
-        min-width: 210px;
-        display: flex;
-        align-items: center;
-        gap: 10px;
-    }
-
-    .tenant-avatar {
-        width: 36px;
-        height: 36px;
-        flex: 0 0 36px;
-        overflow: hidden;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: 9px;
-        background: linear-gradient(135deg, #111827, #7c3aed);
-        color: #ffffff;
-        font-size: 9px;
-        font-weight: 800;
-    }
-
-    .tenant-avatar img {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-    }
-
-    .tenant-name {
-        overflow: hidden;
-        display: block;
-        max-width: 230px;
-        color: #111827;
-        font-size: 10px;
-        font-weight: 700;
-        white-space: nowrap;
-        text-overflow: ellipsis;
-    }
-
-    .tenant-code {
-        margin-top: 2px;
-        display: block;
-        color: #9ca3af;
-        font-size: 8px;
-    }
-
-    .tenant-contact {
-        min-width: 175px;
-    }
-
-    .tenant-contact-line {
-        display: block;
-        overflow: hidden;
-        max-width: 210px;
-        color: #4b5563;
-        font-size: 9px;
-        white-space: nowrap;
-        text-overflow: ellipsis;
-    }
-
-    .tenant-contact-line + .tenant-contact-line {
-        margin-top: 3px;
-        color: #9ca3af;
-        font-size: 8px;
-    }
-
-    .tenant-status {
-        padding: 4px 8px;
-        display: inline-flex;
-        align-items: center;
-        border-radius: 999px;
-        font-size: 8px;
-        font-weight: 700;
-    }
-
-    .tenant-status.success {
-        background: #ecfdf5;
-        color: #047857;
-    }
-
-    .tenant-status.info {
-        background: #eff6ff;
-        color: #1d4ed8;
-    }
-
-    .tenant-status.warning {
-        background: #fff7ed;
-        color: #b45309;
-    }
-
-    .tenant-status.danger {
-        background: #fef2f2;
-        color: #b91c1c;
-    }
-
-    .tenant-status.secondary {
-        background: #f3f4f6;
-        color: #4b5563;
-    }
-
-    .tenant-actions {
-        display: flex;
-        justify-content: flex-end;
-        gap: 5px;
-    }
-
-    .tenant-action-button {
-        width: 29px;
-        height: 29px;
-        padding: 0;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        border: 1px solid #e5e7eb;
-        border-radius: 7px;
-        background: #ffffff;
-        color: #6b7280;
-        font-size: 11px;
-        text-decoration: none;
-    }
-
-    .tenant-action-button:hover {
-        border-color: #ddd6fe;
-        background: #faf8ff;
-        color: #7c3aed;
-    }
-
-    .tenant-empty {
-        padding: 48px 20px;
-        color: #9ca3af;
-        text-align: center;
-        font-size: 10px;
-    }
-
-    .tenant-empty i {
-        margin-bottom: 10px;
-        display: block;
-        color: #c4b5fd;
-        font-size: 30px;
-    }
-
-    .tenant-pagination-bar {
-        min-height: 54px;
-        padding: 10px 14px;
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        border-top: 1px solid #eef0f3;
-    }
-
-    .tenant-pagination-info {
-        color: #6b7280;
-        font-size: 9px;
-    }
-
-    .tenant-pagination {
-        margin: 0;
-        display: flex;
-        gap: 4px;
-        list-style: none;
-    }
-
-    .tenant-pagination a,
-    .tenant-pagination span {
-        min-width: 29px;
-        height: 29px;
-        padding: 0 8px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        border: 1px solid #e5e7eb;
-        border-radius: 7px;
-        background: #ffffff;
-        color: #6b7280;
-        font-size: 8px;
-        text-decoration: none;
-    }
-
-    .tenant-pagination a:hover {
-        border-color: #c4b5fd;
-        color: #7c3aed;
-    }
-
-    .tenant-pagination .active {
-        border-color: #7c3aed;
-        background: #7c3aed;
-        color: #ffffff;
-    }
-
-    .tenant-pagination .disabled {
-        opacity: 0.45;
-        pointer-events: none;
-    }
-
-    @media (max-width: 1199.98px) {
-        .tenant-summary-grid {
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-        }
-    }
-
-    @media (max-width: 767.98px) {
-        .tenant-page-header {
-            align-items: flex-start;
-            flex-direction: column;
+    <style>
+        :root {
+            --fp-primary: #12182d;
+            --fp-primary-2: #1c2250;
+            --fp-primary-3: #201f6b;
+            --fp-accent: #8b5cf6;
+            --fp-accent-light: #a78bfa;
+            --fp-accent-dark: #6d28d9;
+            --fp-text: #20213f;
+            --fp-muted: #6f6b8f;
+            --fp-border: #ded9ef;
+            --fp-bg: #ffffff;
+            --fp-surface: #ffffff;
+            --fp-surface-soft: #f8f6ff;
+            --fp-success: #059669;
+            --fp-warning: #d97706;
+            --fp-danger: #dc2626;
+            --fp-info: #6366f1;
+            --fp-sidebar-width: 260px;
+            --fp-sidebar-collapsed-width: 76px;
+            --fp-topbar-height: 66px;
         }
 
-        .tenant-add-button {
+        * {
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            min-height: 100%;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            overflow-x: hidden;
+            background: #ffffff;
+            color: var(--fp-text);
+            font-family: "Inter", sans-serif;
+            font-size: 13px;
+        }
+
+        a {
+            text-decoration: none;
+        }
+
+        .fp-layout {
+            min-height: 100vh;
+        }
+
+        .fp-main {
+            min-height: calc(100vh - 52px);
+            margin-left: var(--fp-sidebar-width);
+            transition: margin-left .22s ease;
+        }
+
+        body.fp-sidebar-collapsed .fp-main {
+            margin-left: var(--fp-sidebar-collapsed-width);
+        }
+
+        /* =========================================================
+           SHARED FIELDPLX TOPBAR UI
+           Matches Platform Dashboard
+        ========================================================= */
+
+        .fp-topbar {
+            position: sticky;
+            top: 0;
+            z-index: 1030;
+            min-height: var(--fp-topbar-height);
+            border-bottom: 1px solid #ded8f3;
+            background: rgba(248, 246, 255, .96);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+        }
+
+        .fp-topbar-inner {
+            min-height: var(--fp-topbar-height);
+            padding: 8px 18px;
+            display: flex;
+            align-items: center;
+            gap: 13px;
+        }
+
+        .fp-menu-toggle,
+        .fp-icon-button {
+            width: 39px;
+            height: 39px;
+            min-width: 39px;
+            padding: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid #d9d2ef;
+            border-radius: 10px;
+            background: #ffffff;
+            color: #39345f;
+            font-size: 18px;
+            line-height: 1;
+            cursor: pointer;
+            transition: .16s ease;
+        }
+
+        .fp-menu-toggle:hover,
+        .fp-icon-button:hover {
+            border-color: #bda9ff;
+            background: #f4f0ff;
+            color: var(--fp-accent-dark);
+        }
+
+        .fp-page-heading {
+            min-width: 0;
+            margin-right: auto;
+        }
+
+        .fp-page-title {
+            margin: 0;
+            overflow: hidden;
+            color: #17172e;
+            font-size: 15px;
+            font-weight: 700;
+            line-height: 1.25;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+        }
+
+        .fp-page-subtitle {
+            margin-top: 2px;
+            color: var(--fp-muted);
+            font-size: 10px;
+            line-height: 1.3;
+        }
+
+        .fp-search {
+            width: min(340px, 31vw);
+            position: relative;
+            flex: 0 1 340px;
+        }
+
+        .fp-search i {
+            position: absolute;
+            top: 50%;
+            left: 12px;
+            z-index: 2;
+            transform: translateY(-50%);
+            color: #8f88aa;
+            font-size: 14px;
+            pointer-events: none;
+        }
+
+        .fp-search input {
             width: 100%;
+            height: 39px;
+            padding: 8px 13px 8px 36px;
+            border: 1px solid #dcd5ef;
+            border-radius: 10px;
+            outline: none;
+            background: #f8f6ff;
+            color: #292640;
+            box-shadow: none;
+            font-family: inherit;
+            font-size: 12px;
         }
 
-        .tenant-summary-grid {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
+        .fp-search input::placeholder {
+            color: #77718e;
         }
 
-        .tenant-toolbar {
-            align-items: stretch;
-            flex-direction: column;
+        .fp-search input:focus {
+            border-color: #a78bfa;
+            background: #ffffff;
+            box-shadow: 0 0 0 3px rgba(139, 92, 246, .12);
         }
 
-        .tenant-search {
+        .fp-notification-wrap {
+            position: relative;
+            flex: 0 0 auto;
+        }
+
+        .fp-notification-count {
+            position: absolute;
+            top: -5px;
+            right: -5px;
+            z-index: 3;
+            min-width: 18px;
+            height: 18px;
+            padding: 0 5px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border: 2px solid #ffffff;
+            border-radius: 999px;
+            background: var(--fp-danger);
+            color: #ffffff;
+            font-size: 9px;
+            font-weight: 700;
+            line-height: 1;
+        }
+
+        .fp-profile {
+            min-width: 0;
+            padding: 4px 9px 4px 5px;
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            border: 1px solid var(--fp-border);
+            border-radius: 11px;
+            background: #ffffff;
+            color: inherit;
+            cursor: pointer;
+        }
+
+        .fp-avatar {
+            width: 32px;
+            height: 32px;
+            flex: 0 0 32px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 9px;
+            background: linear-gradient(135deg, #6d4df4, #9a5cff);
+            color: #ffffff;
+            font-size: 10px;
+            font-weight: 700;
+        }
+
+        .fp-profile-text {
+            max-width: 145px;
             min-width: 0;
         }
 
-        .tenant-filter-button,
-        .tenant-clear-button {
+        .fp-profile-name,
+        .fp-profile-role {
+            overflow: hidden;
+            display: block;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+        }
+
+        .fp-profile-name {
+            color: #111827;
+            font-size: 11px;
+            font-weight: 700;
+            line-height: 1.25;
+        }
+
+        .fp-profile-role {
+            margin-top: 1px;
+            color: var(--fp-muted);
+            font-size: 9px;
+            line-height: 1.25;
+        }
+
+        .fp-mobile-brand {
+            display: none;
+        }
+
+        .fp-mobile-brand-logo {
+            width: 34px;
+            height: 34px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 9px;
+            background: linear-gradient(135deg, #6d4df4, #9a5cff);
+            color: #ffffff;
+            font-size: 13px;
+            font-weight: 700;
+        }
+
+        .fp-content {
+            padding: 18px;
+            background: #ffffff;
+        }
+
+        .tenant-page {
+            display: grid;
+            gap: 16px;
+        }
+
+        .tenant-page-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 15px;
+        }
+
+        .tenant-page-title {
+            margin: 0;
+            color: #111827;
+            font-size: 20px;
+            font-weight: 800;
+        }
+
+        .tenant-page-description {
+            margin-top: 4px;
+            color: #77718e;
+            font-size: 10px;
+        }
+
+        .tenant-add-button {
+            min-height: 39px;
+            padding: 9px 14px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 7px;
+            border: 0;
+            border-radius: 10px;
+            background:
+                linear-gradient(
+                    135deg,
+                    #7c3aed,
+                    #6d28d9
+                );
+            color: #ffffff;
+            font-size: 10px;
+            font-weight: 700;
+            box-shadow:
+                0 8px 20px
+                rgba(109, 40, 217, .18);
+        }
+
+        .tenant-add-button:hover {
+            color: #ffffff;
+            transform: translateY(-1px);
+        }
+
+        .tenant-summary {
+            display: grid;
+            grid-template-columns:
+                repeat(4, minmax(0, 1fr));
+            gap: 12px;
+        }
+
+        .tenant-summary-card {
+            padding: 14px 15px;
+            display: flex;
+            align-items: center;
+            gap: 11px;
+            border: 1px solid #ddd5f1;
+            border-radius: 13px;
+            background:
+                linear-gradient(
+                    180deg,
+                    #ffffff 0%,
+                    #fbf9ff 100%
+                );
+        }
+
+        .tenant-summary-icon {
+            width: 38px;
+            height: 38px;
+            flex: 0 0 38px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 10px;
+            background: #eee8ff;
+            color: #7c3aed;
+            font-size: 16px;
+        }
+
+        .tenant-summary-label {
+            color: #9a94ae;
+            font-size: 8px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: .04em;
+        }
+
+        .tenant-summary-value {
+            margin-top: 2px;
+            display: block;
+            color: #111827;
+            font-size: 20px;
+            font-weight: 800;
+        }
+
+        .tenant-card {
+            overflow: hidden;
+            border: 1px solid #ded7ef;
+            border-radius: 14px;
+            background: #ffffff;
+            box-shadow:
+                0 8px 24px
+                rgba(37, 29, 80, .05);
+        }
+
+        .tenant-toolbar {
+            padding: 13px;
+            display: grid;
+            grid-template-columns:
+                minmax(260px, 1.6fr)
+                minmax(150px, .55fr)
+                minmax(150px, .55fr)
+                110px;
+            gap: 10px;
+            align-items: start;
+            border-bottom: 1px solid #ece7f7;
+            background: #fbf9ff;
+        }
+
+        .tenant-search {
+            position: relative;
+        }
+
+        .tenant-search-icon {
+            position: absolute;
+            top: 19px;
+            left: 12px;
+            z-index: 2;
+            transform: translateY(-50%);
+            color: #8f88aa;
+            font-size: 13px;
+            pointer-events: none;
+        }
+
+        .tenant-control {
             width: 100%;
+            height: 38px;
+            border: 1px solid #dcd5ef;
+            border-radius: 9px;
+            background: #ffffff;
+            color: #39345f;
+            font-size: 10px;
+            box-shadow: none;
+        }
+
+        .tenant-search .tenant-control {
+            padding-left: 35px;
+        }
+
+        .tenant-control:focus {
+            border-color: #a78bfa;
+            box-shadow:
+                0 0 0 3px
+                rgba(139, 92, 246, .10);
+        }
+
+        .search-countdown {
+            min-height: 12px;
+            margin-top: 4px;
+            color: #9992aa;
+            font-size: 8px;
+        }
+
+        .tenant-table-wrap {
+            width: 100%;
+            overflow-x: auto;
+        }
+
+        .tenant-table {
+            width: 100%;
+            min-width: 1080px;
+            border-collapse: collapse;
+            white-space: nowrap;
+        }
+
+        .tenant-table th {
+            padding: 11px 13px;
+            border-bottom: 1px solid #ece7f7;
+            background: #f6f2ff;
+            color: #847d9e;
+            font-size: 8px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: .04em;
+        }
+
+        .tenant-table td {
+            padding: 12px 13px;
+            border-bottom: 1px solid #f1eff6;
+            color: #4f4a64;
+            font-size: 10px;
+            vertical-align: middle;
+        }
+
+        .tenant-table tbody tr:hover {
+            background: #fcfbff;
+        }
+
+        .tenant-table tbody tr:last-child td {
+            border-bottom: 0;
+        }
+
+        .tenant-main {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .tenant-logo {
+            width: 36px;
+            height: 36px;
+            flex: 0 0 36px;
+            overflow: hidden;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 9px;
+            background:
+                linear-gradient(
+                    135deg,
+                    #ece7ff,
+                    #f7f4ff
+                );
+            color: #7c3aed;
+            font-size: 10px;
+            font-weight: 800;
+        }
+
+        .tenant-logo img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .tenant-company {
+            color: #111827;
+            font-size: 10px;
+            font-weight: 700;
+        }
+
+        .tenant-code {
+            margin-top: 2px;
+            color: #9d96ac;
+            font-size: 8px;
+        }
+
+        .tenant-contact {
+            line-height: 1.5;
+        }
+
+        .tenant-contact strong {
+            display: block;
+            max-width: 220px;
+            overflow: hidden;
+            color: #373248;
+            font-size: 9px;
+            font-weight: 600;
+            text-overflow: ellipsis;
+        }
+
+        .tenant-contact span {
+            color: #918b9d;
+            font-size: 8px;
+        }
+
+        .tenant-plan-badge {
+            padding: 5px 8px;
+            display: inline-flex;
+            align-items: center;
+            border-radius: 7px;
+            background: #f0ebff;
+            color: #6d28d9;
+            font-size: 8px;
+            font-weight: 700;
+        }
+
+        .tenant-status {
+            min-height: 22px;
+            padding: 4px 8px;
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            font-size: 8px;
+            font-weight: 700;
+        }
+
+        .tenant-status.active {
+            background: #d1fae5;
+            color: #047857;
+        }
+
+        .tenant-status.trial {
+            background: #fef3c7;
+            color: #b45309;
+        }
+
+        .tenant-status.expired {
+            background: #fff7ed;
+            color: #c2410c;
+        }
+
+        .tenant-status.cancelled {
+            background: #f3f4f6;
+            color: #4b5563;
+        }
+
+        .tenant-status.archived {
+            background: #f3f4f6;
+            color: #6b7280;
+        }
+
+        .tenant-status.suspended {
+            background: #fee2e2;
+            color: #b91c1c;
+        }
+
+        .tenant-actions {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 6px;
+        }
+
+        .tenant-action {
+            width: 29px;
+            height: 29px;
+            padding: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid #e1dcef;
+            border-radius: 8px;
+            background: #ffffff;
+            color: #615a75;
+            font-size: 12px;
+        }
+
+        .tenant-action:hover {
+            border-color: #bca7ff;
+            background: #f4f0ff;
+            color: #6d28d9;
+        }
+
+        .tenant-empty {
+            padding: 50px 20px;
+            text-align: center;
+        }
+
+        .tenant-empty i {
+            color: #b6adc9;
+            font-size: 32px;
+        }
+
+        .tenant-empty h3 {
+            margin: 10px 0 4px;
+            color: #312c40;
+            font-size: 13px;
+            font-weight: 700;
+        }
+
+        .tenant-empty p {
+            margin: 0;
+            color: #9992a8;
+            font-size: 9px;
         }
 
         .tenant-pagination-bar {
-            align-items: flex-start;
-            flex-direction: column;
+            min-height: 56px;
+            padding: 10px 13px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            border-top: 1px solid #ece7f7;
+            background: #ffffff;
         }
-    }
 
-    @media (max-width: 420px) {
-        .tenant-summary-grid {
-            grid-template-columns: 1fr;
+        .tenant-pagination-info {
+            color: #817a91;
+            font-size: 9px;
         }
-    }
-</style>
 
-<div class="tenant-page">
+        .tenant-pagination {
+            margin: 0 0 0 auto;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            list-style: none;
+        }
 
-    <div class="tenant-page-header">
-        <div>
-            <h2 class="tenant-page-title">
-                Tenant Management
-            </h2>
+        .tenant-pagination a,
+        .tenant-pagination span {
+            min-width: 30px;
+            height: 30px;
+            padding: 0 8px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid #e0daee;
+            border-radius: 8px;
+            background: #ffffff;
+            color: #5e586d;
+            font-size: 9px;
+            font-weight: 600;
+        }
 
-            <div class="tenant-page-description">
-                Manage FieldPlx tenant workspaces and account access.
-            </div>
-        </div>
+        .tenant-pagination a:hover {
+            border-color: #bca7ff;
+            background: #f4f0ff;
+            color: #6d28d9;
+        }
 
-        <?php if (canManagePlatformTenants()): ?>
-            <a
-                href="tenant-add.php"
-                class="tenant-add-button"
-            >
-                <i class="bi bi-building-add"></i>
-                Add Tenant
-            </a>
-        <?php endif; ?>
-    </div>
+        .tenant-pagination .active {
+            border-color: #7c3aed;
+            background: #7c3aed;
+            color: #ffffff;
+        }
 
-    <div class="tenant-summary-grid">
+        .tenant-pagination .disabled {
+            color: #c1bbc9;
+            cursor: not-allowed;
+        }
 
-        <a
-            href="tenants.php"
-            class="tenant-summary-card <?= $statusFilter === ''
-                ? 'selected'
-                : ''; ?>"
-        >
-            <span class="tenant-summary-icon total">
-                <i class="bi bi-buildings"></i>
-            </span>
+        @media (max-width: 1100px) {
+            .tenant-summary {
+                grid-template-columns:
+                    repeat(2, minmax(0, 1fr));
+            }
 
-            <span>
-                <span class="tenant-summary-label">
-                    Total
-                </span>
+            .tenant-toolbar {
+                grid-template-columns:
+                    repeat(2, minmax(0, 1fr));
+            }
 
-                <span class="tenant-summary-value">
-                    <?= number_format($summary['total']); ?>
-                </span>
-            </span>
-        </a>
+            .tenant-search {
+                grid-column: span 2;
+            }
+        }
 
-        <a
-            href="tenants.php?status=active"
-            class="tenant-summary-card <?= $statusFilter === 'active'
-                ? 'selected'
-                : ''; ?>"
-        >
-            <span class="tenant-summary-icon active">
-                <i class="bi bi-check-circle"></i>
-            </span>
+        @media (max-width: 991.98px) {
+            .fp-main,
+            body.fp-sidebar-collapsed .fp-main {
+                margin-left: 0;
+            }
 
-            <span>
-                <span class="tenant-summary-label">
-                    Active
-                </span>
+            .fp-search {
+                display: none;
+            }
 
-                <span class="tenant-summary-value">
-                    <?= number_format($summary['active']); ?>
-                </span>
-            </span>
-        </a>
+            .fp-profile-text {
+                display: none;
+            }
 
-        <a
-            href="tenants.php?status=trial"
-            class="tenant-summary-card <?= $statusFilter === 'trial'
-                ? 'selected'
-                : ''; ?>"
-        >
-            <span class="tenant-summary-icon trial">
-                <i class="bi bi-clock-history"></i>
-            </span>
+            .fp-mobile-brand {
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                color: #ffffff;
+                font-weight: 700;
+            }
+        }
 
-            <span>
-                <span class="tenant-summary-label">
-                    Trial
-                </span>
+        @media (max-width: 700px) {
+            .tenant-page-header {
+                flex-direction: column;
+            }
 
-                <span class="tenant-summary-value">
-                    <?= number_format($summary['trial']); ?>
-                </span>
-            </span>
-        </a>
+            .tenant-add-button {
+                width: 100%;
+            }
 
-        <a
-            href="tenants.php?status=pending"
-            class="tenant-summary-card <?= in_array(
-                $statusFilter,
-                array('pending', 'pending_approval'),
-                true
-            )
-                ? 'selected'
-                : ''; ?>"
-        >
-            <span class="tenant-summary-icon pending">
-                <i class="bi bi-hourglass-split"></i>
-            </span>
+            .tenant-summary,
+            .tenant-toolbar {
+                grid-template-columns: 1fr;
+            }
 
-            <span>
-                <span class="tenant-summary-label">
-                    Pending
-                </span>
+            .tenant-search {
+                grid-column: span 1;
+            }
 
-                <span class="tenant-summary-value">
-                    <?= number_format($summary['pending']); ?>
-                </span>
-            </span>
-        </a>
+            .tenant-pagination-bar {
+                align-items: flex-start;
+                flex-direction: column;
+            }
 
-        <a
-            href="tenants.php?status=suspended"
-            class="tenant-summary-card <?= $statusFilter === 'suspended'
-                ? 'selected'
-                : ''; ?>"
-        >
-            <span class="tenant-summary-icon suspended">
-                <i class="bi bi-slash-circle"></i>
-            </span>
+            .tenant-pagination {
+                margin-left: 0;
+                flex-wrap: wrap;
+            }
+        }
 
-            <span>
-                <span class="tenant-summary-label">
-                    Suspended
-                </span>
+        @media (max-width: 575.98px) {
+            .fp-topbar-inner {
+                padding: 8px 11px;
+            }
 
-                <span class="tenant-summary-value">
-                    <?= number_format($summary['suspended']); ?>
-                </span>
-            </span>
-        </a>
+            .fp-page-subtitle {
+                display: none;
+            }
 
-    </div>
+            .fp-page-title {
+                font-size: 13px;
+            }
 
-    <div class="tenant-list-card">
+            .fp-content {
+                padding: 12px;
+            }
+        }
+    </style>
+</head>
 
-        <form
-            method="get"
-            class="tenant-toolbar"
-            id="tenantFilterForm"
-        >
-            <div class="tenant-search">
-                <i class="bi bi-search"></i>
+<body>
 
-                <input
-                    type="search"
-                    name="search"
-                    class="form-control tenant-control"
-                    value="<?= tenantPageEscape($search); ?>"
-                    placeholder="Search tenant, email, phone or code..."
-                    autocomplete="off"
-                >
-            </div>
+<div class="fp-layout">
 
-            <?php if ($statusColumn !== ''): ?>
-                <select
-                    name="status"
-                    class="form-select tenant-control"
-                    style="width:150px;"
-                >
-                    <option value="">All statuses</option>
+    <?php
+    require_once __DIR__ . '/includes/sidebar.php';
+    ?>
 
-                    <option
-                        value="active"
-                        <?= $statusFilter === 'active'
-                            ? 'selected'
-                            : ''; ?>
+    <main class="fp-main">
+
+        <?php
+        require_once __DIR__ . '/includes/topbar.php';
+        ?>
+
+        <div class="fp-content">
+
+            <div class="tenant-page">
+
+                <div class="tenant-page-header">
+                    <div>
+                        <h2 class="tenant-page-title">
+                            All Tenants
+                        </h2>
+
+                        <div class="tenant-page-description">
+                            Manage FieldPlx business workspaces,
+                            subscriptions, users and business locations.
+                        </div>
+                    </div>
+
+                    <a
+                        href="tenant-add.php"
+                        class="tenant-add-button"
                     >
-                        Active
-                    </option>
+                        <i class="bi bi-plus-lg"></i>
+                        Add Tenant
+                    </a>
+                </div>
 
-                    <option
-                        value="trial"
-                        <?= $statusFilter === 'trial'
-                            ? 'selected'
-                            : ''; ?>
+                <section class="tenant-summary">
+
+                    <article class="tenant-summary-card">
+                        <span class="tenant-summary-icon">
+                            <i class="bi bi-buildings"></i>
+                        </span>
+
+                        <span>
+                            <span class="tenant-summary-label">
+                                Total Tenants
+                            </span>
+
+                            <span class="tenant-summary-value">
+                                <?= number_format(
+                                    $totalTenants
+                                ); ?>
+                            </span>
+                        </span>
+                    </article>
+
+                    <article class="tenant-summary-card">
+                        <span class="tenant-summary-icon">
+                            <i class="bi bi-check-circle"></i>
+                        </span>
+
+                        <span>
+                            <span class="tenant-summary-label">
+                                Active
+                            </span>
+
+                            <span class="tenant-summary-value">
+                                <?= number_format(
+                                    $activeTenants
+                                ); ?>
+                            </span>
+                        </span>
+                    </article>
+
+                    <article class="tenant-summary-card">
+                        <span class="tenant-summary-icon">
+                            <i class="bi bi-hourglass-split"></i>
+                        </span>
+
+                        <span>
+                            <span class="tenant-summary-label">
+                                Trial
+                            </span>
+
+                            <span class="tenant-summary-value">
+                                <?= number_format(
+                                    $trialTenants
+                                ); ?>
+                            </span>
+                        </span>
+                    </article>
+
+                    <article class="tenant-summary-card">
+                        <span class="tenant-summary-icon">
+                            <i class="bi bi-slash-circle"></i>
+                        </span>
+
+                        <span>
+                            <span class="tenant-summary-label">
+                                Suspended
+                            </span>
+
+                            <span class="tenant-summary-value">
+                                <?= number_format(
+                                    $suspendedTenants
+                                ); ?>
+                            </span>
+                        </span>
+                    </article>
+
+                </section>
+
+                <section class="tenant-card">
+
+                    <form
+                        method="get"
+                        action="tenants.php"
+                        class="tenant-toolbar"
+                        id="tenantFilterForm"
                     >
-                        Trial
-                    </option>
 
-                    <option
-                        value="pending"
-                        <?= in_array(
-                            $statusFilter,
-                            array(
-                                'pending',
-                                'pending_approval'
-                            ),
-                            true
-                        )
-                            ? 'selected'
-                            : ''; ?>
-                    >
-                        Pending
-                    </option>
+                        <div class="tenant-search">
+                            <i
+                                class="bi bi-search tenant-search-icon"
+                            ></i>
 
-                    <option
-                        value="suspended"
-                        <?= $statusFilter === 'suspended'
-                            ? 'selected'
-                            : ''; ?>
-                    >
-                        Suspended
-                    </option>
+                            <input
+                                type="search"
+                                name="search"
+                                id="tenantSearchInput"
+                                class="form-control tenant-control"
+                                value="<?= tenantEscape(
+                                    $search
+                                ); ?>"
+                                placeholder="Search tenant code, company, email, phone, location, country or plan..."
+                                autocomplete="off"
+                            >
 
-                    <option
-                        value="inactive"
-                        <?= $statusFilter === 'inactive'
-                            ? 'selected'
-                            : ''; ?>
-                    >
-                        Inactive
-                    </option>
-                </select>
-            <?php endif; ?>
+                            <div
+                                class="search-countdown"
+                                id="tenantSearchCountdown"
+                            ></div>
+                        </div>
 
-            <select
-                name="sort"
-                class="form-select tenant-control"
-                style="width:145px;"
-            >
-                <option
-                    value="latest"
-                    <?= $sort === 'latest'
-                        ? 'selected'
-                        : ''; ?>
-                >
-                    Latest first
-                </option>
+                        <select
+                            name="status"
+                            class="form-select tenant-control"
+                            id="tenantStatusFilter"
+                        >
+                            <option value="">
+                                All Status
+                            </option>
 
-                <option
-                    value="oldest"
-                    <?= $sort === 'oldest'
-                        ? 'selected'
-                        : ''; ?>
-                >
-                    Oldest first
-                </option>
+                            <option
+                                value="active"
+                                <?= $status === 'active'
+                                    ? 'selected'
+                                    : ''; ?>
+                            >
+                                Active
+                            </option>
 
-                <option
-                    value="name_asc"
-                    <?= $sort === 'name_asc'
-                        ? 'selected'
-                        : ''; ?>
-                >
-                    Name A-Z
-                </option>
+                            <option
+                                value="trial"
+                                <?= $status === 'trial'
+                                    ? 'selected'
+                                    : ''; ?>
+                            >
+                                Trial
+                            </option>
 
-                <option
-                    value="name_desc"
-                    <?= $sort === 'name_desc'
-                        ? 'selected'
-                        : ''; ?>
-                >
-                    Name Z-A
-                </option>
-            </select>
+                            <option
+                                value="expired"
+                                <?= $status === 'expired'
+                                    ? 'selected'
+                                    : ''; ?>
+                            >
+                                Expired
+                            </option>
 
-            <select
-                name="per_page"
-                class="form-select tenant-control"
-                style="width:95px;"
-            >
-                <?php foreach ($allowedPerPage as $size): ?>
-                    <option
-                        value="<?= (int) $size; ?>"
-                        <?= $perPage === $size
-                            ? 'selected'
-                            : ''; ?>
-                    >
-                        <?= (int) $size; ?> rows
-                    </option>
-                <?php endforeach; ?>
-            </select>
+                            <option
+                                value="suspended"
+                                <?= $status === 'suspended'
+                                    ? 'selected'
+                                    : ''; ?>
+                            >
+                                Suspended
+                            </option>
 
-            <button
-                type="submit"
-                class="tenant-filter-button"
-            >
-                <i class="bi bi-funnel"></i>
-                Apply
-            </button>
+                            <option
+                                value="cancelled"
+                                <?= $status === 'cancelled'
+                                    ? 'selected'
+                                    : ''; ?>
+                            >
+                                Cancelled
+                            </option>
 
-            <?php if (
-                $search !== '' ||
-                $statusFilter !== '' ||
-                $sort !== 'latest' ||
-                $perPage !== 15
-            ): ?>
-                <a
-                    href="tenants.php"
-                    class="tenant-clear-button"
-                    title="Clear filters"
-                >
-                    <i class="bi bi-x-lg"></i>
-                </a>
-            <?php endif; ?>
-        </form>
+                            <option
+                                value="archived"
+                                <?= $status === 'archived'
+                                    ? 'selected'
+                                    : ''; ?>
+                            >
+                                Archived
+                            </option>
+                        </select>
 
-        <?php if (empty($tenants)): ?>
-            <div class="tenant-empty">
-                <i class="bi bi-buildings"></i>
+                        <select
+                            name="plan"
+                            class="form-select tenant-control"
+                            id="tenantPlanFilter"
+                        >
+                            <option value="">
+                                All Plans
+                            </option>
 
-                No tenant records matched your filters.
-            </div>
-        <?php else: ?>
-
-            <div class="tenant-table-wrap">
-                <table class="tenant-table">
-                    <thead>
-                        <tr>
-                            <th>Tenant</th>
-                            <th>Contact</th>
-                            <th>Status</th>
-
-                            <?php if ($trialEndColumn !== ''): ?>
-                                <th>Trial Ends</th>
-                            <?php endif; ?>
-
-                            <th>Created</th>
-                            <th style="text-align:right;">
-                                Actions
-                            </th>
-                        </tr>
-                    </thead>
-
-                    <tbody>
-                        <?php foreach ($tenants as $tenant): ?>
                             <?php
-                            $tenantName = trim(
-                                (string) $tenant['tenant_name']
-                            );
-
-                            $tenantStatus = strtolower(
-                                trim(
-                                    (string)
-                                    $tenant['tenant_status']
-                                )
-                            );
-
-                            $tenantLogo = trim(
-                                (string) $tenant['tenant_logo']
-                            );
+                            foreach ($planOptions as $planName):
                             ?>
-
-                            <tr>
-                                <td>
-                                    <div class="tenant-business">
-                                        <span class="tenant-avatar">
-                                            <?php if ($tenantLogo !== ''): ?>
-                                                <img
-                                                    src="../<?= tenantPageEscape(
-                                                        ltrim(
-                                                            $tenantLogo,
-                                                            '/'
-                                                        )
-                                                    ); ?>"
-                                                    alt=""
-                                                >
-                                            <?php else: ?>
-                                                <?= tenantPageEscape(
-                                                    tenantPageInitials(
-                                                        $tenantName
-                                                    )
-                                                ); ?>
-                                            <?php endif; ?>
-                                        </span>
-
-                                        <span style="min-width:0;">
-                                            <span class="tenant-name">
-                                                <?= tenantPageEscape(
-                                                    $tenantName !== ''
-                                                        ? $tenantName
-                                                        : 'Unnamed Tenant'
-                                                ); ?>
-                                            </span>
-
-                                            <span class="tenant-code">
-                                                <?php if (
-                                                    !empty(
-                                                        $tenant[
-                                                            'tenant_code'
-                                                        ]
-                                                    )
-                                                ): ?>
-                                                    <?= tenantPageEscape(
-                                                        $tenant[
-                                                            'tenant_code'
-                                                        ]
-                                                    ); ?>
-                                                <?php else: ?>
-                                                    Tenant ID:
-                                                    <?= (int)
-                                                        $tenant[
-                                                            'tenant_id'
-                                                        ]; ?>
-                                                <?php endif; ?>
-                                            </span>
-                                        </span>
-                                    </div>
-                                </td>
-
-                                <td>
-                                    <div class="tenant-contact">
-                                        <span class="tenant-contact-line">
-                                            <?= !empty(
-                                                $tenant['tenant_email']
-                                            )
-                                                ? tenantPageEscape(
-                                                    $tenant[
-                                                        'tenant_email'
-                                                    ]
-                                                )
-                                                : '—'; ?>
-                                        </span>
-
-                                        <span class="tenant-contact-line">
-                                            <?= !empty(
-                                                $tenant['tenant_phone']
-                                            )
-                                                ? tenantPageEscape(
-                                                    $tenant[
-                                                        'tenant_phone'
-                                                    ]
-                                                )
-                                                : 'No phone number'; ?>
-                                        </span>
-                                    </div>
-                                </td>
-
-                                <td>
-                                    <span
-                                        class="tenant-status <?= tenantPageEscape(
-                                            tenantPageStatusClass(
-                                                $tenantStatus
-                                            )
-                                        ); ?>"
-                                    >
-                                        <?= tenantPageEscape(
-                                            tenantPageStatusLabel(
-                                                $tenantStatus
-                                            )
-                                        ); ?>
-                                    </span>
-                                </td>
-
-                                <?php if ($trialEndColumn !== ''): ?>
-                                    <td>
-                                        <?= tenantPageEscape(
-                                            tenantPageDate(
-                                                $tenant[
-                                                    'trial_ends_at'
-                                                ]
-                                            )
-                                        ); ?>
-                                    </td>
-                                <?php endif; ?>
-
-                                <td>
-                                    <?= tenantPageEscape(
-                                        tenantPageDate(
-                                            $tenant[
-                                                'tenant_created_at'
-                                            ]
+                                <option
+                                    value="<?= tenantEscape(
+                                        $planName
+                                    ); ?>"
+                                    <?= strtolower($plan) ===
+                                        strtolower($planName)
+                                            ? 'selected'
+                                            : ''; ?>
+                                >
+                                    <?= tenantEscape(
+                                        tenantLabel(
+                                            $planName
                                         )
                                     ); ?>
-                                </td>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
 
-                                <td>
-                                    <div class="tenant-actions">
-                                        <a
-                                            href="tenant-view.php?id=<?= (int)
-                                                $tenant[
-                                                    'tenant_id'
-                                                ]; ?>"
-                                            class="tenant-action-button"
-                                            title="View tenant"
-                                        >
-                                            <i class="bi bi-eye"></i>
-                                        </a>
-
-                                        <?php if (
-                                            canManagePlatformTenants()
-                                        ): ?>
-                                            <a
-                                                href="tenant-edit.php?id=<?= (int)
-                                                    $tenant[
-                                                        'tenant_id'
-                                                    ]; ?>"
-                                                class="tenant-action-button"
-                                                title="Edit tenant"
-                                            >
-                                                <i class="bi bi-pencil"></i>
-                                            </a>
-                                        <?php endif; ?>
-
-                                        <?php if (
-                                            canProvidePlatformSupport()
-                                        ): ?>
-                                            <a
-                                                href="support-access.php?tenant_id=<?= (int)
-                                                    $tenant[
-                                                        'tenant_id'
-                                                    ]; ?>"
-                                                class="tenant-action-button"
-                                                title="Support access"
-                                            >
-                                                <i class="bi bi-headset"></i>
-                                            </a>
-                                        <?php endif; ?>
-                                    </div>
-                                </td>
-                            </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-            </div>
-
-        <?php endif; ?>
-
-        <div class="tenant-pagination-bar">
-            <div class="tenant-pagination-info">
-                Showing
-                <?= number_format($startRecord); ?>
-                to
-                <?= number_format($endRecord); ?>
-                of
-                <?= number_format($totalRecords); ?>
-                tenants
-            </div>
-
-            <?php if ($totalPages > 1): ?>
-                <nav aria-label="Tenant pagination">
-                    <ul class="tenant-pagination">
-                        <li>
-                            <?php if ($page > 1): ?>
-                                <a
-                                    href="?<?= tenantPageEscape(
-                                        tenantPageBuildQuery(
-                                            array(
-                                                'page' =>
-                                                    $page - 1
-                                            )
-                                        )
-                                    ); ?>"
-                                    aria-label="Previous"
+                        <select
+                            name="per_page"
+                            class="form-select tenant-control"
+                            id="tenantPerPage"
+                        >
+                            <?php
+                            foreach (
+                                $allowedPerPage as $size
+                            ):
+                            ?>
+                                <option
+                                    value="<?= (int) $size; ?>"
+                                    <?= $perPage === $size
+                                        ? 'selected'
+                                        : ''; ?>
                                 >
-                                    <i class="bi bi-chevron-left"></i>
-                                </a>
-                            <?php else: ?>
-                                <span class="disabled">
-                                    <i class="bi bi-chevron-left"></i>
-                                </span>
-                            <?php endif; ?>
-                        </li>
+                                    <?= (int) $size; ?> / page
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
 
-                        <?php if ($paginationStart > 1): ?>
-                            <li>
-                                <a
-                                    href="?<?= tenantPageEscape(
-                                        tenantPageBuildQuery(
-                                            array('page' => 1)
-                                        )
-                                    ); ?>"
-                                >
-                                    1
-                                </a>
-                            </li>
+                        <input
+                            type="hidden"
+                            name="page"
+                            id="tenantPageInput"
+                            value="1"
+                        >
 
-                            <?php if ($paginationStart > 2): ?>
-                                <li>
-                                    <span>…</span>
-                                </li>
-                            <?php endif; ?>
-                        <?php endif; ?>
+                    </form>
 
-                        <?php for (
-                            $pageNumber = $paginationStart;
-                            $pageNumber <= $paginationEnd;
-                            $pageNumber++
-                        ): ?>
-                            <li>
-                                <?php if ($pageNumber === $page): ?>
-                                    <span class="active">
-                                        <?= (int) $pageNumber; ?>
-                                    </span>
-                                <?php else: ?>
-                                    <a
-                                        href="?<?= tenantPageEscape(
-                                            tenantPageBuildQuery(
-                                                array(
-                                                    'page' =>
-                                                        $pageNumber
+                    <?php if (empty($tenants)): ?>
+
+                        <div class="tenant-empty">
+                            <i class="bi bi-search"></i>
+
+                            <h3>
+                                No tenants found
+                            </h3>
+
+                            <p>
+                                Change the search or filter
+                                values and try again.
+                            </p>
+                        </div>
+
+                    <?php else: ?>
+
+                        <div class="tenant-table-wrap">
+
+                            <table class="tenant-table">
+                                <thead>
+                                <tr>
+                                    <th style="width:56px;">
+                                        S.No
+                                    </th>
+                                    <th>Tenant</th>
+                                    <th>Contact</th>
+                                    <th>Country</th>
+                                    <th>Plan</th>
+                                    <th style="text-align:center;">
+                                        Users
+                                    </th>
+                                    <th style="text-align:center;">
+                                        Locations
+                                    </th>
+                                    <th>Status</th>
+                                    <th>Joined</th>
+                                    <th style="text-align:right;">
+                                        Action
+                                    </th>
+                                </tr>
+                                </thead>
+
+                                <tbody>
+
+                                <?php
+                                foreach (
+                                    $tenants as $index => $tenant
+                                ):
+                                ?>
+                                    <tr>
+
+                                        <td>
+                                            <?= (int) (
+                                                $offset +
+                                                $index +
+                                                1
+                                            ); ?>
+                                        </td>
+
+                                        <td>
+                                            <div class="tenant-main">
+
+                                                <span class="tenant-logo">
+
+                                                    <?php
+                                                    if (
+                                                        !empty(
+                                                            $tenant[
+                                                                'logo_path'
+                                                            ]
+                                                        )
+                                                    ):
+                                                    ?>
+                                                        <img
+                                                            src="<?= tenantEscape(
+                                                                $tenant[
+                                                                    'logo_path'
+                                                                ]
+                                                            ); ?>"
+                                                            alt=""
+                                                            onerror="this.style.display='none';this.nextElementSibling.style.display='inline';"
+                                                        >
+                                                        <span style="display:none;">
+                                                            <?= tenantEscape(
+                                                                tenantInitials(
+                                                                    $tenant[
+                                                                        'display_name'
+                                                                    ]
+                                                                )
+                                                            ); ?>
+                                                        </span>
+                                                    <?php else: ?>
+                                                        <?= tenantEscape(
+                                                            tenantInitials(
+                                                                $tenant[
+                                                                    'display_name'
+                                                                ]
+                                                            )
+                                                        ); ?>
+                                                    <?php endif; ?>
+
+                                                </span>
+
+                                                <span>
+                                                    <span class="tenant-company">
+                                                        <?= tenantEscape(
+                                                            $tenant[
+                                                                'display_name'
+                                                            ]
+                                                        ); ?>
+                                                    </span>
+
+                                                    <span class="tenant-code">
+                                                        <?= tenantEscape(
+                                                            $tenant['tenant_code']
+                                                        ); ?>
+                                                    </span>
+                                                </span>
+
+                                            </div>
+                                        </td>
+
+                                        <td>
+                                            <div class="tenant-contact">
+                                                <strong>
+                                                    <?= tenantEscape(
+                                                        !empty(
+                                                            $tenant['email']
+                                                        )
+                                                            ? $tenant['email']
+                                                            : '—'
+                                                    ); ?>
+                                                </strong>
+
+                                                <span>
+                                                    <?= tenantEscape(
+                                                        !empty(
+                                                            $tenant['phone']
+                                                        )
+                                                            ? $tenant['phone']
+                                                            : '—'
+                                                    ); ?>
+                                                </span>
+                                            </div>
+                                        </td>
+
+                                        <td>
+                                            <?= tenantEscape(
+                                                !empty(
+                                                    $tenant['country']
                                                 )
-                                            )
-                                        ); ?>"
-                                    >
-                                        <?= (int) $pageNumber; ?>
-                                    </a>
-                                <?php endif; ?>
-                            </li>
-                        <?php endfor; ?>
+                                                    ? $tenant['country']
+                                                    : '—'
+                                            ); ?>
+                                        </td>
 
-                        <?php if (
-                            $paginationEnd < $totalPages
-                        ): ?>
-                            <?php if (
-                                $paginationEnd <
-                                $totalPages - 1
-                            ): ?>
+                                        <td>
+                                            <span class="tenant-plan-badge">
+                                                <?= tenantEscape(
+                                                    tenantLabel(
+                                                        $tenant[
+                                                            'plan_name'
+                                                        ]
+                                                    )
+                                                ); ?>
+                                            </span>
+                                        </td>
+
+                                        <td style="text-align:center;">
+                                            <?= number_format(
+                                                (int)
+                                                $tenant['user_count']
+                                            ); ?>
+                                        </td>
+
+                                        <td style="text-align:center;">
+                                            <?= number_format(
+                                                (int)
+                                                $tenant['branch_count']
+                                            ); ?>
+                                        </td>
+
+                                        <td>
+                                            <span
+                                                class="tenant-status <?= tenantEscape(
+                                                    $tenant['status']
+                                                ); ?>"
+                                            >
+                                                <?= tenantEscape(
+                                                    tenantLabel(
+                                                        $tenant['status']
+                                                    )
+                                                ); ?>
+                                            </span>
+                                        </td>
+
+                                        <td>
+                                            <?= tenantEscape(
+                                                tenantDate(
+                                                    $tenant['created_at']
+                                                )
+                                            ); ?>
+                                        </td>
+
+                                        <td>
+                                            <div class="tenant-actions">
+
+                                                <a
+                                                    href="tenant-view.php?id=<?= (int)
+                                                        $tenant['id']; ?>"
+                                                    class="tenant-action"
+                                                    title="View Tenant"
+                                                >
+                                                    <i class="bi bi-eye"></i>
+                                                </a>
+
+                                                <a
+                                                    href="tenant-edit.php?id=<?= (int)
+                                                        $tenant['id']; ?>"
+                                                    class="tenant-action"
+                                                    title="Edit Tenant"
+                                                >
+                                                    <i class="bi bi-pencil"></i>
+                                                </a>
+
+                                                <a
+                                                    href="tenant-users.php?tenant_id=<?= (int)
+                                                        $tenant['id']; ?>"
+                                                    class="tenant-action"
+                                                    title="Tenant Users"
+                                                >
+                                                    <i class="bi bi-people"></i>
+                                                </a>
+
+                                            </div>
+                                        </td>
+
+                                    </tr>
+                                <?php endforeach; ?>
+
+                                </tbody>
+                            </table>
+
+                        </div>
+
+                    <?php endif; ?>
+
+                    <div class="tenant-pagination-bar">
+
+                        <div class="tenant-pagination-info">
+                            Showing
+                            <?= number_format($startRecord); ?>
+                            to
+                            <?= number_format($endRecord); ?>
+                            of
+                            <?= number_format($totalRecords); ?>
+                            tenants
+                        </div>
+
+                        <?php if ($totalPages > 1): ?>
+
+                            <ul class="tenant-pagination">
+
                                 <li>
-                                    <span>…</span>
+                                    <?php if ($page > 1): ?>
+                                        <a
+                                            href="<?= tenantEscape(
+                                                tenantUrl(
+                                                    array(
+                                                        'page' => 1
+                                                    )
+                                                )
+                                            ); ?>"
+                                            title="First Page"
+                                        >
+                                            <i class="bi bi-chevron-double-left"></i>
+                                        </a>
+                                    <?php else: ?>
+                                        <span class="disabled">
+                                            <i class="bi bi-chevron-double-left"></i>
+                                        </span>
+                                    <?php endif; ?>
                                 </li>
-                            <?php endif; ?>
 
-                            <li>
-                                <a
-                                    href="?<?= tenantPageEscape(
-                                        tenantPageBuildQuery(
-                                            array(
-                                                'page' =>
-                                                    $totalPages
-                                            )
-                                        )
-                                    ); ?>"
-                                >
-                                    <?= (int) $totalPages; ?>
-                                </a>
-                            </li>
+                                <li>
+                                    <?php if ($page > 1): ?>
+                                        <a
+                                            href="<?= tenantEscape(
+                                                tenantUrl(
+                                                    array(
+                                                        'page' => $page - 1
+                                                    )
+                                                )
+                                            ); ?>"
+                                            title="Previous Page"
+                                        >
+                                            <i class="bi bi-chevron-left"></i>
+                                        </a>
+                                    <?php else: ?>
+                                        <span class="disabled">
+                                            <i class="bi bi-chevron-left"></i>
+                                        </span>
+                                    <?php endif; ?>
+                                </li>
+
+                                <?php
+                                if ($paginationStart > 1):
+                                ?>
+                                    <li>
+                                        <a
+                                            href="<?= tenantEscape(
+                                                tenantUrl(
+                                                    array(
+                                                        'page' => 1
+                                                    )
+                                                )
+                                            ); ?>"
+                                        >
+                                            1
+                                        </a>
+                                    </li>
+
+                                    <?php
+                                    if ($paginationStart > 2):
+                                    ?>
+                                        <li>
+                                            <span>…</span>
+                                        </li>
+                                    <?php endif; ?>
+                                <?php endif; ?>
+
+                                <?php
+                                for (
+                                    $pageNumber =
+                                        $paginationStart;
+                                    $pageNumber <=
+                                        $paginationEnd;
+                                    $pageNumber++
+                                ):
+                                ?>
+                                    <li>
+                                        <?php
+                                        if (
+                                            $pageNumber === $page
+                                        ):
+                                        ?>
+                                            <span class="active">
+                                                <?= (int)
+                                                    $pageNumber; ?>
+                                            </span>
+                                        <?php else: ?>
+                                            <a
+                                                href="<?= tenantEscape(
+                                                    tenantUrl(
+                                                        array(
+                                                            'page' =>
+                                                                $pageNumber
+                                                        )
+                                                    )
+                                                ); ?>"
+                                            >
+                                                <?= (int)
+                                                    $pageNumber; ?>
+                                            </a>
+                                        <?php endif; ?>
+                                    </li>
+                                <?php endfor; ?>
+
+                                <?php
+                                if (
+                                    $paginationEnd <
+                                    $totalPages
+                                ):
+                                ?>
+
+                                    <?php
+                                    if (
+                                        $paginationEnd <
+                                        $totalPages - 1
+                                    ):
+                                    ?>
+                                        <li>
+                                            <span>…</span>
+                                        </li>
+                                    <?php endif; ?>
+
+                                    <li>
+                                        <a
+                                            href="<?= tenantEscape(
+                                                tenantUrl(
+                                                    array(
+                                                        'page' =>
+                                                            $totalPages
+                                                    )
+                                                )
+                                            ); ?>"
+                                        >
+                                            <?= (int)
+                                                $totalPages; ?>
+                                        </a>
+                                    </li>
+                                <?php endif; ?>
+
+                                <li>
+                                    <?php
+                                    if ($page < $totalPages):
+                                    ?>
+                                        <a
+                                            href="<?= tenantEscape(
+                                                tenantUrl(
+                                                    array(
+                                                        'page' =>
+                                                            $page + 1
+                                                    )
+                                                )
+                                            ); ?>"
+                                            title="Next Page"
+                                        >
+                                            <i class="bi bi-chevron-right"></i>
+                                        </a>
+                                    <?php else: ?>
+                                        <span class="disabled">
+                                            <i class="bi bi-chevron-right"></i>
+                                        </span>
+                                    <?php endif; ?>
+                                </li>
+
+                                <li>
+                                    <?php
+                                    if ($page < $totalPages):
+                                    ?>
+                                        <a
+                                            href="<?= tenantEscape(
+                                                tenantUrl(
+                                                    array(
+                                                        'page' =>
+                                                            $totalPages
+                                                    )
+                                                )
+                                            ); ?>"
+                                            title="Last Page"
+                                        >
+                                            <i class="bi bi-chevron-double-right"></i>
+                                        </a>
+                                    <?php else: ?>
+                                        <span class="disabled">
+                                            <i class="bi bi-chevron-double-right"></i>
+                                        </span>
+                                    <?php endif; ?>
+                                </li>
+
+                            </ul>
+
                         <?php endif; ?>
 
-                        <li>
-                            <?php if ($page < $totalPages): ?>
-                                <a
-                                    href="?<?= tenantPageEscape(
-                                        tenantPageBuildQuery(
-                                            array(
-                                                'page' =>
-                                                    $page + 1
-                                            )
-                                        )
-                                    ); ?>"
-                                    aria-label="Next"
-                                >
-                                    <i class="bi bi-chevron-right"></i>
-                                </a>
-                            <?php else: ?>
-                                <span class="disabled">
-                                    <i class="bi bi-chevron-right"></i>
-                                </span>
-                            <?php endif; ?>
-                        </li>
-                    </ul>
-                </nav>
-            <?php endif; ?>
+                    </div>
+
+                </section>
+
+            </div>
+
         </div>
 
-    </div>
+    </main>
+
 </div>
+
+<?php
+require_once __DIR__ . '/includes/footer.php';
+?>
+
+<script
+    src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
+></script>
 
 <script>
 (function () {
     'use strict';
 
-    const form = document.getElementById(
-        'tenantFilterForm'
-    );
+    /*
+    |--------------------------------------------------------------------------
+    | Persistent Sidebar
+    |--------------------------------------------------------------------------
+    */
 
-    if (!form) {
-        return;
+    var body = document.body;
+    var toggle =
+        document.getElementById('fpSidebarToggle');
+    var close =
+        document.getElementById('fpSidebarClose');
+    var overlay =
+        document.getElementById('fpSidebarOverlay');
+
+    var SIDEBAR_STORAGE_KEY =
+        'fieldplx_sidebar_collapsed';
+
+    function restoreSidebarState() {
+        if (window.innerWidth < 992) {
+            body.classList.remove(
+                'fp-sidebar-collapsed'
+            );
+            return;
+        }
+
+        var savedState =
+            localStorage.getItem(
+                SIDEBAR_STORAGE_KEY
+            );
+
+        if (savedState === '1') {
+            body.classList.add(
+                'fp-sidebar-collapsed'
+            );
+        } else {
+            body.classList.remove(
+                'fp-sidebar-collapsed'
+            );
+        }
     }
 
-    const selects = form.querySelectorAll(
-        'select'
-    );
+    function saveSidebarState() {
+        var isCollapsed =
+            body.classList.contains(
+                'fp-sidebar-collapsed'
+            );
 
-    selects.forEach(function (select) {
-        select.addEventListener(
-            'change',
+        localStorage.setItem(
+            SIDEBAR_STORAGE_KEY,
+            isCollapsed ? '1' : '0'
+        );
+    }
+
+    restoreSidebarState();
+
+    if (toggle) {
+        toggle.addEventListener(
+            'click',
             function () {
-                form.submit();
+                if (window.innerWidth < 992) {
+                    body.classList.toggle(
+                        'fp-sidebar-mobile-open'
+                    );
+                    return;
+                }
+
+                body.classList.toggle(
+                    'fp-sidebar-collapsed'
+                );
+
+                saveSidebarState();
             }
         );
-    });
+    }
 
-    const searchInput = form.querySelector(
-        'input[name="search"]'
-    );
+    if (close) {
+        close.addEventListener(
+            'click',
+            function () {
+                body.classList.remove(
+                    'fp-sidebar-mobile-open'
+                );
+            }
+        );
+    }
 
-    let searchTimer = null;
+    if (overlay) {
+        overlay.addEventListener(
+            'click',
+            function () {
+                body.classList.remove(
+                    'fp-sidebar-mobile-open'
+                );
+            }
+        );
+    }
+
+    document
+        .querySelectorAll(
+            '.fp-sidebar-menu-toggle'
+        )
+        .forEach(function (button) {
+            button.addEventListener(
+                'click',
+                function () {
+                    var menu =
+                        button.closest(
+                            '.fp-sidebar-menu'
+                        );
+
+                    if (menu) {
+                        menu.classList.toggle(
+                            'open'
+                        );
+                    }
+                }
+            );
+        });
+
+    /*
+    |--------------------------------------------------------------------------
+    | Search & Filters
+    |--------------------------------------------------------------------------
+    */
+
+    var form =
+        document.getElementById(
+            'tenantFilterForm'
+        );
+
+    var searchInput =
+        document.getElementById(
+            'tenantSearchInput'
+        );
+
+    var statusFilter =
+        document.getElementById(
+            'tenantStatusFilter'
+        );
+
+    var planFilter =
+        document.getElementById(
+            'tenantPlanFilter'
+        );
+
+    var perPageFilter =
+        document.getElementById(
+            'tenantPerPage'
+        );
+
+    var pageInput =
+        document.getElementById(
+            'tenantPageInput'
+        );
+
+    var countdown =
+        document.getElementById(
+            'tenantSearchCountdown'
+        );
+
+    var searchTimer = null;
+    var countdownTimer = null;
+
+    function submitFilters() {
+        if (!form) {
+            return;
+        }
+
+        if (pageInput) {
+            pageInput.value = '1';
+        }
+
+        form.submit();
+    }
+
+    /*
+     * Search runs 3 seconds after
+     * the user stops typing.
+     */
 
     if (searchInput) {
         searchInput.addEventListener(
             'input',
             function () {
-                window.clearTimeout(searchTimer);
-
-                searchTimer = window.setTimeout(
-                    function () {
-                        form.submit();
-                    },
-                    600
+                window.clearTimeout(
+                    searchTimer
                 );
+
+                window.clearInterval(
+                    countdownTimer
+                );
+
+                var secondsLeft = 3;
+
+                if (countdown) {
+                    countdown.textContent =
+                        'Searching in 3 seconds...';
+                }
+
+                countdownTimer =
+                    window.setInterval(
+                        function () {
+                            secondsLeft--;
+
+                            if (
+                                secondsLeft > 0 &&
+                                countdown
+                            ) {
+                                countdown.textContent =
+                                    'Searching in ' +
+                                    secondsLeft +
+                                    ' second' +
+                                    (
+                                        secondsLeft === 1
+                                            ? ''
+                                            : 's'
+                                    ) +
+                                    '...';
+                            }
+                        },
+                        1000
+                    );
+
+                searchTimer =
+                    window.setTimeout(
+                        function () {
+                            window.clearInterval(
+                                countdownTimer
+                            );
+
+                            if (countdown) {
+                                countdown.textContent =
+                                    'Loading...';
+                            }
+
+                            submitFilters();
+                        },
+                        3000
+                    );
+            }
+        );
+
+        searchInput.addEventListener(
+            'keydown',
+            function (event) {
+                if (event.key === 'Enter') {
+                    event.preventDefault();
+
+                    window.clearTimeout(
+                        searchTimer
+                    );
+
+                    window.clearInterval(
+                        countdownTimer
+                    );
+
+                    submitFilters();
+                }
             }
         );
     }
+
+    [
+        statusFilter,
+        planFilter,
+        perPageFilter
+    ].forEach(function (control) {
+        if (!control) {
+            return;
+        }
+
+        control.addEventListener(
+            'change',
+            submitFilters
+        );
+    });
+
 })();
 </script>
 
-<?php require __DIR__ . '/includes/footer.php'; ?>
+</body>
+</html>

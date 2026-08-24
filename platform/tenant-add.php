@@ -1,2625 +1,2112 @@
 <?php
 /**
  * FieldPlx Platform - Add Tenant
- *
- * File:
- * platform/tenant-add.php
- *
- * Compatible with:
- * - PHP 7.2
- * - MariaDB / MySQLi
- * - platform_users authentication
+ * PHP 7.2+
+ * PDO
  */
 
-require_once __DIR__ . '/includes/auth.php';
-require_once __DIR__ . '/../includes/csrf.php';
+require_once __DIR__ . '/includes/db.php';
 
-@set_time_limit(30);
-mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+$pageTitle = 'Add Tenant';
+$activePage = 'tenants';
 
-requirePlatformRole(array(
-    'super_admin',
-    'platform_admin'
-));
-
-$pageTitle = 'Add Tenant - FieldPlx';
-$activePage = 'tenant-add';
-$basePath = '';
-
-/*
-|--------------------------------------------------------------------------
-| Helpers
-|--------------------------------------------------------------------------
-*/
-
-if (!function_exists('tenantAddEscape')) {
-    function tenantAddEscape($value)
-    {
-        return htmlspecialchars(
-            (string) ($value === null ? '' : $value),
-            ENT_QUOTES,
-            'UTF-8'
-        );
-    }
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
 }
-
-if (!function_exists('tenantAddPost')) {
-    function tenantAddPost($key, $default = '')
-    {
-        if (
-            !isset($_POST[$key]) ||
-            is_array($_POST[$key])
-        ) {
-            return $default;
-        }
-
-        return trim((string) $_POST[$key]);
-    }
-}
-
-if (!function_exists('tenantAddTableExists')) {
-    function tenantAddTableExists(mysqli $conn, $tableName)
-    {
-        $stmt = $conn->prepare("
-            SELECT COUNT(*) AS total
-            FROM information_schema.tables
-            WHERE table_schema = DATABASE()
-              AND table_name = ?
-        ");
-
-        if (!$stmt) {
-            return false;
-        }
-
-        $stmt->bind_param('s', $tableName);
-
-        if (!$stmt->execute()) {
-            $stmt->close();
-            return false;
-        }
-
-        $result = $stmt->get_result();
-        $row = $result->fetch_assoc();
-
-        $stmt->close();
-
-        return !empty($row['total']);
-    }
-}
-
-if (!function_exists('tenantAddColumnExists')) {
-    function tenantAddColumnExists(
-        mysqli $conn,
-        $tableName,
-        $columnName
-    ) {
-        static $columnCache = array();
-
-        $tableName = trim((string) $tableName);
-        $columnName = trim((string) $columnName);
-
-        if ($tableName === '' || $columnName === '') {
-            return false;
-        }
-
-        if (!isset($columnCache[$tableName])) {
-            $columnCache[$tableName] = array();
-
-            /*
-             * Load the complete table structure only once.
-             * The previous code queried information_schema separately
-             * for every possible field, which made the page very slow.
-             */
-            $safeTableName = str_replace('`', '``', $tableName);
-            $result = $conn->query(
-                "SHOW COLUMNS FROM `{$safeTableName}`"
-            );
-
-            if ($result) {
-                while ($row = $result->fetch_assoc()) {
-                    if (!empty($row['Field'])) {
-                        $columnCache[$tableName][
-                            (string) $row['Field']
-                        ] = true;
-                    }
-                }
-
-                $result->free();
-            }
-        }
-
-        return isset(
-            $columnCache[$tableName][$columnName]
-        );
-    }
-}
-
-if (!function_exists('tenantAddFirstColumn')) {
-    function tenantAddFirstColumn(
-        mysqli $conn,
-        $tableName,
-        array $candidates
-    ) {
-        foreach ($candidates as $candidate) {
-            if (
-                tenantAddColumnExists(
-                    $conn,
-                    $tableName,
-                    $candidate
-                )
-            ) {
-                return $candidate;
-            }
-        }
-
-        return '';
-    }
-}
-
-if (!function_exists('tenantAddColumnDetails')) {
-    function tenantAddColumnDetails(
-        mysqli $conn,
-        $tableName
-    ) {
-        $columns = array();
-
-        $stmt = $conn->prepare("
-            SELECT
-                column_name,
-                data_type,
-                column_type,
-                is_nullable,
-                column_default,
-                extra
-            FROM information_schema.columns
-            WHERE table_schema = DATABASE()
-              AND table_name = ?
-            ORDER BY ordinal_position
-        ");
-
-        if (!$stmt) {
-            return $columns;
-        }
-
-        $stmt->bind_param('s', $tableName);
-
-        if (!$stmt->execute()) {
-            $stmt->close();
-            return $columns;
-        }
-
-        $result = $stmt->get_result();
-
-        while ($row = $result->fetch_assoc()) {
-            $columns[$row['column_name']] = $row;
-        }
-
-        $stmt->close();
-
-        return $columns;
-    }
-}
-
-if (!function_exists('tenantAddSlug')) {
-    function tenantAddSlug($value)
-    {
-        $value = strtolower(trim((string) $value));
-
-        $value = preg_replace(
-            '/[^a-z0-9]+/',
-            '-',
-            $value
-        );
-
-        $value = trim($value, '-');
-
-        return $value;
-    }
-}
-
-if (!function_exists('tenantAddCodeBase')) {
-    function tenantAddCodeBase($name)
-    {
-        $name = strtoupper(
-            preg_replace(
-                '/[^A-Za-z0-9]/',
-                '',
-                (string) $name
-            )
-        );
-
-        if ($name === '') {
-            $name = 'TENANT';
-        }
-
-        return substr($name, 0, 8);
-    }
-}
-
-if (!function_exists('tenantAddGenerateCode')) {
-    function tenantAddGenerateCode(
-        mysqli $conn,
-        $codeColumn,
-        $tenantName
-    ) {
-        $base = tenantAddCodeBase($tenantName);
-
-        for ($attempt = 0; $attempt < 50; $attempt++) {
-            $suffix = date('ymd') .
-                strtoupper(
-                    substr(
-                        bin2hex(random_bytes(3)),
-                        0,
-                        5
-                    )
-                );
-
-            $code = $base . '-' . $suffix;
-
-            $sql = "
-                SELECT COUNT(*) AS total
-                FROM tenants
-                WHERE `{$codeColumn}` = ?
-            ";
-
-            $stmt = $conn->prepare($sql);
-
-            if (!$stmt) {
-                return $code;
-            }
-
-            $stmt->bind_param('s', $code);
-            $stmt->execute();
-
-            $result = $stmt->get_result();
-            $row = $result->fetch_assoc();
-
-            $stmt->close();
-
-            if (empty($row['total'])) {
-                return $code;
-            }
-        }
-
-        return $base . '-' . time();
-    }
-}
-
-if (!function_exists('tenantAddBindParams')) {
-    function tenantAddBindParams(
-        mysqli_stmt $stmt,
-        $types,
-        array &$values
-    ) {
-        $arguments = array($types);
-
-        foreach ($values as $key => $value) {
-            $arguments[] = &$values[$key];
-        }
-
-        return call_user_func_array(
-            array($stmt, 'bind_param'),
-            $arguments
-        );
-    }
-}
-
-if (!function_exists('tenantAddNormaliseDate')) {
-    function tenantAddNormaliseDate($date)
-    {
-        $date = trim((string) $date);
-
-        if ($date === '') {
-            return null;
-        }
-
-        $timestamp = strtotime($date);
-
-        if ($timestamp === false) {
-            return null;
-        }
-
-        return date('Y-m-d', $timestamp);
-    }
-}
-
-if (!function_exists('tenantAddNormaliseDateTime')) {
-    function tenantAddNormaliseDateTime($date)
-    {
-        $date = trim((string) $date);
-
-        if ($date === '') {
-            return null;
-        }
-
-        $timestamp = strtotime($date);
-
-        if ($timestamp === false) {
-            return null;
-        }
-
-        return date('Y-m-d 23:59:59', $timestamp);
-    }
-}
-
-if (!function_exists('tenantAddUploadLogo')) {
-    function tenantAddUploadLogo($fieldName)
-    {
-        if (
-            empty($_FILES[$fieldName]) ||
-            !isset($_FILES[$fieldName]['error']) ||
-            (int) $_FILES[$fieldName]['error'] === UPLOAD_ERR_NO_FILE
-        ) {
-            return array(
-                'success' => true,
-                'path' => ''
-            );
-        }
-
-        $file = $_FILES[$fieldName];
-
-        if ((int) $file['error'] !== UPLOAD_ERR_OK) {
-            return array(
-                'success' => false,
-                'message' => 'Unable to upload the tenant logo.'
-            );
-        }
-
-        if ((int) $file['size'] > 2 * 1024 * 1024) {
-            return array(
-                'success' => false,
-                'message' => 'Tenant logo must not exceed 2 MB.'
-            );
-        }
-
-        $allowedMimeTypes = array(
-            'image/jpeg' => 'jpg',
-            'image/png' => 'png',
-            'image/webp' => 'webp'
-        );
-
-        $mimeType = '';
-
-        if (function_exists('finfo_open')) {
-            $fileInfo = finfo_open(FILEINFO_MIME_TYPE);
-
-            if ($fileInfo) {
-                $mimeType = finfo_file(
-                    $fileInfo,
-                    $file['tmp_name']
-                );
-
-                finfo_close($fileInfo);
-            }
-        }
-
-        if (
-            $mimeType === '' &&
-            function_exists('mime_content_type')
-        ) {
-            $mimeType = mime_content_type(
-                $file['tmp_name']
-            );
-        }
-
-        if (!isset($allowedMimeTypes[$mimeType])) {
-            return array(
-                'success' => false,
-                'message' => 'Upload a JPG, PNG, or WEBP logo.'
-            );
-        }
-
-        $uploadDirectory =
-            __DIR__ . '/../uploads/tenants/logos';
-
-        if (
-            !is_dir($uploadDirectory) &&
-            !mkdir($uploadDirectory, 0755, true)
-        ) {
-            return array(
-                'success' => false,
-                'message' => 'Unable to create the logo upload directory.'
-            );
-        }
-
-        $extension = $allowedMimeTypes[$mimeType];
-
-        $fileName =
-            'tenant-' .
-            date('YmdHis') .
-            '-' .
-            bin2hex(random_bytes(4)) .
-            '.' .
-            $extension;
-
-        $absolutePath =
-            $uploadDirectory . '/' . $fileName;
-
-        if (
-            !move_uploaded_file(
-                $file['tmp_name'],
-                $absolutePath
-            )
-        ) {
-            return array(
-                'success' => false,
-                'message' => 'Unable to save the tenant logo.'
-            );
-        }
-
-        return array(
-            'success' => true,
-            'path' => 'uploads/tenants/logos/' . $fileName
-        );
-    }
-}
-
-/*
-|--------------------------------------------------------------------------
-| Verify tenants table
-|--------------------------------------------------------------------------
-*/
-
-if (!tenantAddTableExists($conn, 'tenants')) {
-    http_response_code(500);
-
-    exit('The tenants table does not exist.');
-}
-
-$tenantColumns = tenantAddColumnDetails(
-    $conn,
-    'tenants'
-);
-
-/*
-|--------------------------------------------------------------------------
-| Detect tenant columns
-|--------------------------------------------------------------------------
-*/
-
-$idColumn = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array('id', 'tenant_id')
-);
-
-$nameColumn = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array(
-        'company_name',
-        'business_name',
-        'tenant_name',
-        'name'
-    )
-);
-
-$codeColumn = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array(
-        'tenant_code',
-        'code',
-        'business_code'
-    )
-);
-
-$slugColumn = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array(
-        'slug',
-        'tenant_slug',
-        'subdomain'
-    )
-);
-
-$emailColumn = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array(
-        'email',
-        'contact_email',
-        'billing_email'
-    )
-);
-
-$phoneColumn = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array(
-        'phone',
-        'mobile',
-        'contact_phone',
-        'contact_mobile'
-    )
-);
-
-$alternatePhoneColumn = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array(
-        'alternate_phone',
-        'alternate_mobile',
-        'phone2'
-    )
-);
-
-$contactNameColumn = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array(
-        'contact_name',
-        'owner_name',
-        'primary_contact_name'
-    )
-);
-
-$addressColumn = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array(
-        'address',
-        'address_line1',
-        'street_address'
-    )
-);
-
-$addressLine2Column = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array(
-        'address_line2',
-        'address2'
-    )
-);
-
-$cityColumn = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array('city')
-);
-
-$stateColumn = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array('state', 'state_name')
-);
-
-$countryColumn = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array('country', 'country_name')
-);
-
-$postalCodeColumn = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array(
-        'postal_code',
-        'pincode',
-        'zip_code'
-    )
-);
-
-$taxNumberColumn = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array(
-        'tax_number',
-        'gst_number',
-        'gstin',
-        'vat_number'
-    )
-);
-
-$statusColumn = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array('status')
-);
-
-$trialStartColumn = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array(
-        'trial_starts_at',
-        'trial_start_date',
-        'trial_start'
-    )
-);
-
-$trialEndColumn = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array(
-        'trial_ends_at',
-        'trial_end_date',
-        'trial_end'
-    )
-);
-
-$logoColumn = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array(
-        'logo_path',
-        'logo',
-        'company_logo'
-    )
-);
-
-$timezoneColumn = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array('timezone')
-);
-
-$currencyColumn = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array(
-        'currency',
-        'currency_code'
-    )
-);
-
-$notesColumn = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array(
-        'notes',
-        'description',
-        'remarks'
-    )
-);
-
-$createdByColumn = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array('created_by')
-);
-
-$updatedByColumn = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array('updated_by')
-);
-
-$createdAtColumn = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array('created_at')
-);
-
-$updatedAtColumn = tenantAddFirstColumn(
-    $conn,
-    'tenants',
-    array('updated_at')
-);
-
-if ($nameColumn === '') {
-    http_response_code(500);
-
-    exit(
-        'A tenant name column was not found in the tenants table.'
-    );
-}
-
-/*
-|--------------------------------------------------------------------------
-| Form values
-|--------------------------------------------------------------------------
-*/
-
-$errorMessage = '';
-
-$companyName = tenantAddPost('company_name');
-$tenantCode = tenantAddPost('tenant_code');
-$tenantSlug = tenantAddPost('tenant_slug');
-
-$contactName = tenantAddPost('contact_name');
-$email = strtolower(tenantAddPost('email'));
-$phone = tenantAddPost('phone');
-$alternatePhone = tenantAddPost('alternate_phone');
-
-$address = tenantAddPost('address');
-$addressLine2 = tenantAddPost('address_line2');
-$city = tenantAddPost('city');
-$state = tenantAddPost('state');
-$country = tenantAddPost('country', 'India');
-$postalCode = tenantAddPost('postal_code');
-$taxNumber = strtoupper(tenantAddPost('tax_number'));
-
-$status = strtolower(
-    tenantAddPost('status', 'trial')
-);
-
-$trialStartDate = tenantAddPost(
-    'trial_start_date',
-    date('Y-m-d')
-);
-
-$trialEndDate = tenantAddPost(
-    'trial_end_date',
-    date(
-        'Y-m-d',
-        strtotime('+14 days')
-    )
-);
-
-$timezone = tenantAddPost(
-    'timezone',
-    'Asia/Kolkata'
-);
-
-$currency = strtoupper(
-    tenantAddPost('currency', 'INR')
-);
-
-$notes = tenantAddPost('notes');
-
-$allowedStatuses = array(
-    'active',
-    'trial',
-    'inactive',
-    'suspended'
-);
-
-if (!in_array($status, $allowedStatuses, true)) {
-    $status = 'trial';
-}
-
-/*
-|--------------------------------------------------------------------------
-| Create tenant
-|--------------------------------------------------------------------------
-*/
 
 if (
-    isset($_SERVER['REQUEST_METHOD']) &&
-    strtoupper($_SERVER['REQUEST_METHOD']) === 'POST'
+    empty($_SESSION['tenant_add_csrf']) ||
+    !is_string($_SESSION['tenant_add_csrf'])
 ) {
-    verifyCsrfToken();
-
-    if ($companyName === '') {
-        $errorMessage =
-            'Enter the tenant or company name.';
-    } elseif (strlen($companyName) > 190) {
-        $errorMessage =
-            'Tenant name must not exceed 190 characters.';
-    } elseif (
-        $email !== '' &&
-        filter_var(
-            $email,
-            FILTER_VALIDATE_EMAIL
-        ) === false
-    ) {
-        $errorMessage =
-            'Enter a valid email address.';
-    } elseif (strlen($phone) > 50) {
-        $errorMessage =
-            'Phone number must not exceed 50 characters.';
-    } elseif (strlen($postalCode) > 20) {
-        $errorMessage =
-            'Postal code must not exceed 20 characters.';
-    } elseif (
-        $status === 'trial' &&
-        $trialEndDate === ''
-    ) {
-        $errorMessage =
-            'Select the trial end date.';
-    } elseif (
-        $status === 'trial' &&
-        tenantAddNormaliseDate($trialStartDate) === null
-    ) {
-        $errorMessage =
-            'Select a valid trial start date.';
-    } elseif (
-        $status === 'trial' &&
-        tenantAddNormaliseDate($trialEndDate) === null
-    ) {
-        $errorMessage =
-            'Select a valid trial end date.';
-    } elseif (
-        $status === 'trial' &&
-        strtotime($trialEndDate) <
-        strtotime($trialStartDate)
-    ) {
-        $errorMessage =
-            'Trial end date cannot be before the start date.';
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Duplicate checks
-    |--------------------------------------------------------------------------
-    */
-
-    if (
-        $errorMessage === '' &&
-        $emailColumn !== '' &&
-        $email !== ''
-    ) {
-        $duplicateEmailSql = "
-            SELECT COUNT(*) AS total
-            FROM tenants
-            WHERE LOWER(`{$emailColumn}`) = ?
-        ";
-
-        $duplicateEmailStmt = $conn->prepare(
-            $duplicateEmailSql
-        );
-
-        if ($duplicateEmailStmt) {
-            $duplicateEmailStmt->bind_param(
-                's',
-                $email
-            );
-
-            $duplicateEmailStmt->execute();
-
-            $duplicateResult =
-                $duplicateEmailStmt->get_result();
-
-            $duplicateRow =
-                $duplicateResult->fetch_assoc();
-
-            $duplicateEmailStmt->close();
-
-            if (!empty($duplicateRow['total'])) {
-                $errorMessage =
-                    'A tenant already exists with this email address.';
-            }
-        }
-    }
-
-    if (
-        $errorMessage === '' &&
-        $codeColumn !== ''
-    ) {
-        if ($tenantCode === '') {
-            $tenantCode = tenantAddGenerateCode(
-                $conn,
-                $codeColumn,
-                $companyName
-            );
-        } else {
-            $tenantCode = strtoupper(
-                preg_replace(
-                    '/[^A-Za-z0-9_-]/',
-                    '',
-                    $tenantCode
-                )
-            );
-
-            $duplicateCodeSql = "
-                SELECT COUNT(*) AS total
-                FROM tenants
-                WHERE `{$codeColumn}` = ?
-            ";
-
-            $duplicateCodeStmt = $conn->prepare(
-                $duplicateCodeSql
-            );
-
-            if ($duplicateCodeStmt) {
-                $duplicateCodeStmt->bind_param(
-                    's',
-                    $tenantCode
-                );
-
-                $duplicateCodeStmt->execute();
-
-                $duplicateResult =
-                    $duplicateCodeStmt->get_result();
-
-                $duplicateRow =
-                    $duplicateResult->fetch_assoc();
-
-                $duplicateCodeStmt->close();
-
-                if (!empty($duplicateRow['total'])) {
-                    $errorMessage =
-                        'This tenant code is already in use.';
-                }
-            }
-        }
-    }
-
-    if (
-        $errorMessage === '' &&
-        $slugColumn !== ''
-    ) {
-        if ($tenantSlug === '') {
-            $tenantSlug = tenantAddSlug($companyName);
-        } else {
-            $tenantSlug = tenantAddSlug($tenantSlug);
-        }
-
-        if ($tenantSlug === '') {
-            $tenantSlug = 'tenant-' . time();
-        }
-
-        $originalSlug = $tenantSlug;
-        $slugNumber = 1;
-
-        while (true) {
-            $slugSql = "
-                SELECT COUNT(*) AS total
-                FROM tenants
-                WHERE `{$slugColumn}` = ?
-            ";
-
-            $slugStmt = $conn->prepare($slugSql);
-
-            if (!$slugStmt) {
-                break;
-            }
-
-            $slugStmt->bind_param(
-                's',
-                $tenantSlug
-            );
-
-            $slugStmt->execute();
-
-            $slugResult = $slugStmt->get_result();
-            $slugRow = $slugResult->fetch_assoc();
-
-            $slugStmt->close();
-
-            if (empty($slugRow['total'])) {
-                break;
-            }
-
-            $slugNumber++;
-            $tenantSlug =
-                $originalSlug . '-' . $slugNumber;
-        }
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Upload logo
-    |--------------------------------------------------------------------------
-    */
-
-    $uploadedLogoPath = '';
-
-    if (
-        $errorMessage === '' &&
-        $logoColumn !== ''
-    ) {
-        $logoUpload = tenantAddUploadLogo(
-            'tenant_logo'
-        );
-
-        if (!$logoUpload['success']) {
-            $errorMessage = $logoUpload['message'];
-        } else {
-            $uploadedLogoPath =
-                $logoUpload['path'];
-        }
-    }
-
-    /*
-    |--------------------------------------------------------------------------
-    | Insert tenant
-    |--------------------------------------------------------------------------
-    */
-
-    if ($errorMessage === '') {
-        $insertData = array();
-
-        $insertData[$nameColumn] =
-            $companyName;
-
-        if ($codeColumn !== '') {
-            $insertData[$codeColumn] =
-                $tenantCode;
-        }
-
-        if ($slugColumn !== '') {
-            $insertData[$slugColumn] =
-                $tenantSlug;
-        }
-
-        if ($contactNameColumn !== '') {
-            $insertData[$contactNameColumn] =
-                $contactName;
-        }
-
-        if ($emailColumn !== '') {
-            $insertData[$emailColumn] =
-                $email;
-        }
-
-        if ($phoneColumn !== '') {
-            $insertData[$phoneColumn] =
-                $phone;
-        }
-
-        if ($alternatePhoneColumn !== '') {
-            $insertData[$alternatePhoneColumn] =
-                $alternatePhone;
-        }
-
-        if ($addressColumn !== '') {
-            $insertData[$addressColumn] =
-                $address;
-        }
-
-        if ($addressLine2Column !== '') {
-            $insertData[$addressLine2Column] =
-                $addressLine2;
-        }
-
-        if ($cityColumn !== '') {
-            $insertData[$cityColumn] =
-                $city;
-        }
-
-        if ($stateColumn !== '') {
-            $insertData[$stateColumn] =
-                $state;
-        }
-
-        if ($countryColumn !== '') {
-            $insertData[$countryColumn] =
-                $country;
-        }
-
-        if ($postalCodeColumn !== '') {
-            $insertData[$postalCodeColumn] =
-                $postalCode;
-        }
-
-        if ($taxNumberColumn !== '') {
-            $insertData[$taxNumberColumn] =
-                $taxNumber;
-        }
-
-        if ($statusColumn !== '') {
-            $insertData[$statusColumn] =
-                $status;
-        }
-
-        if ($trialStartColumn !== '') {
-            if ($status === 'trial') {
-                $columnType = isset(
-                    $tenantColumns[$trialStartColumn]['data_type']
-                )
-                    ? $tenantColumns[$trialStartColumn]['data_type']
-                    : '';
-
-                $insertData[$trialStartColumn] =
-                    in_array(
-                        $columnType,
-                        array('datetime', 'timestamp'),
-                        true
-                    )
-                        ? date(
-                            'Y-m-d 00:00:00',
-                            strtotime($trialStartDate)
-                        )
-                        : tenantAddNormaliseDate(
-                            $trialStartDate
-                        );
-            } else {
-                $insertData[$trialStartColumn] = null;
-            }
-        }
-
-        if ($trialEndColumn !== '') {
-            if ($status === 'trial') {
-                $columnType = isset(
-                    $tenantColumns[$trialEndColumn]['data_type']
-                )
-                    ? $tenantColumns[$trialEndColumn]['data_type']
-                    : '';
-
-                $insertData[$trialEndColumn] =
-                    in_array(
-                        $columnType,
-                        array('datetime', 'timestamp'),
-                        true
-                    )
-                        ? tenantAddNormaliseDateTime(
-                            $trialEndDate
-                        )
-                        : tenantAddNormaliseDate(
-                            $trialEndDate
-                        );
-            } else {
-                $insertData[$trialEndColumn] = null;
-            }
-        }
-
-        if ($logoColumn !== '') {
-            $insertData[$logoColumn] =
-                $uploadedLogoPath;
-        }
-
-        if ($timezoneColumn !== '') {
-            $insertData[$timezoneColumn] =
-                $timezone;
-        }
-
-        if ($currencyColumn !== '') {
-            $insertData[$currencyColumn] =
-                $currency;
-        }
-
-        if ($notesColumn !== '') {
-            $insertData[$notesColumn] =
-                $notes;
-        }
-        /*
-         * Do not write the platform user ID into tenant-owned
-         * created_by/updated_by columns. Those columns commonly
-         * reference the tenant users table and can cause an FK failure.
-         */
-
-        /*
-         * NOW() is inserted separately for timestamp fields.
-         */
-        $columns = array();
-        $placeholders = array();
-        $values = array();
-        $types = '';
-
-        foreach ($insertData as $column => $value) {
-            $columns[] = "`{$column}`";
-
-            if ($value === null) {
-                $placeholders[] = 'NULL';
-                continue;
-            }
-
-            $placeholders[] = '?';
-            $values[] = $value;
-
-            $columnDataType = isset(
-                $tenantColumns[$column]['data_type']
-            )
-                ? strtolower(
-                    $tenantColumns[$column]['data_type']
-                )
-                : 'varchar';
-
-            if (
-                in_array(
-                    $columnDataType,
-                    array(
-                        'tinyint',
-                        'smallint',
-                        'mediumint',
-                        'int',
-                        'bigint',
-                        'bit',
-                        'boolean'
-                    ),
-                    true
-                )
-            ) {
-                $types .= 'i';
-            } elseif (
-                in_array(
-                    $columnDataType,
-                    array(
-                        'decimal',
-                        'float',
-                        'double',
-                        'real'
-                    ),
-                    true
-                )
-            ) {
-                $types .= 'd';
-            } else {
-                $types .= 's';
-            }
-        }
-
-        if ($createdAtColumn !== '') {
-            $columns[] =
-                "`{$createdAtColumn}`";
-
-            $placeholders[] = 'NOW()';
-        }
-
-        if ($updatedAtColumn !== '') {
-            $columns[] =
-                "`{$updatedAtColumn}`";
-
-            $placeholders[] = 'NOW()';
-        }
-
-        $insertSql = "
-            INSERT INTO tenants (
-                " . implode(', ', $columns) . "
-            ) VALUES (
-                " . implode(', ', $placeholders) . "
-            )
-        ";
-
-        try {
-            $conn->begin_transaction();
-
-            $insertStmt = $conn->prepare(
-                $insertSql
-            );
-
-            if (!$insertStmt) {
-                throw new Exception(
-                    'Unable to prepare tenant creation: ' .
-                    $conn->error
-                );
-            }
-
-            if ($types !== '') {
-                tenantAddBindParams(
-                    $insertStmt,
-                    $types,
-                    $values
-                );
-            }
-
-            if (!$insertStmt->execute()) {
-                throw new Exception(
-                    'Unable to create tenant: ' .
-                    $insertStmt->error
-                );
-            }
-
-            $newTenantId =
-                (int) $insertStmt->insert_id;
-
-            $insertStmt->close();
-
-            $conn->commit();
-
-            regenerateCsrfToken();
-
-            $_SESSION['platform_success_message'] =
-                'Tenant created successfully.';
-
-            header(
-                'Location: tenant-view.php?id=' .
-                $newTenantId
-            );
-
-            exit;
-        } catch (Exception $exception) {
-            $conn->rollback();
-
-            if (
-                $uploadedLogoPath !== '' &&
-                file_exists(
-                    __DIR__ .
-                    '/../' .
-                    $uploadedLogoPath
-                )
-            ) {
-                unlink(
-                    __DIR__ .
-                    '/../' .
-                    $uploadedLogoPath
-                );
-            }
-
-            error_log(
-                'Tenant creation failed: ' .
-                $exception->getMessage()
-            );
-
-            $errorMessage =
-                $exception->getMessage();
-        }
-    }
+    $_SESSION['tenant_add_csrf'] = bin2hex(random_bytes(32));
 }
+
+$csrfToken = $_SESSION['tenant_add_csrf'];
 
 /*
 |--------------------------------------------------------------------------
-| Load layout
+| Dropdown data
 |--------------------------------------------------------------------------
 */
 
-require __DIR__ . '/includes/topbar.php';
+$countries = array();
+$currencies = array();
+$plans = array();
+
+$countryStmt = $pdo->query("
+    SELECT
+        id,
+        name,
+        iso2,
+        phone_code,
+        default_currency_code,
+        default_timezone,
+        date_format
+    FROM countries
+    WHERE is_active = 1
+    ORDER BY name ASC
+");
+
+$countries = $countryStmt->fetchAll();
+
+$currencyStmt = $pdo->query("
+    SELECT
+        id,
+        currency_code,
+        currency_name,
+        symbol
+    FROM currencies
+    WHERE is_active = 1
+    ORDER BY currency_code ASC
+");
+
+$currencies = $currencyStmt->fetchAll();
+
+$planStmt = $pdo->query("
+    SELECT
+        id,
+        name,
+        code,
+        price,
+        currency,
+        billing_cycle,
+        trial_days,
+        max_users,
+        max_branches,
+        storage_limit_mb
+    FROM plans
+    WHERE deleted_at IS NULL
+      AND status = 'active'
+    ORDER BY
+        is_featured DESC,
+        price ASC,
+        name ASC
+");
+
+$plans = $planStmt->fetchAll();
+
+function tenantAddEscape($value)
+{
+    return htmlspecialchars(
+        (string) ($value === null ? '' : $value),
+        ENT_QUOTES,
+        'UTF-8'
+    );
+}
 ?>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
 
-<style>
-    .tenant-add-page {
-        max-width: 1100px;
-        margin: 0 auto;
-        display: grid;
-        gap: 15px;
-    }
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1"
+    >
 
-    .tenant-add-heading {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 15px;
-    }
+    <title>
+        <?= tenantAddEscape($pageTitle); ?> - FieldPlx
+    </title>
 
-    .tenant-add-title {
-        margin: 0;
-        color: #111827;
-        font-size: 18px;
-        font-weight: 800;
-    }
+    <?php require_once __DIR__ . '/includes/links.php'; ?>
 
-    .tenant-add-description {
-        margin-top: 4px;
-        color: #6b7280;
-        font-size: 10px;
-    }
-
-    .tenant-back-button {
-        min-height: 36px;
-        padding: 7px 12px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 6px;
-        border: 1px solid #e5e7eb;
-        border-radius: 8px;
-        background: #ffffff;
-        color: #4b5563;
-        font-size: 9px;
-        font-weight: 600;
-        text-decoration: none;
-    }
-
-    .tenant-back-button:hover {
-        border-color: #c4b5fd;
-        color: #7c3aed;
-    }
-
-    .tenant-add-alert {
-        padding: 11px 13px;
-        display: flex;
-        align-items: flex-start;
-        gap: 9px;
-        border: 1px solid #fecaca;
-        border-radius: 10px;
-        background: #fef2f2;
-        color: #b91c1c;
-        font-size: 10px;
-        line-height: 1.55;
-    }
-
-    .tenant-form-layout {
-        display: grid;
-        grid-template-columns:
-            minmax(0, 1fr)
-            minmax(260px, 320px);
-        gap: 15px;
-        align-items: start;
-    }
-
-    .tenant-form-main,
-    .tenant-form-side {
-        display: grid;
-        gap: 15px;
-    }
-
-    .tenant-form-card {
-        overflow: hidden;
-        border: 1px solid #e5e7eb;
-        border-radius: 12px;
-        background: #ffffff;
-        box-shadow:
-            0 5px 20px rgba(31, 41, 55, 0.035);
-    }
-
-    .tenant-form-card-header {
-        min-height: 54px;
-        padding: 12px 15px;
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        border-bottom: 1px solid #eef0f3;
-    }
-
-    .tenant-form-card-icon {
-        width: 32px;
-        height: 32px;
-        flex: 0 0 32px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: 8px;
-        background: #f3e8ff;
-        color: #7c3aed;
-        font-size: 13px;
-    }
-
-    .tenant-form-card-title {
-        margin: 0;
-        color: #111827;
-        font-size: 11px;
-        font-weight: 700;
-    }
-
-    .tenant-form-card-subtitle {
-        margin-top: 2px;
-        color: #9ca3af;
-        font-size: 8px;
-    }
-
-    .tenant-form-card-body {
-        padding: 15px;
-    }
-
-    .tenant-form-label {
-        margin-bottom: 6px;
-        color: #374151;
-        font-size: 9px;
-        font-weight: 700;
-    }
-
-    .tenant-required {
-        color: #dc2626;
-    }
-
-    .tenant-form-control {
-        min-height: 39px;
-        border: 1px solid #e5e7eb;
-        border-radius: 8px;
-        background: #fafafa;
-        box-shadow: none;
-        color: #374151;
-        font-size: 10px;
-    }
-
-    textarea.tenant-form-control {
-        min-height: 83px;
-        resize: vertical;
-    }
-
-    .tenant-form-control:focus {
-        border-color: #c4b5fd;
-        background: #ffffff;
-        box-shadow:
-            0 0 0 3px rgba(124, 58, 237, 0.08);
-    }
-
-    .tenant-form-help {
-        margin-top: 5px;
-        color: #9ca3af;
-        font-size: 8px;
-        line-height: 1.45;
-    }
-
-    .tenant-logo-upload {
-        min-height: 142px;
-        padding: 16px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        border: 1px dashed #d1d5db;
-        border-radius: 10px;
-        background: #fafafa;
-        text-align: center;
-        cursor: pointer;
-    }
-
-    .tenant-logo-upload:hover {
-        border-color: #a78bfa;
-        background: #faf8ff;
-    }
-
-    .tenant-logo-preview {
-        width: 68px;
-        height: 68px;
-        margin: 0 auto 9px;
-        overflow: hidden;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: 14px;
-        background:
-            linear-gradient(
-                135deg,
-                #111827,
-                #7c3aed
-            );
-        color: #ffffff;
-        font-size: 19px;
-        font-weight: 800;
-    }
-
-    .tenant-logo-preview img {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-    }
-
-    .tenant-logo-title {
-        color: #374151;
-        font-size: 9px;
-        font-weight: 700;
-    }
-
-    .tenant-logo-text {
-        margin-top: 3px;
-        color: #9ca3af;
-        font-size: 8px;
-    }
-
-    .tenant-submit-card {
-        padding: 13px;
-        display: grid;
-        gap: 8px;
-        border: 1px solid #e5e7eb;
-        border-radius: 12px;
-        background: #ffffff;
-    }
-
-    .tenant-submit-button {
-        min-height: 41px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 7px;
-        border: 0;
-        border-radius: 9px;
-        background:
-            linear-gradient(
-                135deg,
-                #7c3aed,
-                #6d28d9
-            );
-        color: #ffffff;
-        font-size: 10px;
-        font-weight: 700;
-    }
-
-    .tenant-submit-button:hover {
-        background:
-            linear-gradient(
-                135deg,
-                #6d28d9,
-                #5b21b6
-            );
-    }
-
-    .tenant-submit-button:disabled {
-        opacity: 0.7;
-        cursor: not-allowed;
-    }
-
-    .tenant-cancel-button {
-        min-height: 37px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        border: 1px solid #e5e7eb;
-        border-radius: 8px;
-        background: #ffffff;
-        color: #6b7280;
-        font-size: 9px;
-        font-weight: 600;
-        text-decoration: none;
-    }
-
-    .tenant-cancel-button:hover {
-        border-color: #d1d5db;
-        color: #111827;
-    }
-
-    .tenant-trial-fields.hidden {
-        display: none;
-    }
-
-    @media (max-width: 900px) {
-        .tenant-form-layout {
-            grid-template-columns: 1fr;
+    <style>
+        :root {
+            --fp-primary: #12182d;
+            --fp-primary-2: #1c2250;
+            --fp-primary-3: #201f6b;
+            --fp-accent: #8b5cf6;
+            --fp-accent-light: #a78bfa;
+            --fp-accent-dark: #6d28d9;
+            --fp-text: #20213f;
+            --fp-muted: #6f6b8f;
+            --fp-border: #ded9ef;
+            --fp-bg: #ffffff;
+            --fp-surface: #ffffff;
+            --fp-surface-soft: #f8f6ff;
+            --fp-success: #059669;
+            --fp-warning: #d97706;
+            --fp-danger: #dc2626;
+            --fp-info: #6366f1;
+            --fp-sidebar-width: 260px;
+            --fp-sidebar-collapsed-width: 76px;
+            --fp-topbar-height: 66px;
         }
 
-        .tenant-form-side {
-            order: -1;
+        * {
+            box-sizing: border-box;
         }
-    }
 
-    @media (max-width: 600px) {
-        .tenant-add-heading {
+        html,
+        body {
+            min-height: 100%;
+        }
+
+        body {
+            margin: 0;
+            min-height: 100vh;
+            overflow-x: hidden;
+            background: #ffffff;
+            color: var(--fp-text);
+            font-family: "Inter", sans-serif;
+            font-size: 13px;
+        }
+
+        a {
+            text-decoration: none;
+        }
+
+        button,
+        input,
+        select,
+        textarea {
+            font-family: inherit;
+        }
+
+        .fp-layout {
+            min-height: 100vh;
+        }
+
+        .fp-main {
+            min-height: calc(100vh - 52px);
+            margin-left: var(--fp-sidebar-width);
+            transition: margin-left .22s ease;
+        }
+
+        body.fp-sidebar-collapsed .fp-main {
+            margin-left: var(--fp-sidebar-collapsed-width);
+        }
+
+        /* =========================================================
+           SHARED TOPBAR - SAME DASHBOARD UI
+        ========================================================= */
+
+        .fp-topbar {
+            position: sticky;
+            top: 0;
+            z-index: 1030;
+            min-height: var(--fp-topbar-height);
+            border-bottom: 1px solid #ded8f3;
+            background: rgba(248, 246, 255, .96);
+            backdrop-filter: blur(14px);
+            -webkit-backdrop-filter: blur(14px);
+        }
+
+        .fp-topbar-inner {
+            min-height: var(--fp-topbar-height);
+            padding: 8px 18px;
+            display: flex;
+            align-items: center;
+            gap: 13px;
+        }
+
+        .fp-menu-toggle,
+        .fp-icon-button {
+            width: 39px;
+            height: 39px;
+            min-width: 39px;
+            padding: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border: 1px solid #d9d2ef;
+            border-radius: 10px;
+            background: #ffffff;
+            color: #39345f;
+            font-size: 18px;
+            line-height: 1;
+            transition: .16s ease;
+        }
+
+        .fp-menu-toggle:hover,
+        .fp-icon-button:hover {
+            border-color: #bda9ff;
+            background: #f4f0ff;
+            color: var(--fp-accent-dark);
+        }
+
+        .fp-page-heading {
+            min-width: 0;
+            margin-right: auto;
+        }
+
+        .fp-page-title {
+            margin: 0;
+            overflow: hidden;
+            color: #17172e;
+            font-size: 15px;
+            font-weight: 700;
+            line-height: 1.25;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+        }
+
+        .fp-page-subtitle {
+            margin-top: 2px;
+            color: var(--fp-muted);
+            font-size: 10px;
+        }
+
+        .fp-search {
+            width: min(340px, 31vw);
+            position: relative;
+            flex: 0 1 340px;
+        }
+
+        .fp-search i {
+            position: absolute;
+            top: 50%;
+            left: 12px;
+            z-index: 2;
+            transform: translateY(-50%);
+            color: #8f88aa;
+            font-size: 14px;
+            pointer-events: none;
+        }
+
+        .fp-search input {
+            width: 100%;
+            height: 39px;
+            padding: 8px 13px 8px 36px;
+            border: 1px solid #dcd5ef;
+            border-radius: 10px;
+            outline: none;
+            background: #f8f6ff;
+            box-shadow: none;
+            font-size: 12px;
+        }
+
+        .fp-search input:focus {
+            border-color: #a78bfa;
+            background: #ffffff;
+            box-shadow: 0 0 0 3px rgba(139, 92, 246, .12);
+        }
+
+        .fp-notification-wrap {
+            position: relative;
+            flex: 0 0 auto;
+        }
+
+        .fp-notification-count {
+            position: absolute;
+            top: -5px;
+            right: -5px;
+            z-index: 3;
+            min-width: 18px;
+            height: 18px;
+            padding: 0 5px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border: 2px solid #fff;
+            border-radius: 999px;
+            background: var(--fp-danger);
+            color: #fff;
+            font-size: 9px;
+            font-weight: 700;
+        }
+
+        .fp-profile {
+            min-width: 0;
+            padding: 4px 9px 4px 5px;
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            border: 1px solid var(--fp-border);
+            border-radius: 11px;
+            background: #fff;
+        }
+
+        .fp-avatar {
+            width: 32px;
+            height: 32px;
+            flex: 0 0 32px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 9px;
+            background: linear-gradient(135deg, #6d4df4, #9a5cff);
+            color: #fff;
+            font-size: 10px;
+            font-weight: 700;
+        }
+
+        .fp-profile-text {
+            max-width: 145px;
+            min-width: 0;
+        }
+
+        .fp-profile-name,
+        .fp-profile-role {
+            overflow: hidden;
+            display: block;
+            white-space: nowrap;
+            text-overflow: ellipsis;
+        }
+
+        .fp-profile-name {
+            color: #111827;
+            font-size: 11px;
+            font-weight: 700;
+        }
+
+        .fp-profile-role {
+            margin-top: 1px;
+            color: var(--fp-muted);
+            font-size: 9px;
+        }
+
+        .fp-mobile-brand {
+            display: none;
+        }
+
+        .fp-content {
+            padding: 18px;
+            background: #ffffff;
+        }
+
+        /* =========================================================
+           ADD TENANT PAGE
+        ========================================================= */
+
+        .tenant-add-page {
+            display: grid;
+            gap: 16px;
+        }
+
+        .tenant-add-header {
+            display: flex;
             align-items: flex-start;
-            flex-direction: column;
+            justify-content: space-between;
+            gap: 15px;
+        }
+
+        .tenant-add-title {
+            margin: 0;
+            color: #111827;
+            font-size: 20px;
+            font-weight: 800;
+        }
+
+        .tenant-add-description {
+            margin-top: 4px;
+            color: #77718e;
+            font-size: 10px;
+            line-height: 1.55;
         }
 
         .tenant-back-button {
-            width: 100%;
+            min-height: 38px;
+            padding: 8px 13px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 7px;
+            border: 1px solid #ded7ef;
+            border-radius: 10px;
+            background: #ffffff;
+            color: #50496a;
+            font-size: 10px;
+            font-weight: 700;
         }
-    }
-</style>
 
-<div class="tenant-add-page">
+        .tenant-back-button:hover {
+            border-color: #bca7ff;
+            background: #f7f3ff;
+            color: #6d28d9;
+        }
 
-    <div class="tenant-add-heading">
-        <div>
-            <h2 class="tenant-add-title">
-                Add Tenant
-            </h2>
+        .tenant-form-layout {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 310px;
+            gap: 16px;
+            align-items: start;
+        }
 
-            <div class="tenant-add-description">
-                Create a new FieldPlx tenant workspace.
-            </div>
-        </div>
+        .tenant-form-column {
+            display: grid;
+            gap: 16px;
+        }
 
-        <a
-            href="tenants.php"
-            class="tenant-back-button"
-        >
-            <i class="bi bi-arrow-left"></i>
-            Back to Tenants
-        </a>
-    </div>
+        .tenant-form-card {
+            overflow: hidden;
+            border: 1px solid #ded7ef;
+            border-radius: 14px;
+            background: #ffffff;
+            box-shadow: 0 8px 24px rgba(37, 29, 80, .05);
+        }
 
-    <?php if ($errorMessage !== ''): ?>
-        <div class="tenant-add-alert">
-            <i class="bi bi-exclamation-circle"></i>
+        .tenant-form-card-header {
+            min-height: 54px;
+            padding: 12px 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            border-bottom: 1px solid #ece7f7;
+            background: #fbf9ff;
+        }
 
-            <span>
-                <?= tenantAddEscape($errorMessage); ?>
-            </span>
-        </div>
-    <?php endif; ?>
+        .tenant-form-card-icon {
+            width: 34px;
+            height: 34px;
+            flex: 0 0 34px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 9px;
+            background: #eee8ff;
+            color: #7c3aed;
+            font-size: 14px;
+        }
 
-    <form
-        method="post"
-        enctype="multipart/form-data"
-        id="tenantAddForm"
-    >
-        <?php csrfField(); ?>
+        .tenant-form-card-title {
+            margin: 0;
+            color: #111827;
+            font-size: 12px;
+            font-weight: 800;
+        }
 
-        <div class="tenant-form-layout">
+        .tenant-form-card-subtitle {
+            margin-top: 2px;
+            color: #9a94aa;
+            font-size: 8px;
+        }
 
-            <div class="tenant-form-main">
+        .tenant-form-card-body {
+            padding: 15px;
+        }
 
-                <section class="tenant-form-card">
-                    <div class="tenant-form-card-header">
-                        <span class="tenant-form-card-icon">
-                            <i class="bi bi-building"></i>
-                        </span>
+        .tenant-form-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 13px;
+        }
 
-                        <div>
-                            <h3 class="tenant-form-card-title">
-                                Business Information
-                            </h3>
+        .tenant-form-grid.three {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
 
-                            <div class="tenant-form-card-subtitle">
-                                Main tenant and workspace details
-                            </div>
+        .tenant-field {
+            min-width: 0;
+        }
+
+        .tenant-field.full {
+            grid-column: 1 / -1;
+        }
+
+        .tenant-field label {
+            margin-bottom: 6px;
+            display: block;
+            color: #4c465f;
+            font-size: 9px;
+            font-weight: 700;
+        }
+
+        .tenant-field label .required {
+            color: #dc2626;
+        }
+
+        .tenant-input,
+        .tenant-select,
+        .tenant-textarea {
+            width: 100%;
+            border: 1px solid #dcd5ef;
+            border-radius: 9px;
+            outline: none;
+            background: #ffffff;
+            color: #312b47;
+            box-shadow: none;
+            font-size: 10px;
+            transition: .15s ease;
+        }
+
+        .tenant-input,
+        .tenant-select {
+            height: 39px;
+            padding: 8px 11px;
+        }
+
+        .tenant-textarea {
+            min-height: 82px;
+            padding: 10px 11px;
+            resize: vertical;
+        }
+
+        .tenant-input:focus,
+        .tenant-select:focus,
+        .tenant-textarea:focus {
+            border-color: #a78bfa;
+            box-shadow: 0 0 0 3px rgba(139, 92, 246, .10);
+        }
+
+        .tenant-input::placeholder,
+        .tenant-textarea::placeholder {
+            color: #aaa4b8;
+        }
+
+        .tenant-field-note {
+            margin-top: 5px;
+            color: #9a94aa;
+            font-size: 8px;
+            line-height: 1.4;
+        }
+
+        .tenant-readonly {
+            background: #f8f6ff;
+        }
+
+        .tenant-code-row {
+            position: relative;
+        }
+
+        .tenant-code-row .tenant-input {
+            padding-right: 92px;
+        }
+
+        .tenant-generate-code {
+            position: absolute;
+            top: 5px;
+            right: 5px;
+            height: 29px;
+            padding: 0 9px;
+            border: 0;
+            border-radius: 7px;
+            background: #eee8ff;
+            color: #6d28d9;
+            font-size: 8px;
+            font-weight: 700;
+        }
+
+        .tenant-switch-row {
+            min-height: 39px;
+            padding: 8px 10px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 10px;
+            border: 1px solid #ded7ef;
+            border-radius: 9px;
+            background: #fbf9ff;
+        }
+
+        .tenant-switch-text strong {
+            display: block;
+            color: #393248;
+            font-size: 9px;
+        }
+
+        .tenant-switch-text span {
+            margin-top: 2px;
+            display: block;
+            color: #9a94aa;
+            font-size: 8px;
+        }
+
+        .tenant-plan-summary {
+            display: grid;
+            gap: 9px;
+        }
+
+        .tenant-summary-line {
+            padding-bottom: 9px;
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+            gap: 12px;
+            border-bottom: 1px dashed #e3ddef;
+            font-size: 9px;
+        }
+
+        .tenant-summary-line:last-child {
+            padding-bottom: 0;
+            border-bottom: 0;
+        }
+
+        .tenant-summary-line span {
+            color: #8c849e;
+        }
+
+        .tenant-summary-line strong {
+            color: #2f2940;
+            text-align: right;
+            font-weight: 700;
+        }
+
+        .tenant-info-box {
+            margin-top: 12px;
+            padding: 11px;
+            border: 1px solid #e3daf8;
+            border-radius: 10px;
+            background: #f8f5ff;
+            color: #655d78;
+            font-size: 8px;
+            line-height: 1.55;
+        }
+
+        .tenant-info-box i {
+            margin-right: 5px;
+            color: #7c3aed;
+        }
+
+        .tenant-submit-bar {
+            padding: 13px 15px;
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 9px;
+            border-top: 1px solid #ece7f7;
+            background: #fbf9ff;
+        }
+
+        .tenant-cancel-button,
+        .tenant-save-button {
+            min-height: 38px;
+            padding: 8px 14px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 7px;
+            border-radius: 9px;
+            font-size: 10px;
+            font-weight: 700;
+        }
+
+        .tenant-cancel-button {
+            border: 1px solid #dcd5ef;
+            background: #ffffff;
+            color: #5f5870;
+        }
+
+        .tenant-save-button {
+            border: 0;
+            background: linear-gradient(135deg, #7c3aed, #6d28d9);
+            color: #ffffff;
+            box-shadow: 0 8px 20px rgba(109, 40, 217, .18);
+        }
+
+        .tenant-save-button:disabled {
+            opacity: .65;
+            cursor: not-allowed;
+        }
+
+        .tenant-alert {
+            display: none;
+            padding: 11px 13px;
+            border-radius: 10px;
+            font-size: 9px;
+            font-weight: 600;
+            line-height: 1.5;
+        }
+
+        .tenant-alert.show {
+            display: block;
+        }
+
+        .tenant-alert.success {
+            border: 1px solid #a7f3d0;
+            background: #ecfdf5;
+            color: #047857;
+        }
+
+        .tenant-alert.error {
+            border: 1px solid #fecaca;
+            background: #fef2f2;
+            color: #b91c1c;
+        }
+
+        .tenant-alert.warning {
+            border: 1px solid #fde68a;
+            background: #fffbeb;
+            color: #92400e;
+        }
+
+        .tenant-loading {
+            width: 13px;
+            height: 13px;
+            display: none;
+            border: 2px solid rgba(255,255,255,.45);
+            border-top-color: #ffffff;
+            border-radius: 50%;
+            animation: tenantSpin .65s linear infinite;
+        }
+
+        .tenant-save-button.loading .tenant-loading {
+            display: inline-block;
+        }
+
+        @keyframes tenantSpin {
+            to {
+                transform: rotate(360deg);
+            }
+        }
+
+        @media (max-width: 1100px) {
+            .tenant-form-layout {
+                grid-template-columns: 1fr;
+            }
+
+            .tenant-side-column {
+                display: grid;
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+                gap: 16px;
+            }
+        }
+
+        @media (max-width: 991.98px) {
+            .fp-main,
+            body.fp-sidebar-collapsed .fp-main {
+                margin-left: 0;
+            }
+
+            .fp-search {
+                display: none;
+            }
+
+            .fp-profile-text {
+                display: none;
+            }
+
+            .fp-mobile-brand {
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                color: #ffffff;
+                font-weight: 700;
+            }
+        }
+
+        @media (max-width: 700px) {
+            .tenant-add-header {
+                flex-direction: column;
+            }
+
+            .tenant-back-button {
+                width: 100%;
+            }
+
+            .tenant-form-grid,
+            .tenant-form-grid.three,
+            .tenant-side-column {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 575.98px) {
+            .fp-topbar-inner {
+                padding: 8px 11px;
+            }
+
+            .fp-page-subtitle {
+                display: none;
+            }
+
+            .fp-page-title {
+                font-size: 13px;
+            }
+
+            .fp-content {
+                padding: 12px;
+            }
+
+            .tenant-submit-bar {
+                flex-direction: column-reverse;
+            }
+
+            .tenant-cancel-button,
+            .tenant-save-button {
+                width: 100%;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="fp-layout">
+
+    <?php require_once __DIR__ . '/includes/sidebar.php'; ?>
+
+    <main class="fp-main">
+
+        <?php require_once __DIR__ . '/includes/topbar.php'; ?>
+
+        <div class="fp-content">
+
+            <div class="tenant-add-page">
+
+                <div class="tenant-add-header">
+                    <div>
+                        <h2 class="tenant-add-title">
+                            Add Tenant
+                        </h2>
+
+                        <div class="tenant-add-description">
+                            Create a new FieldPlx business workspace
+                            and optionally start its subscription.
                         </div>
                     </div>
-
-                    <div class="tenant-form-card-body">
-                        <div class="row g-3">
-
-                            <div class="col-md-8">
-                                <label
-                                    for="companyName"
-                                    class="tenant-form-label"
-                                >
-                                    Tenant / Company Name
-                                    <span class="tenant-required">*</span>
-                                </label>
-
-                                <input
-                                    type="text"
-                                    class="form-control tenant-form-control"
-                                    id="companyName"
-                                    name="company_name"
-                                    value="<?= tenantAddEscape(
-                                        $companyName
-                                    ); ?>"
-                                    maxlength="190"
-                                    required
-                                >
-                            </div>
-
-                            <?php if ($codeColumn !== ''): ?>
-                                <div class="col-md-4">
-                                    <label
-                                        for="tenantCode"
-                                        class="tenant-form-label"
-                                    >
-                                        Tenant Code
-                                    </label>
-
-                                    <input
-                                        type="text"
-                                        class="form-control tenant-form-control text-uppercase"
-                                        id="tenantCode"
-                                        name="tenant_code"
-                                        value="<?= tenantAddEscape(
-                                            $tenantCode
-                                        ); ?>"
-                                        maxlength="50"
-                                        placeholder="Auto generated"
-                                    >
-
-                                    <div class="tenant-form-help">
-                                        Leave empty to generate automatically.
-                                    </div>
-                                </div>
-                            <?php endif; ?>
-
-                            <?php if ($slugColumn !== ''): ?>
-                                <div class="col-md-6">
-                                    <label
-                                        for="tenantSlug"
-                                        class="tenant-form-label"
-                                    >
-                                        Workspace Slug
-                                    </label>
-
-                                    <input
-                                        type="text"
-                                        class="form-control tenant-form-control"
-                                        id="tenantSlug"
-                                        name="tenant_slug"
-                                        value="<?= tenantAddEscape(
-                                            $tenantSlug
-                                        ); ?>"
-                                        maxlength="150"
-                                        placeholder="Auto generated"
-                                    >
-                                </div>
-                            <?php endif; ?>
-
-                            <?php if ($taxNumberColumn !== ''): ?>
-                                <div class="col-md-6">
-                                    <label
-                                        for="taxNumber"
-                                        class="tenant-form-label"
-                                    >
-                                        Tax / GST Number
-                                    </label>
-
-                                    <input
-                                        type="text"
-                                        class="form-control tenant-form-control text-uppercase"
-                                        id="taxNumber"
-                                        name="tax_number"
-                                        value="<?= tenantAddEscape(
-                                            $taxNumber
-                                        ); ?>"
-                                        maxlength="50"
-                                    >
-                                </div>
-                            <?php endif; ?>
-
-                        </div>
-                    </div>
-                </section>
-
-                <section class="tenant-form-card">
-                    <div class="tenant-form-card-header">
-                        <span class="tenant-form-card-icon">
-                            <i class="bi bi-person-lines-fill"></i>
-                        </span>
-
-                        <div>
-                            <h3 class="tenant-form-card-title">
-                                Contact Information
-                            </h3>
-
-                            <div class="tenant-form-card-subtitle">
-                                Primary tenant contact details
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="tenant-form-card-body">
-                        <div class="row g-3">
-
-                            <?php if ($contactNameColumn !== ''): ?>
-                                <div class="col-md-6">
-                                    <label
-                                        for="contactName"
-                                        class="tenant-form-label"
-                                    >
-                                        Contact Person
-                                    </label>
-
-                                    <input
-                                        type="text"
-                                        class="form-control tenant-form-control"
-                                        id="contactName"
-                                        name="contact_name"
-                                        value="<?= tenantAddEscape(
-                                            $contactName
-                                        ); ?>"
-                                        maxlength="150"
-                                    >
-                                </div>
-                            <?php endif; ?>
-
-                            <?php if ($emailColumn !== ''): ?>
-                                <div class="col-md-6">
-                                    <label
-                                        for="email"
-                                        class="tenant-form-label"
-                                    >
-                                        Email Address
-                                    </label>
-
-                                    <input
-                                        type="email"
-                                        class="form-control tenant-form-control"
-                                        id="email"
-                                        name="email"
-                                        value="<?= tenantAddEscape(
-                                            $email
-                                        ); ?>"
-                                        maxlength="190"
-                                    >
-                                </div>
-                            <?php endif; ?>
-
-                            <?php if ($phoneColumn !== ''): ?>
-                                <div class="col-md-6">
-                                    <label
-                                        for="phone"
-                                        class="tenant-form-label"
-                                    >
-                                        Phone Number
-                                    </label>
-
-                                    <input
-                                        type="text"
-                                        class="form-control tenant-form-control"
-                                        id="phone"
-                                        name="phone"
-                                        value="<?= tenantAddEscape(
-                                            $phone
-                                        ); ?>"
-                                        maxlength="50"
-                                    >
-                                </div>
-                            <?php endif; ?>
-
-                            <?php if ($alternatePhoneColumn !== ''): ?>
-                                <div class="col-md-6">
-                                    <label
-                                        for="alternatePhone"
-                                        class="tenant-form-label"
-                                    >
-                                        Alternate Phone
-                                    </label>
-
-                                    <input
-                                        type="text"
-                                        class="form-control tenant-form-control"
-                                        id="alternatePhone"
-                                        name="alternate_phone"
-                                        value="<?= tenantAddEscape(
-                                            $alternatePhone
-                                        ); ?>"
-                                        maxlength="50"
-                                    >
-                                </div>
-                            <?php endif; ?>
-
-                        </div>
-                    </div>
-                </section>
-
-                <?php if (
-                    $addressColumn !== '' ||
-                    $cityColumn !== '' ||
-                    $stateColumn !== '' ||
-                    $countryColumn !== ''
-                ): ?>
-                    <section class="tenant-form-card">
-                        <div class="tenant-form-card-header">
-                            <span class="tenant-form-card-icon">
-                                <i class="bi bi-geo-alt"></i>
-                            </span>
-
-                            <div>
-                                <h3 class="tenant-form-card-title">
-                                    Address
-                                </h3>
-
-                                <div class="tenant-form-card-subtitle">
-                                    Registered business location
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="tenant-form-card-body">
-                            <div class="row g-3">
-
-                                <?php if ($addressColumn !== ''): ?>
-                                    <div class="col-12">
-                                        <label
-                                            for="address"
-                                            class="tenant-form-label"
-                                        >
-                                            Address
-                                        </label>
-
-                                        <textarea
-                                            class="form-control tenant-form-control"
-                                            id="address"
-                                            name="address"
-                                        ><?= tenantAddEscape(
-                                            $address
-                                        ); ?></textarea>
-                                    </div>
-                                <?php endif; ?>
-
-                                <?php if ($addressLine2Column !== ''): ?>
-                                    <div class="col-12">
-                                        <label
-                                            for="addressLine2"
-                                            class="tenant-form-label"
-                                        >
-                                            Address Line 2
-                                        </label>
-
-                                        <input
-                                            type="text"
-                                            class="form-control tenant-form-control"
-                                            id="addressLine2"
-                                            name="address_line2"
-                                            value="<?= tenantAddEscape(
-                                                $addressLine2
-                                            ); ?>"
-                                        >
-                                    </div>
-                                <?php endif; ?>
-
-                                <?php if ($cityColumn !== ''): ?>
-                                    <div class="col-md-6">
-                                        <label
-                                            for="city"
-                                            class="tenant-form-label"
-                                        >
-                                            City
-                                        </label>
-
-                                        <input
-                                            type="text"
-                                            class="form-control tenant-form-control"
-                                            id="city"
-                                            name="city"
-                                            value="<?= tenantAddEscape(
-                                                $city
-                                            ); ?>"
-                                        >
-                                    </div>
-                                <?php endif; ?>
-
-                                <?php if ($stateColumn !== ''): ?>
-                                    <div class="col-md-6">
-                                        <label
-                                            for="state"
-                                            class="tenant-form-label"
-                                        >
-                                            State
-                                        </label>
-
-                                        <input
-                                            type="text"
-                                            class="form-control tenant-form-control"
-                                            id="state"
-                                            name="state"
-                                            value="<?= tenantAddEscape(
-                                                $state
-                                            ); ?>"
-                                        >
-                                    </div>
-                                <?php endif; ?>
-
-                                <?php if ($countryColumn !== ''): ?>
-                                    <div class="col-md-6">
-                                        <label
-                                            for="country"
-                                            class="tenant-form-label"
-                                        >
-                                            Country
-                                        </label>
-
-                                        <input
-                                            type="text"
-                                            class="form-control tenant-form-control"
-                                            id="country"
-                                            name="country"
-                                            value="<?= tenantAddEscape(
-                                                $country
-                                            ); ?>"
-                                        >
-                                    </div>
-                                <?php endif; ?>
-
-                                <?php if ($postalCodeColumn !== ''): ?>
-                                    <div class="col-md-6">
-                                        <label
-                                            for="postalCode"
-                                            class="tenant-form-label"
-                                        >
-                                            Postal Code
-                                        </label>
-
-                                        <input
-                                            type="text"
-                                            class="form-control tenant-form-control"
-                                            id="postalCode"
-                                            name="postal_code"
-                                            value="<?= tenantAddEscape(
-                                                $postalCode
-                                            ); ?>"
-                                            maxlength="20"
-                                        >
-                                    </div>
-                                <?php endif; ?>
-
-                            </div>
-                        </div>
-                    </section>
-                <?php endif; ?>
-
-            </div>
-
-            <aside class="tenant-form-side">
-
-                <?php if ($logoColumn !== ''): ?>
-                    <section class="tenant-form-card">
-                        <div class="tenant-form-card-header">
-                            <span class="tenant-form-card-icon">
-                                <i class="bi bi-image"></i>
-                            </span>
-
-                            <div>
-                                <h3 class="tenant-form-card-title">
-                                    Tenant Logo
-                                </h3>
-
-                                <div class="tenant-form-card-subtitle">
-                                    JPG, PNG, or WEBP up to 2 MB
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="tenant-form-card-body">
-                            <label
-                                for="tenantLogo"
-                                class="tenant-logo-upload"
-                            >
-                                <div>
-                                    <div
-                                        class="tenant-logo-preview"
-                                        id="tenantLogoPreview"
-                                    >
-                                        <span id="tenantLogoInitials">
-                                            TN
-                                        </span>
-                                    </div>
-
-                                    <div class="tenant-logo-title">
-                                        Choose Tenant Logo
-                                    </div>
-
-                                    <div class="tenant-logo-text">
-                                        Click to select an image
-                                    </div>
-                                </div>
-                            </label>
-
-                            <input
-                                type="file"
-                                id="tenantLogo"
-                                name="tenant_logo"
-                                accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
-                                class="d-none"
-                            >
-                        </div>
-                    </section>
-                <?php endif; ?>
-
-                <section class="tenant-form-card">
-                    <div class="tenant-form-card-header">
-                        <span class="tenant-form-card-icon">
-                            <i class="bi bi-sliders"></i>
-                        </span>
-
-                        <div>
-                            <h3 class="tenant-form-card-title">
-                                Workspace Settings
-                            </h3>
-
-                            <div class="tenant-form-card-subtitle">
-                                Status and regional preferences
-                            </div>
-                        </div>
-                    </div>
-
-                    <div class="tenant-form-card-body">
-                        <div class="row g-3">
-
-                            <?php if ($statusColumn !== ''): ?>
-                                <div class="col-12">
-                                    <label
-                                        for="tenantStatus"
-                                        class="tenant-form-label"
-                                    >
-                                        Status
-                                    </label>
-
-                                    <select
-                                        class="form-select tenant-form-control"
-                                        id="tenantStatus"
-                                        name="status"
-                                    >
-                                        <option
-                                            value="trial"
-                                            <?= $status === 'trial'
-                                                ? 'selected'
-                                                : ''; ?>
-                                        >
-                                            Trial
-                                        </option>
-
-                                        <option
-                                            value="active"
-                                            <?= $status === 'active'
-                                                ? 'selected'
-                                                : ''; ?>
-                                        >
-                                            Active
-                                        </option>
-
-                                        <option
-                                            value="inactive"
-                                            <?= $status === 'inactive'
-                                                ? 'selected'
-                                                : ''; ?>
-                                        >
-                                            Inactive
-                                        </option>
-
-                                        <option
-                                            value="suspended"
-                                            <?= $status === 'suspended'
-                                                ? 'selected'
-                                                : ''; ?>
-                                        >
-                                            Suspended
-                                        </option>
-                                    </select>
-                                </div>
-                            <?php endif; ?>
-
-                            <?php if (
-                                $trialStartColumn !== '' ||
-                                $trialEndColumn !== ''
-                            ): ?>
-                                <div
-                                    class="col-12 tenant-trial-fields <?= $status !== 'trial'
-                                        ? 'hidden'
-                                        : ''; ?>"
-                                    id="tenantTrialFields"
-                                >
-                                    <div class="row g-3">
-
-                                        <?php if (
-                                            $trialStartColumn !== ''
-                                        ): ?>
-                                            <div class="col-12">
-                                                <label
-                                                    for="trialStartDate"
-                                                    class="tenant-form-label"
-                                                >
-                                                    Trial Start
-                                                </label>
-
-                                                <input
-                                                    type="date"
-                                                    class="form-control tenant-form-control"
-                                                    id="trialStartDate"
-                                                    name="trial_start_date"
-                                                    value="<?= tenantAddEscape(
-                                                        $trialStartDate
-                                                    ); ?>"
-                                                >
-                                            </div>
-                                        <?php endif; ?>
-
-                                        <?php if (
-                                            $trialEndColumn !== ''
-                                        ): ?>
-                                            <div class="col-12">
-                                                <label
-                                                    for="trialEndDate"
-                                                    class="tenant-form-label"
-                                                >
-                                                    Trial End
-                                                </label>
-
-                                                <input
-                                                    type="date"
-                                                    class="form-control tenant-form-control"
-                                                    id="trialEndDate"
-                                                    name="trial_end_date"
-                                                    value="<?= tenantAddEscape(
-                                                        $trialEndDate
-                                                    ); ?>"
-                                                >
-                                            </div>
-                                        <?php endif; ?>
-
-                                    </div>
-                                </div>
-                            <?php endif; ?>
-
-                            <?php if ($timezoneColumn !== ''): ?>
-                                <div class="col-12">
-                                    <label
-                                        for="timezone"
-                                        class="tenant-form-label"
-                                    >
-                                        Timezone
-                                    </label>
-
-                                    <select
-                                        class="form-select tenant-form-control"
-                                        id="timezone"
-                                        name="timezone"
-                                    >
-                                        <option
-                                            value="Asia/Kolkata"
-                                            <?= $timezone === 'Asia/Kolkata'
-                                                ? 'selected'
-                                                : ''; ?>
-                                        >
-                                            Asia/Kolkata
-                                        </option>
-
-                                        <option
-                                            value="UTC"
-                                            <?= $timezone === 'UTC'
-                                                ? 'selected'
-                                                : ''; ?>
-                                        >
-                                            UTC
-                                        </option>
-
-                                        <option
-                                            value="Asia/Dubai"
-                                            <?= $timezone === 'Asia/Dubai'
-                                                ? 'selected'
-                                                : ''; ?>
-                                        >
-                                            Asia/Dubai
-                                        </option>
-
-                                        <option
-                                            value="Europe/London"
-                                            <?= $timezone === 'Europe/London'
-                                                ? 'selected'
-                                                : ''; ?>
-                                        >
-                                            Europe/London
-                                        </option>
-                                    </select>
-                                </div>
-                            <?php endif; ?>
-
-                            <?php if ($currencyColumn !== ''): ?>
-                                <div class="col-12">
-                                    <label
-                                        for="currency"
-                                        class="tenant-form-label"
-                                    >
-                                        Currency
-                                    </label>
-
-                                    <select
-                                        class="form-select tenant-form-control"
-                                        id="currency"
-                                        name="currency"
-                                    >
-                                        <option
-                                            value="INR"
-                                            <?= $currency === 'INR'
-                                                ? 'selected'
-                                                : ''; ?>
-                                        >
-                                            INR - Indian Rupee
-                                        </option>
-
-                                        <option
-                                            value="GBP"
-                                            <?= $currency === 'GBP'
-                                                ? 'selected'
-                                                : ''; ?>
-                                        >
-                                            GBP - Pound Sterling
-                                        </option>
-
-                                        <option
-                                            value="USD"
-                                            <?= $currency === 'USD'
-                                                ? 'selected'
-                                                : ''; ?>
-                                        >
-                                            USD - US Dollar
-                                        </option>
-
-                                        <option
-                                            value="AED"
-                                            <?= $currency === 'AED'
-                                                ? 'selected'
-                                                : ''; ?>
-                                        >
-                                            AED - UAE Dirham
-                                        </option>
-                                    </select>
-                                </div>
-                            <?php endif; ?>
-
-                        </div>
-                    </div>
-                </section>
-
-                <?php if ($notesColumn !== ''): ?>
-                    <section class="tenant-form-card">
-                        <div class="tenant-form-card-header">
-                            <span class="tenant-form-card-icon">
-                                <i class="bi bi-journal-text"></i>
-                            </span>
-
-                            <div>
-                                <h3 class="tenant-form-card-title">
-                                    Internal Notes
-                                </h3>
-
-                                <div class="tenant-form-card-subtitle">
-                                    Visible to platform administrators
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="tenant-form-card-body">
-                            <textarea
-                                class="form-control tenant-form-control"
-                                name="notes"
-                                rows="4"
-                                placeholder="Optional notes about this tenant"
-                            ><?= tenantAddEscape($notes); ?></textarea>
-                        </div>
-                    </section>
-                <?php endif; ?>
-
-                <div class="tenant-submit-card">
-                    <button
-                        type="submit"
-                        class="tenant-submit-button"
-                        id="tenantSubmitButton"
-                    >
-                        <i class="bi bi-building-add"></i>
-                        Create Tenant
-                    </button>
 
                     <a
                         href="tenants.php"
-                        class="tenant-cancel-button"
+                        class="tenant-back-button"
                     >
-                        Cancel
+                        <i class="bi bi-arrow-left"></i>
+                        Back to Tenants
                     </a>
                 </div>
 
-            </aside>
+                <div
+                    class="tenant-alert"
+                    id="tenantAlert"
+                    role="alert"
+                ></div>
+
+                <form
+                    id="tenantAddForm"
+                    enctype="multipart/form-data"
+                    novalidate
+                >
+                    <input
+                        type="hidden"
+                        name="csrf_token"
+                        value="<?= tenantAddEscape($csrfToken); ?>"
+                    >
+
+                    <div class="tenant-form-layout">
+
+                        <div class="tenant-form-column">
+
+                            <!-- Business Details -->
+                            <section class="tenant-form-card">
+                                <div class="tenant-form-card-header">
+                                    <span class="tenant-form-card-icon">
+                                        <i class="bi bi-buildings"></i>
+                                    </span>
+
+                                    <span>
+                                        <h3 class="tenant-form-card-title">
+                                            Business Details
+                                        </h3>
+
+                                        <span class="tenant-form-card-subtitle">
+                                            Core tenant identity and business information
+                                        </span>
+                                    </span>
+                                </div>
+
+                                <div class="tenant-form-card-body">
+                                    <div class="tenant-form-grid">
+
+                                        <div class="tenant-field">
+                                            <label for="tenantCode">
+                                                Tenant Code
+                                                <span class="required">*</span>
+                                            </label>
+
+                                            <div class="tenant-code-row">
+                                                <input
+                                                    type="text"
+                                                    class="tenant-input"
+                                                    id="tenantCode"
+                                                    name="tenant_code"
+                                                    maxlength="80"
+                                                    placeholder="TNT-00001"
+                                                    required
+                                                >
+
+                                                <button
+                                                    type="button"
+                                                    class="tenant-generate-code"
+                                                    id="generateTenantCode"
+                                                >
+                                                    Generate
+                                                </button>
+                                            </div>
+
+                                            <div class="tenant-field-note">
+                                                Must be unique. You can also enter your own code.
+                                            </div>
+                                        </div>
+
+                                        <div class="tenant-field">
+                                            <label for="businessType">
+                                                Business Type
+                                            </label>
+
+                                            <input
+                                                type="text"
+                                                class="tenant-input"
+                                                id="businessType"
+                                                name="business_type"
+                                                maxlength="120"
+                                                placeholder="HVAC, Plumbing, Electrical..."
+                                            >
+                                        </div>
+
+                                        <div class="tenant-field">
+                                            <label for="legalName">
+                                                Legal Name
+                                                <span class="required">*</span>
+                                            </label>
+
+                                            <input
+                                                type="text"
+                                                class="tenant-input"
+                                                id="legalName"
+                                                name="legal_name"
+                                                maxlength="190"
+                                                placeholder="Registered business name"
+                                                required
+                                            >
+                                        </div>
+
+                                        <div class="tenant-field">
+                                            <label for="displayName">
+                                                Display Name
+                                                <span class="required">*</span>
+                                            </label>
+
+                                            <input
+                                                type="text"
+                                                class="tenant-input"
+                                                id="displayName"
+                                                name="display_name"
+                                                maxlength="190"
+                                                placeholder="Name shown inside FieldPlx"
+                                                required
+                                            >
+                                        </div>
+
+                                        <div class="tenant-field">
+                                            <label for="registrationNumber">
+                                                Registration Number
+                                            </label>
+
+                                            <input
+                                                type="text"
+                                                class="tenant-input"
+                                                id="registrationNumber"
+                                                name="registration_number"
+                                                maxlength="120"
+                                                placeholder="Company registration number"
+                                            >
+                                        </div>
+
+                                        <div class="tenant-field">
+                                            <label for="taxNumber">
+                                                Tax Number
+                                            </label>
+
+                                            <input
+                                                type="text"
+                                                class="tenant-input"
+                                                id="taxNumber"
+                                                name="tax_number"
+                                                maxlength="120"
+                                                placeholder="GST / VAT / Tax ID"
+                                            >
+                                        </div>
+
+                                    </div>
+                                </div>
+                            </section>
+
+                            <!-- Contact Details -->
+                            <section class="tenant-form-card">
+                                <div class="tenant-form-card-header">
+                                    <span class="tenant-form-card-icon">
+                                        <i class="bi bi-person-lines-fill"></i>
+                                    </span>
+
+                                    <span>
+                                        <h3 class="tenant-form-card-title">
+                                            Contact Details
+                                        </h3>
+
+                                        <span class="tenant-form-card-subtitle">
+                                            Business communication information
+                                        </span>
+                                    </span>
+                                </div>
+
+                                <div class="tenant-form-card-body">
+                                    <div class="tenant-form-grid">
+
+                                        <div class="tenant-field">
+                                            <label for="email">
+                                                Email
+                                            </label>
+
+                                            <input
+                                                type="email"
+                                                class="tenant-input"
+                                                id="email"
+                                                name="email"
+                                                maxlength="190"
+                                                placeholder="admin@company.com"
+                                            >
+                                        </div>
+
+                                        <div class="tenant-field">
+                                            <label for="websiteUrl">
+                                                Website
+                                            </label>
+
+                                            <input
+                                                type="url"
+                                                class="tenant-input"
+                                                id="websiteUrl"
+                                                name="website_url"
+                                                maxlength="255"
+                                                placeholder="https://company.com"
+                                            >
+                                        </div>
+
+                                        <div class="tenant-field">
+                                            <label for="phone">
+                                                Phone
+                                            </label>
+
+                                            <input
+                                                type="text"
+                                                class="tenant-input"
+                                                id="phone"
+                                                name="phone"
+                                                maxlength="50"
+                                                placeholder="+91..."
+                                            >
+                                        </div>
+
+                                        <div class="tenant-field">
+                                            <label for="alternatePhone">
+                                                Alternate Phone
+                                            </label>
+
+                                            <input
+                                                type="text"
+                                                class="tenant-input"
+                                                id="alternatePhone"
+                                                name="alternate_phone"
+                                                maxlength="50"
+                                                placeholder="Optional alternate number"
+                                            >
+                                        </div>
+
+                                    </div>
+                                </div>
+                            </section>
+
+                            <!-- Location & Localization -->
+                            <section class="tenant-form-card">
+                                <div class="tenant-form-card-header">
+                                    <span class="tenant-form-card-icon">
+                                        <i class="bi bi-geo-alt"></i>
+                                    </span>
+
+                                    <span>
+                                        <h3 class="tenant-form-card-title">
+                                            Location & Localization
+                                        </h3>
+
+                                        <span class="tenant-form-card-subtitle">
+                                            Country, currency, timezone and business address
+                                        </span>
+                                    </span>
+                                </div>
+
+                                <div class="tenant-form-card-body">
+
+                                    <div class="tenant-form-grid three">
+
+                                        <div class="tenant-field">
+                                            <label for="countryId">
+                                                Country
+                                                <span class="required">*</span>
+                                            </label>
+
+                                            <select
+                                                class="tenant-select"
+                                                id="countryId"
+                                                name="country_id"
+                                                required
+                                            >
+                                                <option value="">
+                                                    Select country
+                                                </option>
+
+                                                <?php foreach ($countries as $country): ?>
+                                                    <option
+                                                        value="<?= (int) $country['id']; ?>"
+                                                        data-currency="<?= tenantAddEscape($country['default_currency_code']); ?>"
+                                                        data-timezone="<?= tenantAddEscape($country['default_timezone']); ?>"
+                                                        data-date-format="<?= tenantAddEscape($country['date_format']); ?>"
+                                                        data-phone-code="<?= tenantAddEscape($country['phone_code']); ?>"
+                                                    >
+                                                        <?= tenantAddEscape($country['name']); ?>
+                                                        (<?= tenantAddEscape($country['iso2']); ?>)
+                                                    </option>
+                                                <?php endforeach; ?>
+                                            </select>
+                                        </div>
+
+                                        <div class="tenant-field">
+                                            <label for="currencyId">
+                                                Currency
+                                                <span class="required">*</span>
+                                            </label>
+
+                                            <select
+                                                class="tenant-select"
+                                                id="currencyId"
+                                                name="currency_id"
+                                                required
+                                            >
+                                                <option value="">
+                                                    Select currency
+                                                </option>
+
+                                                <?php foreach ($currencies as $currency): ?>
+                                                    <option
+                                                        value="<?= (int) $currency['id']; ?>"
+                                                        data-code="<?= tenantAddEscape($currency['currency_code']); ?>"
+                                                    >
+                                                        <?= tenantAddEscape($currency['currency_code']); ?>
+                                                        -
+                                                        <?= tenantAddEscape($currency['currency_name']); ?>
+                                                        (<?= tenantAddEscape($currency['symbol']); ?>)
+                                                    </option>
+                                                <?php endforeach; ?>
+                                            </select>
+                                        </div>
+
+                                        <div class="tenant-field">
+                                            <label for="timezone">
+                                                Timezone
+                                                <span class="required">*</span>
+                                            </label>
+
+                                            <input
+                                                type="text"
+                                                class="tenant-input"
+                                                id="timezone"
+                                                name="timezone"
+                                                maxlength="100"
+                                                value="UTC"
+                                                required
+                                            >
+                                        </div>
+
+                                        <div class="tenant-field">
+                                            <label for="dateFormat">
+                                                Date Format
+                                                <span class="required">*</span>
+                                            </label>
+
+                                            <select
+                                                class="tenant-select"
+                                                id="dateFormat"
+                                                name="date_format"
+                                                required
+                                            >
+                                                <option value="d-m-Y">
+                                                    DD-MM-YYYY
+                                                </option>
+                                                <option value="d/m/Y">
+                                                    DD/MM/YYYY
+                                                </option>
+                                                <option value="m-d-Y">
+                                                    MM-DD-YYYY
+                                                </option>
+                                                <option value="m/d/Y">
+                                                    MM/DD/YYYY
+                                                </option>
+                                                <option value="Y-m-d">
+                                                    YYYY-MM-DD
+                                                </option>
+                                            </select>
+                                        </div>
+
+                                        <div class="tenant-field">
+                                            <label for="city">
+                                                City
+                                            </label>
+
+                                            <input
+                                                type="text"
+                                                class="tenant-input"
+                                                id="city"
+                                                name="city"
+                                                maxlength="120"
+                                                placeholder="City"
+                                            >
+                                        </div>
+
+                                        <div class="tenant-field">
+                                            <label for="state">
+                                                State / Province
+                                            </label>
+
+                                            <input
+                                                type="text"
+                                                class="tenant-input"
+                                                id="state"
+                                                name="state"
+                                                maxlength="120"
+                                                placeholder="State or province"
+                                            >
+                                        </div>
+
+                                        <div class="tenant-field full">
+                                            <label for="addressLine1">
+                                                Address Line 1
+                                            </label>
+
+                                            <input
+                                                type="text"
+                                                class="tenant-input"
+                                                id="addressLine1"
+                                                name="address_line1"
+                                                maxlength="255"
+                                                placeholder="Street address"
+                                            >
+                                        </div>
+
+                                        <div class="tenant-field full">
+                                            <label for="addressLine2">
+                                                Address Line 2
+                                            </label>
+
+                                            <input
+                                                type="text"
+                                                class="tenant-input"
+                                                id="addressLine2"
+                                                name="address_line2"
+                                                maxlength="255"
+                                                placeholder="Suite, unit, area..."
+                                            >
+                                        </div>
+
+                                        <div class="tenant-field">
+                                            <label for="postalCode">
+                                                Postal Code
+                                            </label>
+
+                                            <input
+                                                type="text"
+                                                class="tenant-input"
+                                                id="postalCode"
+                                                name="postal_code"
+                                                maxlength="40"
+                                                placeholder="Postal code"
+                                            >
+                                        </div>
+
+                                        <div class="tenant-field">
+                                            <label for="tenantStatus">
+                                                Tenant Status
+                                                <span class="required">*</span>
+                                            </label>
+
+                                            <select
+                                                class="tenant-select"
+                                                id="tenantStatus"
+                                                name="status"
+                                                required
+                                            >
+                                                <option value="trial" selected>
+                                                    Trial
+                                                </option>
+                                                <option value="active">
+                                                    Active
+                                                </option>
+                                                <option value="suspended">
+                                                    Suspended
+                                                </option>
+                                            </select>
+                                        </div>
+
+                                    </div>
+                                </div>
+                            </section>
+
+                            <!-- Branding -->
+                            <section class="tenant-form-card">
+                                <div class="tenant-form-card-header">
+                                    <span class="tenant-form-card-icon">
+                                        <i class="bi bi-image"></i>
+                                    </span>
+
+                                    <span>
+                                        <h3 class="tenant-form-card-title">
+                                            Branding
+                                        </h3>
+
+                                        <span class="tenant-form-card-subtitle">
+                                            Optional tenant logo and invoice logo
+                                        </span>
+                                    </span>
+                                </div>
+
+                                <div class="tenant-form-card-body">
+                                    <div class="tenant-form-grid">
+
+                                        <div class="tenant-field">
+                                            <label for="logo">
+                                                Business Logo
+                                            </label>
+
+                                            <input
+                                                type="file"
+                                                class="tenant-input"
+                                                id="logo"
+                                                name="logo"
+                                                accept=".jpg,.jpeg,.png,.webp"
+                                            >
+
+                                            <div class="tenant-field-note">
+                                                JPG, PNG or WEBP. Maximum 3 MB.
+                                            </div>
+                                        </div>
+
+                                        <div class="tenant-field">
+                                            <label for="invoiceLogo">
+                                                Invoice Logo
+                                            </label>
+
+                                            <input
+                                                type="file"
+                                                class="tenant-input"
+                                                id="invoiceLogo"
+                                                name="invoice_logo"
+                                                accept=".jpg,.jpeg,.png,.webp"
+                                            >
+
+                                            <div class="tenant-field-note">
+                                                If empty, the normal business logo can be used later.
+                                            </div>
+                                        </div>
+
+                                    </div>
+                                </div>
+                            </section>
+
+                        </div>
+
+                        <aside class="tenant-form-column tenant-side-column">
+
+                            <!-- Subscription -->
+                            <section class="tenant-form-card">
+                                <div class="tenant-form-card-header">
+                                    <span class="tenant-form-card-icon">
+                                        <i class="bi bi-credit-card"></i>
+                                    </span>
+
+                                    <span>
+                                        <h3 class="tenant-form-card-title">
+                                            Subscription
+                                        </h3>
+
+                                        <span class="tenant-form-card-subtitle">
+                                            Optional initial plan assignment
+                                        </span>
+                                    </span>
+                                </div>
+
+                                <div class="tenant-form-card-body">
+                                    <div class="tenant-form-grid" style="grid-template-columns:1fr;">
+
+                                        <div class="tenant-field">
+                                            <label for="planId">
+                                                Plan
+                                            </label>
+
+                                            <select
+                                                class="tenant-select"
+                                                id="planId"
+                                                name="plan_id"
+                                            >
+                                                <option value="">
+                                                    Create tenant without plan
+                                                </option>
+
+                                                <?php foreach ($plans as $plan): ?>
+                                                    <option
+                                                        value="<?= (int) $plan['id']; ?>"
+                                                        data-name="<?= tenantAddEscape($plan['name']); ?>"
+                                                        data-price="<?= tenantAddEscape($plan['price']); ?>"
+                                                        data-currency="<?= tenantAddEscape($plan['currency']); ?>"
+                                                        data-cycle="<?= tenantAddEscape($plan['billing_cycle']); ?>"
+                                                        data-trial-days="<?= (int) $plan['trial_days']; ?>"
+                                                        data-users="<?= tenantAddEscape($plan['max_users']); ?>"
+                                                        data-branches="<?= tenantAddEscape($plan['max_branches']); ?>"
+                                                        data-storage="<?= tenantAddEscape($plan['storage_limit_mb']); ?>"
+                                                    >
+                                                        <?= tenantAddEscape($plan['name']); ?>
+                                                    </option>
+                                                <?php endforeach; ?>
+                                            </select>
+                                        </div>
+
+                                        <div class="tenant-field">
+                                            <label for="subscriptionStart">
+                                                Start Date
+                                            </label>
+
+                                            <input
+                                                type="date"
+                                                class="tenant-input"
+                                                id="subscriptionStart"
+                                                name="subscription_start"
+                                                value="<?= date('Y-m-d'); ?>"
+                                            >
+                                        </div>
+
+                                        <div class="tenant-field">
+                                            <label for="subscriptionExpiry">
+                                                Expiry Date
+                                            </label>
+
+                                            <input
+                                                type="date"
+                                                class="tenant-input"
+                                                id="subscriptionExpiry"
+                                                name="subscription_expiry"
+                                            >
+                                        </div>
+
+                                        <div class="tenant-field">
+                                            <label for="trialEndDate">
+                                                Trial End Date
+                                            </label>
+
+                                            <input
+                                                type="date"
+                                                class="tenant-input"
+                                                id="trialEndDate"
+                                                name="trial_end_date"
+                                            >
+                                        </div>
+
+                                        <div class="tenant-switch-row">
+                                            <div class="tenant-switch-text">
+                                                <strong>Auto Renew</strong>
+                                                <span>
+                                                    Enable recurring renewal flag
+                                                </span>
+                                            </div>
+
+                                            <div class="form-check form-switch m-0">
+                                                <input
+                                                    class="form-check-input"
+                                                    type="checkbox"
+                                                    id="autoRenew"
+                                                    name="auto_renew"
+                                                    value="1"
+                                                >
+                                            </div>
+                                        </div>
+
+                                    </div>
+
+                                    <div class="tenant-info-box">
+                                        <i class="bi bi-info-circle"></i>
+                                        If no plan is selected, only the tenant workspace is created.
+                                        A subscription can be assigned later.
+                                    </div>
+                                </div>
+                            </section>
+
+                            <!-- Plan Preview -->
+                            <section class="tenant-form-card">
+                                <div class="tenant-form-card-header">
+                                    <span class="tenant-form-card-icon">
+                                        <i class="bi bi-card-checklist"></i>
+                                    </span>
+
+                                    <span>
+                                        <h3 class="tenant-form-card-title">
+                                            Plan Preview
+                                        </h3>
+
+                                        <span class="tenant-form-card-subtitle">
+                                            Selected plan details
+                                        </span>
+                                    </span>
+                                </div>
+
+                                <div class="tenant-form-card-body">
+                                    <div class="tenant-plan-summary">
+
+                                        <div class="tenant-summary-line">
+                                            <span>Plan</span>
+                                            <strong id="previewPlan">
+                                                No Plan
+                                            </strong>
+                                        </div>
+
+                                        <div class="tenant-summary-line">
+                                            <span>Price</span>
+                                            <strong id="previewPrice">
+                                                —
+                                            </strong>
+                                        </div>
+
+                                        <div class="tenant-summary-line">
+                                            <span>Billing Cycle</span>
+                                            <strong id="previewCycle">
+                                                —
+                                            </strong>
+                                        </div>
+
+                                        <div class="tenant-summary-line">
+                                            <span>Trial</span>
+                                            <strong id="previewTrial">
+                                                —
+                                            </strong>
+                                        </div>
+
+                                        <div class="tenant-summary-line">
+                                            <span>Users</span>
+                                            <strong id="previewUsers">
+                                                —
+                                            </strong>
+                                        </div>
+
+                                        <div class="tenant-summary-line">
+                                            <span>Branches</span>
+                                            <strong id="previewBranches">
+                                                —
+                                            </strong>
+                                        </div>
+
+                                    </div>
+                                </div>
+                            </section>
+
+                        </aside>
+
+                    </div>
+
+                    <section class="tenant-form-card" style="margin-top:16px;">
+                        <div class="tenant-submit-bar">
+                            <a
+                                href="tenants.php"
+                                class="tenant-cancel-button"
+                            >
+                                Cancel
+                            </a>
+
+                            <button
+                                type="submit"
+                                class="tenant-save-button"
+                                id="saveTenantButton"
+                            >
+                                <span class="tenant-loading"></span>
+                                <i class="bi bi-check2-circle"></i>
+                                <span id="saveTenantText">
+                                    Create Tenant
+                                </span>
+                            </button>
+                        </div>
+                    </section>
+
+                </form>
+
+            </div>
 
         </div>
-    </form>
+
+    </main>
+
 </div>
+
+<?php require_once __DIR__ . '/includes/footer.php'; ?>
+
+<script
+    src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
+></script>
 
 <script>
 (function () {
     'use strict';
 
-    const form = document.getElementById(
-        'tenantAddForm'
-    );
+    var body = document.body;
+    var toggle = document.getElementById('fpSidebarToggle');
+    var close = document.getElementById('fpSidebarClose');
+    var overlay = document.getElementById('fpSidebarOverlay');
 
-    const companyName = document.getElementById(
-        'companyName'
-    );
+    var SIDEBAR_STORAGE_KEY =
+        'fieldplx_sidebar_collapsed';
 
-    const slugInput = document.getElementById(
-        'tenantSlug'
-    );
-
-    const statusInput = document.getElementById(
-        'tenantStatus'
-    );
-
-    const trialFields = document.getElementById(
-        'tenantTrialFields'
-    );
-
-    const logoInput = document.getElementById(
-        'tenantLogo'
-    );
-
-    const logoPreview = document.getElementById(
-        'tenantLogoPreview'
-    );
-
-    const logoInitials = document.getElementById(
-        'tenantLogoInitials'
-    );
-
-    const submitButton = document.getElementById(
-        'tenantSubmitButton'
-    );
-
-    let slugEdited = false;
-
-    function makeSlug(value) {
-        return value
-            .toLowerCase()
-            .trim()
-            .replace(/[^a-z0-9]+/g, '-')
-            .replace(/^-+|-+$/g, '');
-    }
-
-    function makeInitials(value) {
-        const parts = value
-            .trim()
-            .split(/\s+/)
-            .filter(Boolean);
-
-        if (!parts.length) {
-            return 'TN';
-        }
-
-        let result = parts[0].charAt(0);
-
-        if (parts.length > 1) {
-            result += parts[
-                parts.length - 1
-            ].charAt(0);
-        }
-
-        return result.toUpperCase();
-    }
-
-    if (slugInput) {
-        slugInput.addEventListener(
-            'input',
-            function () {
-                slugEdited =
-                    slugInput.value.trim() !== '';
-            }
-        );
-    }
-
-    if (companyName) {
-        companyName.addEventListener(
-            'input',
-            function () {
-                if (slugInput && !slugEdited) {
-                    slugInput.value = makeSlug(
-                        companyName.value
-                    );
-                }
-
-                if (logoInitials) {
-                    logoInitials.textContent =
-                        makeInitials(
-                            companyName.value
-                        );
-                }
-            }
-        );
-    }
-
-    function updateTrialFields() {
-        if (!statusInput || !trialFields) {
+    function restoreSidebarState() {
+        if (window.innerWidth < 992) {
+            body.classList.remove('fp-sidebar-collapsed');
             return;
         }
 
-        trialFields.classList.toggle(
-            'hidden',
-            statusInput.value !== 'trial'
+        var savedState =
+            localStorage.getItem(SIDEBAR_STORAGE_KEY);
+
+        if (savedState === '1') {
+            body.classList.add('fp-sidebar-collapsed');
+        } else {
+            body.classList.remove('fp-sidebar-collapsed');
+        }
+    }
+
+    function saveSidebarState() {
+        localStorage.setItem(
+            SIDEBAR_STORAGE_KEY,
+            body.classList.contains('fp-sidebar-collapsed')
+                ? '1'
+                : '0'
         );
     }
 
-    if (statusInput) {
-        statusInput.addEventListener(
-            'change',
-            updateTrialFields
-        );
+    restoreSidebarState();
 
-        updateTrialFields();
-    }
-
-    if (
-        logoInput &&
-        logoPreview
-    ) {
-        logoInput.addEventListener(
-            'change',
-            function () {
-                const file = logoInput.files[0];
-
-                if (!file) {
-                    return;
-                }
-
-                if (!file.type.match(/^image\//)) {
-                    alert(
-                        'Select a valid image file.'
-                    );
-
-                    logoInput.value = '';
-                    return;
-                }
-
-                if (file.size > 2 * 1024 * 1024) {
-                    alert(
-                        'Tenant logo must not exceed 2 MB.'
-                    );
-
-                    logoInput.value = '';
-                    return;
-                }
-
-                const reader = new FileReader();
-
-                reader.onload = function (event) {
-                    logoPreview.innerHTML = '';
-
-                    const image =
-                        document.createElement('img');
-
-                    image.src = event.target.result;
-                    image.alt = 'Tenant logo preview';
-
-                    logoPreview.appendChild(image);
-                };
-
-                reader.readAsDataURL(file);
+    if (toggle) {
+        toggle.addEventListener('click', function () {
+            if (window.innerWidth < 992) {
+                body.classList.toggle('fp-sidebar-mobile-open');
+                return;
             }
+
+            body.classList.toggle('fp-sidebar-collapsed');
+            saveSidebarState();
+        });
+    }
+
+    if (close) {
+        close.addEventListener('click', function () {
+            body.classList.remove('fp-sidebar-mobile-open');
+        });
+    }
+
+    if (overlay) {
+        overlay.addEventListener('click', function () {
+            body.classList.remove('fp-sidebar-mobile-open');
+        });
+    }
+
+    document
+        .querySelectorAll('.fp-sidebar-menu-toggle')
+        .forEach(function (button) {
+            button.addEventListener('click', function () {
+                var menu =
+                    button.closest('.fp-sidebar-menu');
+
+                if (menu) {
+                    menu.classList.toggle('open');
+                }
+            });
+        });
+
+    /*
+    |--------------------------------------------------------------------------
+    | Tenant form
+    |--------------------------------------------------------------------------
+    */
+
+    var form = document.getElementById('tenantAddForm');
+    var alertBox = document.getElementById('tenantAlert');
+    var saveButton = document.getElementById('saveTenantButton');
+    var saveText = document.getElementById('saveTenantText');
+
+    var countrySelect = document.getElementById('countryId');
+    var currencySelect = document.getElementById('currencyId');
+    var timezoneInput = document.getElementById('timezone');
+    var dateFormatSelect = document.getElementById('dateFormat');
+    var phoneInput = document.getElementById('phone');
+
+    var legalNameInput = document.getElementById('legalName');
+    var displayNameInput = document.getElementById('displayName');
+    var tenantCodeInput = document.getElementById('tenantCode');
+    var generateCodeButton = document.getElementById('generateTenantCode');
+
+    var planSelect = document.getElementById('planId');
+    var startInput = document.getElementById('subscriptionStart');
+    var trialEndInput = document.getElementById('trialEndDate');
+
+    var previewPlan = document.getElementById('previewPlan');
+    var previewPrice = document.getElementById('previewPrice');
+    var previewCycle = document.getElementById('previewCycle');
+    var previewTrial = document.getElementById('previewTrial');
+    var previewUsers = document.getElementById('previewUsers');
+    var previewBranches = document.getElementById('previewBranches');
+
+    var displayNameTouched = false;
+
+    function showAlert(type, message) {
+        alertBox.className = 'tenant-alert show ' + type;
+        alertBox.textContent = message;
+
+        window.scrollTo({
+            top: 0,
+            behavior: 'smooth'
+        });
+    }
+
+    function hideAlert() {
+        alertBox.className = 'tenant-alert';
+        alertBox.textContent = '';
+    }
+
+    function makeCode() {
+        var value = '';
+
+        if (displayNameInput.value.trim() !== '') {
+            value = displayNameInput.value.trim();
+        } else if (legalNameInput.value.trim() !== '') {
+            value = legalNameInput.value.trim();
+        }
+
+        var prefix = value
+            .replace(/[^A-Za-z0-9]/g, '')
+            .substring(0, 3)
+            .toUpperCase();
+
+        if (prefix.length < 2) {
+            prefix = 'TNT';
+        }
+
+        var stamp = String(Date.now()).slice(-6);
+
+        tenantCodeInput.value =
+            prefix + '-' + stamp;
+    }
+
+    if (generateCodeButton) {
+        generateCodeButton.addEventListener(
+            'click',
+            makeCode
         );
     }
 
-    if (form && submitButton) {
-        form.addEventListener(
-            'submit',
-            function (event) {
-                if (!form.checkValidity()) {
-                    return;
-                }
+    legalNameInput.addEventListener(
+        'input',
+        function () {
+            if (!displayNameTouched) {
+                displayNameInput.value =
+                    legalNameInput.value;
+            }
+        }
+    );
 
+    displayNameInput.addEventListener(
+        'input',
+        function () {
+            displayNameTouched = true;
+        }
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | Country defaults
+    |--------------------------------------------------------------------------
+    */
+
+    countrySelect.addEventListener(
+        'change',
+        function () {
+            var option =
+                countrySelect.options[
+                    countrySelect.selectedIndex
+                ];
+
+            if (!option || !option.value) {
+                return;
+            }
+
+            var currencyCode =
+                option.getAttribute('data-currency') || '';
+
+            var timezone =
+                option.getAttribute('data-timezone') || '';
+
+            var dateFormat =
+                option.getAttribute('data-date-format') || '';
+
+            var phoneCode =
+                option.getAttribute('data-phone-code') || '';
+
+            if (currencyCode !== '') {
+                Array.prototype.forEach.call(
+                    currencySelect.options,
+                    function (currencyOption) {
+                        if (
+                            currencyOption.getAttribute(
+                                'data-code'
+                            ) === currencyCode
+                        ) {
+                            currencySelect.value =
+                                currencyOption.value;
+                        }
+                    }
+                );
+            }
+
+            if (timezone !== '') {
+                timezoneInput.value = timezone;
+            }
+
+            if (dateFormat !== '') {
+                var exists = false;
+
+                Array.prototype.forEach.call(
+                    dateFormatSelect.options,
+                    function (dateOption) {
+                        if (
+                            dateOption.value ===
+                            dateFormat
+                        ) {
+                            exists = true;
+                        }
+                    }
+                );
+
+                if (exists) {
+                    dateFormatSelect.value =
+                        dateFormat;
+                }
+            }
+
+            if (
+                phoneCode !== '' &&
+                phoneInput.value.trim() === ''
+            ) {
+                phoneInput.value =
+                    phoneCode.charAt(0) === '+'
+                        ? phoneCode
+                        : '+' + phoneCode;
+            }
+        }
+    );
+
+    /*
+    |--------------------------------------------------------------------------
+    | Plan preview + trial date
+    |--------------------------------------------------------------------------
+    */
+
+    function addDays(dateString, days) {
+        if (!dateString) {
+            return '';
+        }
+
+        var date = new Date(
+            dateString + 'T00:00:00'
+        );
+
+        if (isNaN(date.getTime())) {
+            return '';
+        }
+
+        date.setDate(
+            date.getDate() + Number(days || 0)
+        );
+
+        var year = date.getFullYear();
+        var month = String(
+            date.getMonth() + 1
+        ).padStart(2, '0');
+
+        var day = String(
+            date.getDate()
+        ).padStart(2, '0');
+
+        return year + '-' + month + '-' + day;
+    }
+
+    function updatePlanPreview() {
+        var option =
+            planSelect.options[
+                planSelect.selectedIndex
+            ];
+
+        if (!option || !option.value) {
+            previewPlan.textContent = 'No Plan';
+            previewPrice.textContent = '—';
+            previewCycle.textContent = '—';
+            previewTrial.textContent = '—';
+            previewUsers.textContent = '—';
+            previewBranches.textContent = '—';
+            trialEndInput.value = '';
+            return;
+        }
+
+        var name =
+            option.getAttribute('data-name') || '—';
+
+        var price =
+            option.getAttribute('data-price') || '0';
+
+        var currency =
+            option.getAttribute('data-currency') || '';
+
+        var cycle =
+            option.getAttribute('data-cycle') || '—';
+
+        var trialDays =
+            Number(
+                option.getAttribute('data-trial-days') ||
+                0
+            );
+
+        var users =
+            option.getAttribute('data-users');
+
+        var branches =
+            option.getAttribute('data-branches');
+
+        previewPlan.textContent = name;
+        previewPrice.textContent =
+            currency + ' ' +
+            Number(price).toLocaleString(
+                undefined,
+                {
+                    minimumFractionDigits: 2,
+                    maximumFractionDigits: 2
+                }
+            );
+
+        previewCycle.textContent =
+            cycle.replace(/_/g, ' ');
+
+        previewTrial.textContent =
+            trialDays > 0
+                ? trialDays + ' days'
+                : 'No trial';
+
+        previewUsers.textContent =
+            users && users !== ''
+                ? users
+                : 'Unlimited';
+
+        previewBranches.textContent =
+            branches && branches !== ''
+                ? branches
+                : 'Unlimited';
+
+        if (
+            trialDays > 0 &&
+            startInput.value !== ''
+        ) {
+            trialEndInput.value =
+                addDays(
+                    startInput.value,
+                    trialDays
+                );
+        } else {
+            trialEndInput.value = '';
+        }
+    }
+
+    planSelect.addEventListener(
+        'change',
+        updatePlanPreview
+    );
+
+    startInput.addEventListener(
+        'change',
+        updatePlanPreview
+    );
+
+    updatePlanPreview();
+
+    /*
+    |--------------------------------------------------------------------------
+    | Submit to separate API
+    |--------------------------------------------------------------------------
+    */
+
+    form.addEventListener(
+        'submit',
+        function (event) {
+            event.preventDefault();
+
+            hideAlert();
+
+            if (!form.checkValidity()) {
+                form.reportValidity();
+                return;
+            }
+
+            saveButton.disabled = true;
+            saveButton.classList.add('loading');
+            saveText.textContent = 'Creating...';
+
+            var formData = new FormData(form);
+
+            fetch(
+                'api/tenant-save.php',
+                {
+                    method: 'POST',
+                    body: formData,
+                    credentials: 'same-origin',
+                    headers: {
+                        'X-Requested-With':
+                            'XMLHttpRequest'
+                    }
+                }
+            )
+            .then(function (response) {
+                return response
+                    .json()
+                    .catch(function () {
+                        throw new Error(
+                            'Invalid API response.'
+                        );
+                    })
+                    .then(function (data) {
+                        return {
+                            ok: response.ok,
+                            data: data
+                        };
+                    });
+            })
+            .then(function (result) {
                 if (
-                    form.dataset.submitting === '1'
+                    !result.ok ||
+                    !result.data.success
                 ) {
-                    event.preventDefault();
-                    return;
+                    throw new Error(
+                        result.data.message ||
+                        'Unable to create tenant.'
+                    );
                 }
 
-                form.dataset.submitting = '1';
-                submitButton.disabled = true;
+                showAlert(
+                    'success',
+                    result.data.message ||
+                    'Tenant created successfully.'
+                );
 
-                submitButton.innerHTML =
-                    '<span class="spinner-border ' +
-                    'spinner-border-sm" ' +
-                    'aria-hidden="true"></span>' +
-                    '<span>Creating tenant...</span>';
-            }
-        );
-    }
+                window.setTimeout(
+                    function () {
+                        window.location.href =
+                            result.data.redirect ||
+                            'tenants.php';
+                    },
+                    700
+                );
+            })
+            .catch(function (error) {
+                showAlert(
+                    'error',
+                    error.message ||
+                    'Unable to create tenant.'
+                );
+
+                saveButton.disabled = false;
+                saveButton.classList.remove('loading');
+                saveText.textContent = 'Create Tenant';
+            });
+        }
+    );
+
 })();
 </script>
 
-<?php require __DIR__ . '/includes/footer.php'; ?>
+</body>
+</html>
