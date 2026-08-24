@@ -382,19 +382,27 @@
                 <span class="fp-sidebar-badge">4</span>
             </a>
 
-            <a href="#" class="fp-sidebar-link">
+            <div class="fp-sidebar-menu">
+                <button type="button" class="fp-sidebar-link fp-sidebar-menu-toggle">
+                    <span class="fp-sidebar-link-icon"><i class="bi bi-gear"></i></span>
+                    <span class="fp-sidebar-link-text">Settings</span>
+                    <span class="fp-sidebar-arrow"><i class="bi bi-chevron-down"></i></span>
+                </button>
+
+                <div class="fp-sidebar-submenu">
+                    <a href="platform-settings.php" class="fp-sidebar-sublink">Platform Settings</a>
+                    <a href="country-currency-master.php" class="fp-sidebar-sublink">Country & Currency Master</a>
+                    
+                </div>
+            </div>
+
+            <a href="platform-settings.php" class="fp-sidebar-link">
                 <span class="fp-sidebar-link-icon"><i class="bi bi-gear"></i></span>
                 <span class="fp-sidebar-link-text">Platform Settings</span>
             </a>
         </nav>
 
-        <div class="fp-sidebar-user">
-            <span class="fp-avatar">SA</span>
-            <span class="fp-sidebar-user-info">
-                <span class="fp-sidebar-user-name">Sanjay Kumar</span>
-                <span class="fp-sidebar-user-role">Super Administrator</span>
-            </span>
-        </div>
+        
 
     </div>
 </aside>
