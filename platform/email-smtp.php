@@ -575,11 +575,12 @@ body.fp-sidebar-collapsed .fp-main{margin-left:var(--fp-sidebar-collapsed-width)
                 <div class="mail-config-actions">
                     <button
                         type="button"
-                        class="mail-icon-btn smtp-test-one"
+                        class="mail-icon-btn smtp-test-email"
                         data-id="<?= (int)$config['id'] ?>"
-                        title="Test connection"
+                        data-name="<?= es_h($config['config_name']) ?>"
+                        title="Send test email"
                     >
-                        <i class="bi bi-lightning-charge"></i>
+                        <i class="bi bi-send-check"></i>
                     </button>
 
                     <button
@@ -902,8 +903,8 @@ body.fp-sidebar-collapsed .fp-main{margin-left:var(--fp-sidebar-collapsed-width)
     <div class="mail-modal-title-wrap">
         <span class="mail-card-icon"><i class="bi bi-send-check"></i></span>
         <span>
-            <h3 class="mail-modal-title">Send Test Email</h3>
-            <span class="mail-modal-subtitle">Verify SMTP authentication and delivery</span>
+            <h3 class="mail-modal-title">Send SMTP Test Email</h3>
+            <span class="mail-modal-subtitle">Send a real email to confirm SMTP delivery</span>
         </span>
     </div>
 
@@ -930,6 +931,10 @@ body.fp-sidebar-collapsed .fp-main{margin-left:var(--fp-sidebar-collapsed-width)
 <div class="mail-field full">
     <label>Recipient Email <span class="mail-required">*</span></label>
     <input class="mail-input" type="email" name="recipient_email" id="testRecipient" required placeholder="you@example.com">
+    <div class="mail-note">
+        A real test email will be sent using the selected SMTP configuration.
+        Check the recipient inbox and spam folder after the success message.
+    </div>
 </div>
 
 </div>
@@ -1032,9 +1037,33 @@ function apiRequest(formData){
             'X-Requested-With':'XMLHttpRequest',
             'Accept':'application/json'
         }
-    }).then(function(response){
-        return response.json().then(function(data){
-            return {ok:response.ok,data:data};
+    })
+    .then(function(response){
+        return response.text().then(function(rawText){
+            var text=(rawText||'').trim();
+            var data=null;
+
+            try{
+                data=text!=='' ? JSON.parse(text) : {};
+            }catch(parseError){
+                var cleanText=text
+                    .replace(/<br\s*\/?>/gi,' ')
+                    .replace(/<[^>]*>/g,' ')
+                    .replace(/\s+/g,' ')
+                    .trim();
+
+                throw new Error(
+                    cleanText!=='' ?
+                    'Server error: '+cleanText :
+                    'Server returned an invalid response.'
+                );
+            }
+
+            return {
+                ok:response.ok,
+                status:response.status,
+                data:data
+            };
         });
     });
 }
@@ -1164,27 +1193,9 @@ document.querySelectorAll('.smtp-delete').forEach(function(btn){
     });
 });
 
-document.querySelectorAll('.smtp-test-one').forEach(function(btn){
+document.querySelectorAll('.smtp-test-email').forEach(function(btn){
     btn.addEventListener('click',function(){
-        var fd=new FormData();
-        fd.append('csrf_token','<?= es_h($csrfToken) ?>');
-        fd.append('action','test_connection');
-        fd.append('id',btn.getAttribute('data-id'));
-
-        btn.disabled=true;
-
-        apiRequest(fd)
-        .then(function(result){
-            if(!result.ok||!result.data.success){
-                throw new Error(result.data.message||'SMTP connection test failed.');
-            }
-            showToast('success',result.data.message,3000);
-            setTimeout(function(){window.location.reload();},700);
-        })
-        .catch(function(error){
-            showToast('error',error.message||'SMTP connection test failed.',3000);
-            btn.disabled=false;
-        });
+        openTestModal(btn.getAttribute('data-id'));
     });
 });
 
@@ -1193,16 +1204,28 @@ var testForm=document.getElementById('testForm');
 var testSendBtn=document.getElementById('testSendBtn');
 var testSendText=document.getElementById('testSendText');
 
-function openTestModal(){
+function openTestModal(configId){
     testForm.reset();
-    <?php if ($defaultConfig): ?>
-    document.getElementById('testSmtpConfig').value='<?= (int)$defaultConfig['id'] ?>';
-    <?php endif; ?>
+
+    var smtpSelect=document.getElementById('testSmtpConfig');
+
+    if(configId){
+        smtpSelect.value=String(configId);
+    }else{
+        <?php if ($defaultConfig): ?>
+        smtpSelect.value='<?= (int)$defaultConfig['id'] ?>';
+        <?php endif; ?>
+    }
+
     testModal.classList.add('show');
+
+    window.setTimeout(function(){
+        document.getElementById('testRecipient').focus();
+    },120);
 }
 function closeTestModal(){testModal.classList.remove('show');}
 
-document.getElementById('testEmailBtn').addEventListener('click',openTestModal);
+document.getElementById('testEmailBtn').addEventListener('click',function(){openTestModal('');});
 document.getElementById('testModalClose').addEventListener('click',closeTestModal);
 document.getElementById('testCancel').addEventListener('click',closeTestModal);
 testModal.addEventListener('click',function(e){if(e.target===testModal){closeTestModal();}});
@@ -1226,7 +1249,11 @@ testForm.addEventListener('submit',function(e){
             throw new Error(result.data.message||'Unable to send test email.');
         }
 
-        showToast('success',result.data.message,3000);
+        showToast(
+            'success',
+            result.data.message||'Test email sent successfully. Please check the recipient inbox.',
+            3000
+        );
         closeTestModal();
         setTimeout(function(){window.location.reload();},700);
     })

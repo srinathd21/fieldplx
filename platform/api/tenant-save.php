@@ -217,6 +217,917 @@ function tenantApiUpload(
     return $uploadRelativeDir . '/' . $filename;
 }
 
+
+/*
+|--------------------------------------------------------------------------
+| SMTP / Welcome Email Helpers
+|--------------------------------------------------------------------------
+*/
+
+function tenantApiSmtpSecretKey(): string
+{
+    $key = '';
+
+    if (defined('FIELDPLX_SMTP_ENCRYPTION_KEY')) {
+        $key = (string) FIELDPLX_SMTP_ENCRYPTION_KEY;
+    }
+
+    if ($key === '') {
+        $env = getenv('FIELDPLX_SMTP_ENCRYPTION_KEY');
+
+        if ($env !== false) {
+            $key = trim((string) $env);
+        }
+    }
+
+    if ($key === '') {
+        $env = getenv('APP_KEY');
+
+        if ($env !== false) {
+            $key = trim((string) $env);
+        }
+    }
+
+    /*
+     * Keep this fallback identical to the Email & SMTP API.
+     * For production, define FIELDPLX_SMTP_ENCRYPTION_KEY.
+     */
+    if ($key === '') {
+        $key = hash(
+            'sha256',
+            dirname(__DIR__) .
+            '|fieldplx|smtp|credential-protection'
+        );
+    }
+
+    return hash('sha256', $key, true);
+}
+
+function tenantApiDecryptSmtpPassword(
+    ?string $stored
+): string {
+    $stored = (string) $stored;
+
+    if ($stored === '') {
+        return '';
+    }
+
+    if (strpos($stored, 'v1:') !== 0) {
+        return '';
+    }
+
+    $raw = base64_decode(
+        substr($stored, 3),
+        true
+    );
+
+    if (
+        $raw === false ||
+        strlen($raw) <= 16
+    ) {
+        return '';
+    }
+
+    $iv = substr($raw, 0, 16);
+    $cipher = substr($raw, 16);
+
+    $plain = openssl_decrypt(
+        $cipher,
+        'AES-256-CBC',
+        tenantApiSmtpSecretKey(),
+        OPENSSL_RAW_DATA,
+        $iv
+    );
+
+    return $plain === false
+        ? ''
+        : $plain;
+}
+
+function tenantApiComposerAutoloadPath(): string
+{
+    $projectRoot = dirname(
+        dirname(__DIR__)
+    );
+
+    $paths = array(
+        $projectRoot . '/vendor/autoload.php',
+        dirname(__DIR__) . '/vendor/autoload.php',
+        __DIR__ . '/../../vendor/autoload.php',
+        __DIR__ . '/../vendor/autoload.php'
+    );
+
+    foreach ($paths as $path) {
+        if (is_file($path)) {
+            return $path;
+        }
+    }
+
+    return '';
+}
+
+function tenantApiLoadPhpMailer(): void
+{
+    if (
+        class_exists(
+            'PHPMailer\\PHPMailer\\PHPMailer',
+            false
+        )
+    ) {
+        return;
+    }
+
+    $autoloadPath =
+        tenantApiComposerAutoloadPath();
+
+    if ($autoloadPath === '') {
+        throw new RuntimeException(
+            'Composer vendor/autoload.php was not found.'
+        );
+    }
+
+    require_once $autoloadPath;
+
+    if (
+        !class_exists(
+            'PHPMailer\\PHPMailer\\PHPMailer'
+        )
+    ) {
+        throw new RuntimeException(
+            'PHPMailer could not be loaded.'
+        );
+    }
+}
+
+function tenantApiPlatformSmtp(
+    PDO $pdo
+) {
+    $stmt = $pdo->query("
+        SELECT *
+        FROM smtp_configurations
+        WHERE scope_type = 'platform'
+          AND is_active = 1
+        ORDER BY
+            is_default DESC,
+            id DESC
+        LIMIT 1
+    ");
+
+    $smtp = $stmt->fetch();
+
+    return $smtp
+        ? $smtp
+        : null;
+}
+
+function tenantApiEscapeEmail(
+    $value
+): string {
+    return htmlspecialchars(
+        (string) $value,
+        ENT_QUOTES,
+        'UTF-8'
+    );
+}
+
+function tenantApiBuildWelcomeEmail(
+    array $tenant,
+    ?array $plan,
+    array $subscription
+): array {
+    $platformName = 'FieldPlx';
+
+    $tenantName =
+        trim(
+            (string) $tenant['display_name']
+        );
+
+    if ($tenantName === '') {
+        $tenantName =
+            trim(
+                (string) $tenant['legal_name']
+            );
+    }
+
+    $tenantCode =
+        (string) $tenant['tenant_code'];
+
+    $status =
+        ucfirst(
+            (string) $tenant['status']
+        );
+
+    $planName =
+        $plan &&
+        isset($plan['name'])
+            ? (string) $plan['name']
+            : 'No plan selected';
+
+    $startDate =
+        isset($subscription['start_date']) &&
+        $subscription['start_date'] !== ''
+            ? date(
+                'd M Y',
+                strtotime(
+                    $subscription['start_date']
+                )
+            )
+            : '-';
+
+    $expiryDate =
+        isset($subscription['expiry_date']) &&
+        $subscription['expiry_date'] !== ''
+            ? date(
+                'd M Y',
+                strtotime(
+                    $subscription['expiry_date']
+                )
+            )
+            : 'Not set';
+
+    $trialEndDate =
+        isset($subscription['trial_end_date']) &&
+        $subscription['trial_end_date'] !== ''
+            ? date(
+                'd M Y',
+                strtotime(
+                    $subscription['trial_end_date']
+                )
+            )
+            : '';
+
+    $portalUrl = '';
+
+    if (
+        isset($_SERVER['HTTP_HOST']) &&
+        $_SERVER['HTTP_HOST'] !== ''
+    ) {
+        $scheme =
+            (
+                isset($_SERVER['HTTPS']) &&
+                $_SERVER['HTTPS'] !== '' &&
+                strtolower(
+                    (string) $_SERVER['HTTPS']
+                ) !== 'off'
+            )
+                ? 'https'
+                : 'http';
+
+        $portalUrl =
+            $scheme .
+            '://' .
+            $_SERVER['HTTP_HOST'] .
+            '/';
+    }
+
+    $safeTenantName =
+        tenantApiEscapeEmail($tenantName);
+
+    $safeTenantCode =
+        tenantApiEscapeEmail($tenantCode);
+
+    $safeStatus =
+        tenantApiEscapeEmail($status);
+
+    $safePlanName =
+        tenantApiEscapeEmail($planName);
+
+    $safeStartDate =
+        tenantApiEscapeEmail($startDate);
+
+    $safeExpiryDate =
+        tenantApiEscapeEmail($expiryDate);
+
+    $safeTrialEndDate =
+        tenantApiEscapeEmail($trialEndDate);
+
+    $safePortalUrl =
+        tenantApiEscapeEmail($portalUrl);
+
+    $subject =
+        'Welcome to ' .
+        $platformName .
+        ' - Your workspace is ready';
+
+    $portalButton = '';
+
+    if ($portalUrl !== '') {
+        $portalButton = '
+            <div style="
+                text-align:center;
+                margin:28px 0 6px;
+            ">
+                <a
+                    href="' . $safePortalUrl . '"
+                    style="
+                        display:inline-block;
+                        padding:12px 22px;
+                        border-radius:9px;
+                        background:#6d28d9;
+                        color:#ffffff;
+                        text-decoration:none;
+                        font-size:14px;
+                        font-weight:700;
+                    "
+                >
+                    Open FieldPlx
+                </a>
+            </div>
+        ';
+    }
+
+    $trialRow = '';
+
+    if ($trialEndDate !== '') {
+        $trialRow = '
+            <tr>
+                <td style="
+                    padding:10px 0;
+                    color:#7c738d;
+                    font-size:13px;
+                ">
+                    Trial End
+                </td>
+                <td style="
+                    padding:10px 0;
+                    color:#211c32;
+                    text-align:right;
+                    font-size:13px;
+                    font-weight:700;
+                ">
+                    ' . $safeTrialEndDate . '
+                </td>
+            </tr>
+        ';
+    }
+
+    $html = '
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>' . tenantApiEscapeEmail($subject) . '</title>
+</head>
+<body style="
+    margin:0;
+    padding:0;
+    background:#f5f2fb;
+    font-family:Arial,Helvetica,sans-serif;
+    color:#211c32;
+">
+<table
+    width="100%"
+    cellpadding="0"
+    cellspacing="0"
+    border="0"
+    style="
+        width:100%;
+        background:#f5f2fb;
+        padding:28px 12px;
+    "
+>
+<tr>
+<td align="center">
+
+<table
+    width="620"
+    cellpadding="0"
+    cellspacing="0"
+    border="0"
+    style="
+        width:100%;
+        max-width:620px;
+        background:#ffffff;
+        border:1px solid #e3dcf3;
+        border-radius:16px;
+        overflow:hidden;
+        box-shadow:0 12px 34px rgba(37,29,80,.08);
+    "
+>
+<tr>
+<td style="
+    padding:22px 26px;
+    background:linear-gradient(
+        135deg,
+        #12182d 0%,
+        #201f6b 100%
+    );
+">
+    <div style="
+        display:inline-block;
+        padding:8px 10px;
+        border-radius:9px;
+        background:#8b5cf6;
+        color:#ffffff;
+        font-size:14px;
+        font-weight:800;
+        letter-spacing:.4px;
+    ">
+        FP
+    </div>
+
+    <div style="
+        margin-top:14px;
+        color:#ffffff;
+        font-size:23px;
+        font-weight:800;
+    ">
+        Welcome to FieldPlx
+    </div>
+
+    <div style="
+        margin-top:5px;
+        color:#cfc7f6;
+        font-size:13px;
+        line-height:1.6;
+    ">
+        Your business workspace has been created successfully.
+    </div>
+</td>
+</tr>
+
+<tr>
+<td style="padding:28px 26px 8px">
+
+    <div style="
+        color:#211c32;
+        font-size:18px;
+        font-weight:800;
+    ">
+        Hello ' . $safeTenantName . ',
+    </div>
+
+    <div style="
+        margin-top:12px;
+        color:#6f677d;
+        font-size:14px;
+        line-height:1.75;
+    ">
+        We are pleased to confirm that your FieldPlx workspace
+        has been created successfully. Your organization can now
+        begin setting up branches, users, roles, customers,
+        workflows and field-service operations.
+    </div>
+
+    <div style="
+        margin-top:22px;
+        padding:18px;
+        border:1px solid #e4ddf3;
+        border-radius:12px;
+        background:#fbf9ff;
+    ">
+        <div style="
+            margin-bottom:8px;
+            color:#6d28d9;
+            font-size:12px;
+            font-weight:800;
+            text-transform:uppercase;
+            letter-spacing:.5px;
+        ">
+            Workspace Details
+        </div>
+
+        <table
+            width="100%"
+            cellpadding="0"
+            cellspacing="0"
+            border="0"
+        >
+            <tr>
+                <td style="
+                    padding:10px 0;
+                    color:#7c738d;
+                    font-size:13px;
+                ">
+                    Workspace
+                </td>
+                <td style="
+                    padding:10px 0;
+                    color:#211c32;
+                    text-align:right;
+                    font-size:13px;
+                    font-weight:700;
+                ">
+                    ' . $safeTenantName . '
+                </td>
+            </tr>
+
+            <tr>
+                <td style="
+                    padding:10px 0;
+                    color:#7c738d;
+                    font-size:13px;
+                ">
+                    Tenant Code
+                </td>
+                <td style="
+                    padding:10px 0;
+                    color:#211c32;
+                    text-align:right;
+                    font-size:13px;
+                    font-weight:700;
+                ">
+                    ' . $safeTenantCode . '
+                </td>
+            </tr>
+
+            <tr>
+                <td style="
+                    padding:10px 0;
+                    color:#7c738d;
+                    font-size:13px;
+                ">
+                    Plan
+                </td>
+                <td style="
+                    padding:10px 0;
+                    color:#211c32;
+                    text-align:right;
+                    font-size:13px;
+                    font-weight:700;
+                ">
+                    ' . $safePlanName . '
+                </td>
+            </tr>
+
+            <tr>
+                <td style="
+                    padding:10px 0;
+                    color:#7c738d;
+                    font-size:13px;
+                ">
+                    Status
+                </td>
+                <td style="
+                    padding:10px 0;
+                    color:#211c32;
+                    text-align:right;
+                    font-size:13px;
+                    font-weight:700;
+                ">
+                    ' . $safeStatus . '
+                </td>
+            </tr>
+
+            <tr>
+                <td style="
+                    padding:10px 0;
+                    color:#7c738d;
+                    font-size:13px;
+                ">
+                    Subscription Start
+                </td>
+                <td style="
+                    padding:10px 0;
+                    color:#211c32;
+                    text-align:right;
+                    font-size:13px;
+                    font-weight:700;
+                ">
+                    ' . $safeStartDate . '
+                </td>
+            </tr>
+
+            <tr>
+                <td style="
+                    padding:10px 0;
+                    color:#7c738d;
+                    font-size:13px;
+                ">
+                    Subscription Expiry
+                </td>
+                <td style="
+                    padding:10px 0;
+                    color:#211c32;
+                    text-align:right;
+                    font-size:13px;
+                    font-weight:700;
+                ">
+                    ' . $safeExpiryDate . '
+                </td>
+            </tr>
+
+            ' . $trialRow . '
+        </table>
+    </div>
+
+    ' . $portalButton . '
+
+    <div style="
+        margin-top:24px;
+        padding:16px;
+        border-radius:10px;
+        background:#f8f6ff;
+        color:#675f76;
+        font-size:13px;
+        line-height:1.7;
+    ">
+        <strong style="color:#332d43">
+            Next steps
+        </strong>
+        <br>
+        1. Configure your branches and departments.<br>
+        2. Create tenant users and assign roles.<br>
+        3. Add customers and service locations.<br>
+        4. Configure workflows, services and notifications.
+    </div>
+
+    <div style="
+        margin-top:24px;
+        color:#7a7288;
+        font-size:12px;
+        line-height:1.7;
+    ">
+        If you did not expect this workspace creation email,
+        please contact the FieldPlx platform administrator.
+    </div>
+
+</td>
+</tr>
+
+<tr>
+<td style="
+    padding:18px 26px 24px;
+    color:#9b94a7;
+    font-size:11px;
+    line-height:1.7;
+">
+    This is an automated message from FieldPlx.
+    Please do not share sensitive account information by email.
+</td>
+</tr>
+
+</table>
+
+</td>
+</tr>
+</table>
+</body>
+</html>
+';
+
+    $text =
+        "Welcome to FieldPlx\n\n" .
+        "Hello " . $tenantName . ",\n\n" .
+        "Your FieldPlx workspace has been created successfully.\n\n" .
+        "Workspace: " . $tenantName . "\n" .
+        "Tenant Code: " . $tenantCode . "\n" .
+        "Plan: " . $planName . "\n" .
+        "Status: " . $status . "\n" .
+        "Subscription Start: " . $startDate . "\n" .
+        "Subscription Expiry: " . $expiryDate . "\n" .
+        (
+            $trialEndDate !== ''
+                ? "Trial End: " . $trialEndDate . "\n"
+                : ''
+        ) .
+        "\nYou can now configure branches, users, roles, customers and workflows.\n";
+
+    if ($portalUrl !== '') {
+        $text .=
+            "\nOpen FieldPlx: " .
+            $portalUrl .
+            "\n";
+    }
+
+    return array(
+        'subject' => $subject,
+        'html' => $html,
+        'text' => $text
+    );
+}
+
+function tenantApiSendWelcomeEmail(
+    PDO $pdo,
+    string $recipient,
+    array $tenant,
+    ?array $plan,
+    array $subscription
+): array {
+    if (
+        $recipient === '' ||
+        !filter_var(
+            $recipient,
+            FILTER_VALIDATE_EMAIL
+        )
+    ) {
+        return array(
+            'sent' => false,
+            'message' =>
+                'Tenant email address is empty or invalid.'
+        );
+    }
+
+    $smtp =
+        tenantApiPlatformSmtp($pdo);
+
+    if (!$smtp) {
+        return array(
+            'sent' => false,
+            'message' =>
+                'No active Platform SMTP configuration is available.'
+        );
+    }
+
+    try {
+        tenantApiLoadPhpMailer();
+
+        $password =
+            tenantApiDecryptSmtpPassword(
+                isset(
+                    $smtp['password_encrypted']
+                )
+                    ? (string) $smtp[
+                        'password_encrypted'
+                    ]
+                    : ''
+            );
+
+        $mail =
+            new \PHPMailer\PHPMailer\PHPMailer(
+                true
+            );
+
+        $mail->isSMTP();
+
+        $mail->Host =
+            trim(
+                (string) $smtp['host']
+            );
+
+        $mail->Port =
+            (int) $smtp['port'];
+
+        $mail->Timeout = 20;
+
+        if (
+            property_exists(
+                $mail,
+                'Timelimit'
+            )
+        ) {
+            $mail->Timelimit = 20;
+        }
+
+        $mail->SMTPDebug = 0;
+
+        $username =
+            trim(
+                (string) $smtp['username']
+            );
+
+        $mail->SMTPAuth =
+            $username !== '';
+
+        if ($mail->SMTPAuth) {
+            if ($password === '') {
+                throw new RuntimeException(
+                    'SMTP password is empty or could not be decrypted.'
+                );
+            }
+
+            $mail->Username =
+                $username;
+
+            $mail->Password =
+                $password;
+        }
+
+        $encryption =
+            strtolower(
+                trim(
+                    (string) $smtp[
+                        'encryption'
+                    ]
+                )
+            );
+
+        if ($encryption === 'ssl') {
+            $mail->SMTPSecure =
+                \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_SMTPS;
+
+            $mail->SMTPAutoTLS =
+                false;
+
+        } elseif (
+            $encryption === 'tls' ||
+            $encryption === 'starttls'
+        ) {
+            $mail->SMTPSecure =
+                \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS;
+
+            $mail->SMTPAutoTLS =
+                true;
+
+        } else {
+            $mail->SMTPSecure = '';
+            $mail->SMTPAutoTLS = false;
+        }
+
+        $fromEmail =
+            trim(
+                (string) $smtp[
+                    'from_email'
+                ]
+            );
+
+        if (
+            !filter_var(
+                $fromEmail,
+                FILTER_VALIDATE_EMAIL
+            )
+        ) {
+            throw new RuntimeException(
+                'Platform SMTP From Email is invalid.'
+            );
+        }
+
+        $fromName =
+            trim(
+                (string) $smtp[
+                    'from_name'
+                ]
+            );
+
+        if ($fromName === '') {
+            $fromName = 'FieldPlx';
+        }
+
+        $mail->CharSet = 'UTF-8';
+
+        $mail->setFrom(
+            $fromEmail,
+            $fromName
+        );
+
+        $replyTo =
+            trim(
+                (string) $smtp[
+                    'reply_to_email'
+                ]
+            );
+
+        if (
+            $replyTo !== '' &&
+            filter_var(
+                $replyTo,
+                FILTER_VALIDATE_EMAIL
+            )
+        ) {
+            $mail->addReplyTo(
+                $replyTo
+            );
+        }
+
+        $mail->addAddress(
+            $recipient,
+            (string) $tenant[
+                'display_name'
+            ]
+        );
+
+        $template =
+            tenantApiBuildWelcomeEmail(
+                $tenant,
+                $plan,
+                $subscription
+            );
+
+        $mail->isHTML(true);
+
+        $mail->Subject =
+            $template['subject'];
+
+        $mail->Body =
+            $template['html'];
+
+        $mail->AltBody =
+            $template['text'];
+
+        $mail->send();
+
+        return array(
+            'sent' => true,
+            'message' =>
+                'Welcome email sent successfully.'
+        );
+
+    } catch (Throwable $mailException) {
+        error_log(
+            'FieldPlx tenant welcome email error: ' .
+            $mailException->getMessage()
+        );
+
+        return array(
+            'sent' => false,
+            'message' =>
+                'Tenant was created, but welcome email could not be sent: ' .
+                $mailException->getMessage()
+        );
+    }
+}
+
 /*
 |--------------------------------------------------------------------------
 | Request validation
@@ -889,15 +1800,77 @@ try {
     $pdo->commit();
 
     /*
+    |--------------------------------------------------------------------------
+    | Send professional tenant welcome email
+    |--------------------------------------------------------------------------
+    |
+    | Email is sent only after the database transaction succeeds.
+    | Email failure never rolls back an already-created tenant.
+    |
+    */
+
+    $emailResult = array(
+        'sent' => false,
+        'message' => 'Tenant email address was not provided.'
+    );
+
+    if ($email !== '') {
+        $emailResult =
+            tenantApiSendWelcomeEmail(
+                $pdo,
+                $email,
+                array(
+                    'tenant_id' =>
+                        $tenantId,
+                    'tenant_code' =>
+                        $tenantCode,
+                    'legal_name' =>
+                        $legalName,
+                    'display_name' =>
+                        $displayName,
+                    'status' =>
+                        $status
+                ),
+                $plan,
+                array(
+                    'subscription_id' =>
+                        $subscriptionId,
+                    'start_date' =>
+                        $subscriptionStart,
+                    'expiry_date' =>
+                        $subscriptionExpiry,
+                    'trial_end_date' =>
+                        $trialEndDate
+                )
+            );
+    }
+
+    /*
      * Rotate token after successful creation.
      */
     $_SESSION['tenant_add_csrf'] =
         bin2hex(random_bytes(32));
 
+    $successMessage =
+        'Tenant created successfully.';
+
+    if ($email !== '') {
+        if ($emailResult['sent']) {
+            $successMessage .=
+                ' Welcome email sent to ' .
+                $email .
+                '.';
+        } else {
+            $successMessage .=
+                ' ' .
+                $emailResult['message'];
+        }
+    }
+
     tenantApiResponse(
         201,
         true,
-        'Tenant created successfully.',
+        $successMessage,
         array(
             'tenant_id' =>
                 $tenantId,
@@ -905,6 +1878,10 @@ try {
                 $tenantCode,
             'subscription_id' =>
                 $subscriptionId,
+            'email_sent' =>
+                (bool) $emailResult['sent'],
+            'email_message' =>
+                $emailResult['message'],
             'redirect' =>
                 'tenants.php'
         )

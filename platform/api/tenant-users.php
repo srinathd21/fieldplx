@@ -229,6 +229,1020 @@ function tua_user_limit(
     return null;
 }
 
+
+/*
+|--------------------------------------------------------------------------
+| SMTP / Tenant User Welcome Email Helpers
+|--------------------------------------------------------------------------
+*/
+
+function tua_smtp_secret_key(): string
+{
+    $key = '';
+
+    if (defined('FIELDPLX_SMTP_ENCRYPTION_KEY')) {
+        $key = (string)FIELDPLX_SMTP_ENCRYPTION_KEY;
+    }
+
+    if ($key === '') {
+        $env = getenv('FIELDPLX_SMTP_ENCRYPTION_KEY');
+
+        if ($env !== false) {
+            $key = trim((string)$env);
+        }
+    }
+
+    if ($key === '') {
+        $env = getenv('APP_KEY');
+
+        if ($env !== false) {
+            $key = trim((string)$env);
+        }
+    }
+
+    if ($key === '') {
+        $key = hash(
+            'sha256',
+            dirname(__DIR__) .
+            '|fieldplx|smtp|credential-protection'
+        );
+    }
+
+    return hash('sha256', $key, true);
+}
+
+function tua_decrypt_smtp_password(
+    ?string $stored
+): string {
+    $stored = (string)$stored;
+
+    if ($stored === '') {
+        return '';
+    }
+
+    if (strpos($stored, 'v1:') !== 0) {
+        return '';
+    }
+
+    $raw = base64_decode(
+        substr($stored, 3),
+        true
+    );
+
+    if (
+        $raw === false ||
+        strlen($raw) <= 16
+    ) {
+        return '';
+    }
+
+    $iv = substr($raw, 0, 16);
+    $cipher = substr($raw, 16);
+
+    $plain = openssl_decrypt(
+        $cipher,
+        'AES-256-CBC',
+        tua_smtp_secret_key(),
+        OPENSSL_RAW_DATA,
+        $iv
+    );
+
+    return $plain === false
+        ? ''
+        : $plain;
+}
+
+function tua_composer_autoload_path(): string
+{
+    $projectRoot = dirname(
+        dirname(__DIR__)
+    );
+
+    $paths = array(
+        $projectRoot . '/vendor/autoload.php',
+        dirname(__DIR__) . '/vendor/autoload.php',
+        __DIR__ . '/../../vendor/autoload.php',
+        __DIR__ . '/../vendor/autoload.php'
+    );
+
+    foreach ($paths as $path) {
+        if (is_file($path)) {
+            return $path;
+        }
+    }
+
+    return '';
+}
+
+function tua_load_phpmailer(): void
+{
+    if (
+        class_exists(
+            'PHPMailer\\PHPMailer\\PHPMailer',
+            false
+        )
+    ) {
+        return;
+    }
+
+    $autoloadPath =
+        tua_composer_autoload_path();
+
+    if ($autoloadPath === '') {
+        throw new RuntimeException(
+            'Composer vendor/autoload.php was not found.'
+        );
+    }
+
+    require_once $autoloadPath;
+
+    if (
+        !class_exists(
+            'PHPMailer\\PHPMailer\\PHPMailer'
+        )
+    ) {
+        throw new RuntimeException(
+            'PHPMailer could not be loaded.'
+        );
+    }
+}
+
+function tua_platform_smtp(
+    PDO $pdo
+) {
+    $stmt = $pdo->query("
+        SELECT *
+        FROM smtp_configurations
+        WHERE scope_type = 'platform'
+          AND is_active = 1
+        ORDER BY
+            is_default DESC,
+            id DESC
+        LIMIT 1
+    ");
+
+    $row = $stmt->fetch();
+
+    return $row
+        ? $row
+        : null;
+}
+
+function tua_email_escape(
+    $value
+): string {
+    return htmlspecialchars(
+        (string)$value,
+        ENT_QUOTES,
+        'UTF-8'
+    );
+}
+
+function tua_role_name(
+    PDO $pdo,
+    int $tenantId,
+    int $roleId
+): string {
+    if ($roleId <= 0) {
+        return 'Not assigned';
+    }
+
+    $stmt = $pdo->prepare("
+        SELECT name
+        FROM roles
+        WHERE id = :id
+          AND tenant_id = :tenant_id
+        LIMIT 1
+    ");
+
+    $stmt->execute(array(
+        ':id' => $roleId,
+        ':tenant_id' => $tenantId
+    ));
+
+    $name = $stmt->fetchColumn();
+
+    return $name
+        ? (string)$name
+        : 'Not assigned';
+}
+
+function tua_branch_name(
+    PDO $pdo,
+    int $tenantId,
+    int $branchId
+): string {
+    if ($branchId <= 0) {
+        return 'All / Unassigned';
+    }
+
+    $stmt = $pdo->prepare("
+        SELECT name
+        FROM branches
+        WHERE id = :id
+          AND tenant_id = :tenant_id
+        LIMIT 1
+    ");
+
+    $stmt->execute(array(
+        ':id' => $branchId,
+        ':tenant_id' => $tenantId
+    ));
+
+    $name = $stmt->fetchColumn();
+
+    return $name
+        ? (string)$name
+        : 'All / Unassigned';
+}
+
+function tua_build_user_welcome_email(
+    array $tenant,
+    array $user,
+    string $roleName,
+    string $branchName,
+    string $temporaryPassword
+): array {
+    $platformName = 'FieldPlx';
+
+    $tenantName =
+        trim(
+            (string)$tenant['display_name']
+        );
+
+    if ($tenantName === '') {
+        $tenantName = 'Your organization';
+    }
+
+    $fullName =
+        trim(
+            (string)$user['first_name'] .
+            ' ' .
+            (string)$user['last_name']
+        );
+
+    if ($fullName === '') {
+        $fullName = 'User';
+    }
+
+    $email =
+        (string)$user['email'];
+
+    $status =
+        ucwords(
+            str_replace(
+                '_',
+                ' ',
+                (string)$user['status']
+            )
+        );
+
+    $safeFullName =
+        tua_email_escape($fullName);
+
+    $safeTenantName =
+        tua_email_escape($tenantName);
+
+    $safeTenantCode =
+        tua_email_escape(
+            isset($tenant['tenant_code'])
+                ? $tenant['tenant_code']
+                : ''
+        );
+
+    $safeEmail =
+        tua_email_escape($email);
+
+    $safeRole =
+        tua_email_escape($roleName);
+
+    $safeBranch =
+        tua_email_escape($branchName);
+
+    $safeStatus =
+        tua_email_escape($status);
+
+    $safeEmployeeCode =
+        tua_email_escape(
+            isset($user['employee_code'])
+                ? $user['employee_code']
+                : ''
+        );
+
+    $safePassword =
+        tua_email_escape(
+            $temporaryPassword
+        );
+
+    $loginUrl = '';
+
+    if (
+        isset($_SERVER['HTTP_HOST']) &&
+        $_SERVER['HTTP_HOST'] !== ''
+    ) {
+        $scheme =
+            (
+                isset($_SERVER['HTTPS']) &&
+                $_SERVER['HTTPS'] !== '' &&
+                strtolower(
+                    (string)$_SERVER['HTTPS']
+                ) !== 'off'
+            )
+                ? 'https'
+                : 'http';
+
+        $loginUrl =
+            $scheme .
+            '://' .
+            $_SERVER['HTTP_HOST'] .
+            '/';
+    }
+
+    $safeLoginUrl =
+        tua_email_escape($loginUrl);
+
+    $subject =
+        'Welcome to FieldPlx - Your account is ready';
+
+    $loginButton = '';
+
+    if ($loginUrl !== '') {
+        $loginButton = '
+            <div style="
+                margin:26px 0 4px;
+                text-align:center;
+            ">
+                <a
+                    href="' . $safeLoginUrl . '"
+                    style="
+                        display:inline-block;
+                        padding:12px 22px;
+                        border-radius:9px;
+                        background:#6d28d9;
+                        color:#ffffff;
+                        text-decoration:none;
+                        font-size:14px;
+                        font-weight:700;
+                    "
+                >
+                    Open FieldPlx
+                </a>
+            </div>
+        ';
+    }
+
+    $employeeCodeRow = '';
+
+    if ($safeEmployeeCode !== '') {
+        $employeeCodeRow = '
+            <tr>
+                <td style="
+                    padding:10px 0;
+                    color:#7c738d;
+                    font-size:13px;
+                ">
+                    Employee Code
+                </td>
+                <td style="
+                    padding:10px 0;
+                    color:#211c32;
+                    text-align:right;
+                    font-size:13px;
+                    font-weight:700;
+                ">
+                    ' . $safeEmployeeCode . '
+                </td>
+            </tr>
+        ';
+    }
+
+    $passwordBlock = '';
+
+    if ($temporaryPassword !== '') {
+        $passwordBlock = '
+            <div style="
+                margin-top:18px;
+                padding:15px;
+                border:1px solid #eadffd;
+                border-radius:11px;
+                background:#faf7ff;
+            ">
+                <div style="
+                    color:#6d28d9;
+                    font-size:12px;
+                    font-weight:800;
+                    margin-bottom:8px;
+                ">
+                    Temporary Login Details
+                </div>
+
+                <div style="
+                    color:#5f5870;
+                    font-size:13px;
+                    line-height:1.7;
+                ">
+                    Email:
+                    <strong style="color:#211c32">
+                        ' . $safeEmail . '
+                    </strong>
+                    <br>
+                    Temporary Password:
+                    <strong style="color:#211c32">
+                        ' . $safePassword . '
+                    </strong>
+                </div>
+
+                <div style="
+                    margin-top:9px;
+                    color:#9a94aa;
+                    font-size:11px;
+                    line-height:1.6;
+                ">
+                    For security, please change this password after your first login.
+                </div>
+            </div>
+        ';
+    }
+
+    $html = '
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>' . tua_email_escape($subject) . '</title>
+</head>
+
+<body style="
+    margin:0;
+    padding:0;
+    background:#f5f2fb;
+    font-family:Arial,Helvetica,sans-serif;
+    color:#211c32;
+">
+
+<table
+    width="100%"
+    cellpadding="0"
+    cellspacing="0"
+    border="0"
+    style="
+        width:100%;
+        background:#f5f2fb;
+        padding:28px 12px;
+    "
+>
+<tr>
+<td align="center">
+
+<table
+    width="620"
+    cellpadding="0"
+    cellspacing="0"
+    border="0"
+    style="
+        width:100%;
+        max-width:620px;
+        background:#ffffff;
+        border:1px solid #e3dcf3;
+        border-radius:16px;
+        overflow:hidden;
+        box-shadow:0 12px 34px rgba(37,29,80,.08);
+    "
+>
+
+<tr>
+<td style="
+    padding:22px 26px;
+    background:#1c2250;
+">
+    <div style="
+        display:inline-block;
+        padding:8px 10px;
+        border-radius:9px;
+        background:#8b5cf6;
+        color:#ffffff;
+        font-size:14px;
+        font-weight:800;
+    ">
+        FP
+    </div>
+
+    <div style="
+        margin-top:14px;
+        color:#ffffff;
+        font-size:23px;
+        font-weight:800;
+    ">
+        Welcome to FieldPlx
+    </div>
+
+    <div style="
+        margin-top:5px;
+        color:#d9d1f7;
+        font-size:13px;
+        line-height:1.6;
+    ">
+        Your user account has been created successfully.
+    </div>
+</td>
+</tr>
+
+<tr>
+<td style="
+    padding:28px 26px 8px;
+">
+
+    <div style="
+        color:#211c32;
+        font-size:18px;
+        font-weight:800;
+    ">
+        Hello ' . $safeFullName . ',
+    </div>
+
+    <div style="
+        margin-top:12px;
+        color:#6f677d;
+        font-size:14px;
+        line-height:1.75;
+    ">
+        Your FieldPlx account for
+        <strong style="color:#332d43">
+            ' . $safeTenantName . '
+        </strong>
+        has been created. You can now access the workspace based on
+        the role and permissions assigned to your account.
+    </div>
+
+    <div style="
+        margin-top:22px;
+        padding:18px;
+        border:1px solid #e4ddf3;
+        border-radius:12px;
+        background:#fbf9ff;
+    ">
+        <div style="
+            margin-bottom:8px;
+            color:#6d28d9;
+            font-size:12px;
+            font-weight:800;
+            text-transform:uppercase;
+            letter-spacing:.5px;
+        ">
+            Account Details
+        </div>
+
+        <table
+            width="100%"
+            cellpadding="0"
+            cellspacing="0"
+            border="0"
+        >
+            <tr>
+                <td style="
+                    padding:10px 0;
+                    color:#7c738d;
+                    font-size:13px;
+                ">
+                    Organization
+                </td>
+                <td style="
+                    padding:10px 0;
+                    color:#211c32;
+                    text-align:right;
+                    font-size:13px;
+                    font-weight:700;
+                ">
+                    ' . $safeTenantName . '
+                </td>
+            </tr>
+
+            <tr>
+                <td style="
+                    padding:10px 0;
+                    color:#7c738d;
+                    font-size:13px;
+                ">
+                    Tenant Code
+                </td>
+                <td style="
+                    padding:10px 0;
+                    color:#211c32;
+                    text-align:right;
+                    font-size:13px;
+                    font-weight:700;
+                ">
+                    ' . $safeTenantCode . '
+                </td>
+            </tr>
+
+            ' . $employeeCodeRow . '
+
+            <tr>
+                <td style="
+                    padding:10px 0;
+                    color:#7c738d;
+                    font-size:13px;
+                ">
+                    Role
+                </td>
+                <td style="
+                    padding:10px 0;
+                    color:#211c32;
+                    text-align:right;
+                    font-size:13px;
+                    font-weight:700;
+                ">
+                    ' . $safeRole . '
+                </td>
+            </tr>
+
+            <tr>
+                <td style="
+                    padding:10px 0;
+                    color:#7c738d;
+                    font-size:13px;
+                ">
+                    Branch
+                </td>
+                <td style="
+                    padding:10px 0;
+                    color:#211c32;
+                    text-align:right;
+                    font-size:13px;
+                    font-weight:700;
+                ">
+                    ' . $safeBranch . '
+                </td>
+            </tr>
+
+            <tr>
+                <td style="
+                    padding:10px 0;
+                    color:#7c738d;
+                    font-size:13px;
+                ">
+                    Status
+                </td>
+                <td style="
+                    padding:10px 0;
+                    color:#211c32;
+                    text-align:right;
+                    font-size:13px;
+                    font-weight:700;
+                ">
+                    ' . $safeStatus . '
+                </td>
+            </tr>
+        </table>
+    </div>
+
+    ' . $passwordBlock . '
+
+    ' . $loginButton . '
+
+    <div style="
+        margin-top:24px;
+        padding:16px;
+        border-radius:10px;
+        background:#f8f6ff;
+        color:#675f76;
+        font-size:13px;
+        line-height:1.7;
+    ">
+        <strong style="color:#332d43">
+            Getting started
+        </strong>
+        <br>
+        1. Sign in to your FieldPlx account.<br>
+        2. Review your profile and assigned role.<br>
+        3. Change your temporary password.<br>
+        4. Start using the modules available to your role.
+    </div>
+
+    <div style="
+        margin-top:24px;
+        color:#7a7288;
+        font-size:12px;
+        line-height:1.7;
+    ">
+        If you were not expecting this account,
+        please contact your FieldPlx administrator.
+    </div>
+
+</td>
+</tr>
+
+<tr>
+<td style="
+    padding:18px 26px 24px;
+    color:#9b94a7;
+    font-size:11px;
+    line-height:1.7;
+">
+    This is an automated account notification from FieldPlx.
+</td>
+</tr>
+
+</table>
+
+</td>
+</tr>
+</table>
+
+</body>
+</html>
+';
+
+    $plain =
+        "Welcome to FieldPlx\n\n" .
+        "Hello " . $fullName . ",\n\n" .
+        "Your FieldPlx user account for " .
+        $tenantName .
+        " has been created successfully.\n\n" .
+        "Tenant Code: " .
+        (
+            isset($tenant['tenant_code'])
+                ? $tenant['tenant_code']
+                : ''
+        ) .
+        "\nRole: " .
+        $roleName .
+        "\nBranch: " .
+        $branchName .
+        "\nStatus: " .
+        $status .
+        "\nEmail: " .
+        $email .
+        "\n";
+
+    if ($temporaryPassword !== '') {
+        $plain .=
+            "Temporary Password: " .
+            $temporaryPassword .
+            "\n\nPlease change your password after your first login.\n";
+    }
+
+    if ($loginUrl !== '') {
+        $plain .=
+            "\nOpen FieldPlx: " .
+            $loginUrl .
+            "\n";
+    }
+
+    return array(
+        'subject' => $subject,
+        'html' => $html,
+        'text' => $plain
+    );
+}
+
+function tua_send_user_welcome_email(
+    PDO $pdo,
+    array $tenant,
+    array $user,
+    string $temporaryPassword,
+    int $roleId,
+    int $branchId
+): array {
+    $recipient =
+        isset($user['email'])
+            ? trim((string)$user['email'])
+            : '';
+
+    if (
+        $recipient === '' ||
+        !filter_var(
+            $recipient,
+            FILTER_VALIDATE_EMAIL
+        )
+    ) {
+        return array(
+            'sent' => false,
+            'message' =>
+                'User email address is empty or invalid.'
+        );
+    }
+
+    $smtp =
+        tua_platform_smtp($pdo);
+
+    if (!$smtp) {
+        return array(
+            'sent' => false,
+            'message' =>
+                'No active Platform SMTP configuration is available.'
+        );
+    }
+
+    try {
+        tua_load_phpmailer();
+
+        $password =
+            tua_decrypt_smtp_password(
+                isset($smtp['password_encrypted'])
+                    ? (string)$smtp['password_encrypted']
+                    : ''
+            );
+
+        $mail =
+            new \PHPMailer\PHPMailer\PHPMailer(
+                true
+            );
+
+        $mail->isSMTP();
+
+        $mail->Host =
+            trim(
+                (string)$smtp['host']
+            );
+
+        $mail->Port =
+            (int)$smtp['port'];
+
+        $mail->Timeout = 20;
+
+        if (
+            property_exists(
+                $mail,
+                'Timelimit'
+            )
+        ) {
+            $mail->Timelimit = 20;
+        }
+
+        $mail->SMTPDebug = 0;
+
+        $username =
+            trim(
+                (string)$smtp['username']
+            );
+
+        $mail->SMTPAuth =
+            $username !== '';
+
+        if ($mail->SMTPAuth) {
+            if ($password === '') {
+                throw new RuntimeException(
+                    'SMTP password is empty or could not be decrypted.'
+                );
+            }
+
+            $mail->Username =
+                $username;
+
+            $mail->Password =
+                $password;
+        }
+
+        $encryption =
+            strtolower(
+                trim(
+                    (string)$smtp['encryption']
+                )
+            );
+
+        if ($encryption === 'ssl') {
+            $mail->SMTPSecure =
+                \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_SMTPS;
+
+            $mail->SMTPAutoTLS =
+                false;
+
+        } elseif (
+            $encryption === 'tls' ||
+            $encryption === 'starttls'
+        ) {
+            $mail->SMTPSecure =
+                \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS;
+
+            $mail->SMTPAutoTLS =
+                true;
+
+        } else {
+            $mail->SMTPSecure = '';
+            $mail->SMTPAutoTLS = false;
+        }
+
+        $fromEmail =
+            trim(
+                (string)$smtp['from_email']
+            );
+
+        if (
+            !filter_var(
+                $fromEmail,
+                FILTER_VALIDATE_EMAIL
+            )
+        ) {
+            throw new RuntimeException(
+                'Platform SMTP From Email is invalid.'
+            );
+        }
+
+        $fromName =
+            trim(
+                (string)$smtp['from_name']
+            );
+
+        if ($fromName === '') {
+            $fromName = 'FieldPlx';
+        }
+
+        $mail->CharSet = 'UTF-8';
+
+        $mail->setFrom(
+            $fromEmail,
+            $fromName
+        );
+
+        $replyTo =
+            trim(
+                (string)$smtp['reply_to_email']
+            );
+
+        if (
+            $replyTo !== '' &&
+            filter_var(
+                $replyTo,
+                FILTER_VALIDATE_EMAIL
+            )
+        ) {
+            $mail->addReplyTo(
+                $replyTo
+            );
+        }
+
+        $fullName =
+            trim(
+                (string)$user['first_name'] .
+                ' ' .
+                (string)$user['last_name']
+            );
+
+        $mail->addAddress(
+            $recipient,
+            $fullName
+        );
+
+        $roleName =
+            tua_role_name(
+                $pdo,
+                (int)$tenant['id'],
+                $roleId
+            );
+
+        $branchName =
+            tua_branch_name(
+                $pdo,
+                (int)$tenant['id'],
+                $branchId
+            );
+
+        $template =
+            tua_build_user_welcome_email(
+                $tenant,
+                $user,
+                $roleName,
+                $branchName,
+                $temporaryPassword
+            );
+
+        $mail->isHTML(true);
+
+        $mail->Subject =
+            $template['subject'];
+
+        $mail->Body =
+            $template['html'];
+
+        $mail->AltBody =
+            $template['text'];
+
+        $mail->send();
+
+        return array(
+            'sent' => true,
+            'message' =>
+                'Welcome email sent successfully.'
+        );
+
+    } catch (Throwable $e) {
+        error_log(
+            'FieldPlx tenant user welcome email error: ' .
+            $e->getMessage()
+        );
+
+        return array(
+            'sent' => false,
+            'message' =>
+                'User created, but welcome email could not be sent: ' .
+                $e->getMessage()
+        );
+    }
+}
+
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
     tua_json(
         405,
@@ -272,10 +1286,11 @@ if ($tenantId <= 0) {
     );
 }
 
-tua_find_tenant(
-    $pdo,
-    $tenantId
-);
+$tenant =
+    tua_find_tenant(
+        $pdo,
+        $tenantId
+    );
 
 try {
 
@@ -723,13 +1738,67 @@ try {
                 )
             );
 
+            $newUserId =
+                (int)$pdo->lastInsertId();
+
+            /*
+            |--------------------------------------------------------------------------
+            | Send professional welcome email
+            |--------------------------------------------------------------------------
+            |
+            | User creation is already successful at this point.
+            | Email failure must never delete or roll back the user.
+            |
+            */
+
+            $emailResult =
+                tua_send_user_welcome_email(
+                    $pdo,
+                    $tenant,
+                    array(
+                        'id' =>
+                            $newUserId,
+                        'first_name' =>
+                            $firstName,
+                        'last_name' =>
+                            $lastName,
+                        'email' =>
+                            $email,
+                        'employee_code' =>
+                            $employeeCode,
+                        'status' =>
+                            $status
+                    ),
+                    $password,
+                    $roleId,
+                    $branchId
+                );
+
+            $successMessage =
+                'Tenant user created successfully.';
+
+            if ($emailResult['sent']) {
+                $successMessage .=
+                    ' Welcome email sent to ' .
+                    $email .
+                    '.';
+            } else {
+                $successMessage .=
+                    ' ' .
+                    $emailResult['message'];
+            }
+
             tua_json(
                 200,
                 true,
-                'Tenant user created successfully.',
+                $successMessage,
                 array(
                     'user_id' =>
-                        (int)$pdo->lastInsertId()
+                        $newUserId,
+                    'email_sent' =>
+                        (bool)$emailResult['sent'],
+                    'email_message' =>
+                        $emailResult['message']
                 )
             );
         }
