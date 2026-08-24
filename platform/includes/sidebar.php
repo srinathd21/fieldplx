@@ -318,7 +318,7 @@
 
                 <div class="fp-sidebar-submenu">
                     <a href="tenants.php" class="fp-sidebar-sublink">All Tenants</a>
-                    <a href="#" class="fp-sidebar-sublink">Add Tenant</a>
+                    <a href="tenant-add.php" class="fp-sidebar-sublink">Add Tenant</a>
                     <a href="#" class="fp-sidebar-sublink">Active Tenants</a>
                     <a href="#" class="fp-sidebar-sublink">Trial Tenants</a>
                     <a href="#" class="fp-sidebar-sublink">Suspended Tenants</a>
@@ -371,7 +371,7 @@
                 <span class="fp-sidebar-link-text">Activity Logs</span>
             </a>
 
-            <a href="#" class="fp-sidebar-link">
+            <a href="email-smtp.php" class="fp-sidebar-link">
                 <span class="fp-sidebar-link-icon"><i class="bi bi-envelope"></i></span>
                 <span class="fp-sidebar-link-text">Email & SMTP</span>
             </a>
@@ -396,10 +396,7 @@
                 </div>
             </div>
 
-            <a href="platform-settings.php" class="fp-sidebar-link">
-                <span class="fp-sidebar-link-icon"><i class="bi bi-gear"></i></span>
-                <span class="fp-sidebar-link-text">Platform Settings</span>
-            </a>
+            
         </nav>
 
         
