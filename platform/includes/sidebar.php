@@ -372,9 +372,7 @@
                 <div class="fp-sidebar-submenu">
                     <a href="tenants.php" class="fp-sidebar-sublink <?= fpActive('tenants', $activePage); ?>">All Tenants</a>
                     <a href="tenant-add.php" class="fp-sidebar-sublink <?= fpActive('tenant-add', $activePage); ?>">Add Tenant</a>
-                    <a href="#" class="fp-sidebar-sublink">Active Tenants</a>
-                    <a href="#" class="fp-sidebar-sublink">Trial Tenants</a>
-                    <a href="#" class="fp-sidebar-sublink">Suspended Tenants</a>
+          
                 </div>
             </div>
 
@@ -401,7 +399,7 @@
                 </button>
 
                 <div class="fp-sidebar-submenu">
-                    <a href="#" class="fp-sidebar-sublink">Sidebar Modules</a>
+                    <a href="sidebar-modules.php" class="fp-sidebar-sublink">Sidebar Modules</a>
                     <a href="#" class="fp-sidebar-sublink">Module Features</a>
                     <a href="#" class="fp-sidebar-sublink">Icon Settings</a>
                 </div>
