@@ -384,26 +384,18 @@
                 </button>
 
                 <div class="fp-sidebar-submenu">
-                    <a href="#" class="fp-sidebar-sublink">Plans</a>
-                    <a href="#" class="fp-sidebar-sublink">Subscriptions</a>
-                    <a href="#" class="fp-sidebar-sublink">Payments</a>
-                    <a href="#" class="fp-sidebar-sublink">Renewals</a>
+                    <a href="plans.php" class="fp-sidebar-sublink">Plans</a>
+                    <a href="plan-modules.php" class="fp-sidebar-sublink">Plan Modules</a>
+                    <a href="subscriptions.php" class="fp-sidebar-sublink">Subscriptions</a>
+                    <a href="payments.php" class="fp-sidebar-sublink">Payments</a>
+                    <a href="renewals.php" class="fp-sidebar-sublink">Renewals</a>
                 </div>
             </div>
 
-            <div class="fp-sidebar-menu">
-                <button type="button" class="fp-sidebar-link fp-sidebar-menu-toggle">
-                    <span class="fp-sidebar-link-icon"><i class="bi bi-grid-1x2"></i></span>
-                    <span class="fp-sidebar-link-text">Modules</span>
-                    <span class="fp-sidebar-arrow"><i class="bi bi-chevron-down"></i></span>
-                </button>
-
-                <div class="fp-sidebar-submenu">
-                    <a href="sidebar-modules.php" class="fp-sidebar-sublink">Sidebar Modules</a>
-                    <a href="#" class="fp-sidebar-sublink">Module Features</a>
-                    <a href="#" class="fp-sidebar-sublink">Icon Settings</a>
-                </div>
-            </div>
+            <a href="sidebar-modules.php" class="fp-sidebar-link">
+                <span class="fp-sidebar-link-icon"><i class="bi bi-grid-1x2"></i></span>
+                <span class="fp-sidebar-link-text">Sidebar Modules</span>
+            </a>
 
             <a href="#" class="fp-sidebar-link">
                 <span class="fp-sidebar-link-icon"><i class="bi bi-people"></i></span>

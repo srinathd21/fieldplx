@@ -39,7 +39,8 @@ $sql = "
         m.is_active,
         m.created_at,
         m.updated_at,
-        p.module_name AS parent_name
+        p.module_name AS parent_name,
+        p.menu_order AS parent_menu_order
     FROM modules m
     LEFT JOIN modules p ON p.id = m.parent_id
     WHERE 1=1
@@ -71,7 +72,7 @@ if ($type === 'parent') {
 
 $sql .= "
     ORDER BY
-        CASE WHEN m.parent_id IS NULL THEN m.menu_order ELSE 999999 END,
+        COALESCE(p.menu_order, m.menu_order),
         COALESCE(m.parent_id, m.id),
         CASE WHEN m.parent_id IS NULL THEN 0 ELSE 1 END,
         m.menu_order,
@@ -598,18 +599,86 @@ body.fp-sidebar-collapsed .fp-main{
     font-size:8px
 }
 
+.sm-parent-row td{
+    background:#fff
+}
+
+.sm-parent-row .sm-module-title{
+    color:#272238;
+    font-weight:800
+}
+
+.sm-child-row td{
+    background:#fdfcff
+}
+
+.sm-child-row:hover td{
+    background:#faf7ff
+}
+
 .sm-submodule{
     position:relative;
-    padding-left:18px
+    padding-left:30px
 }
 
 .sm-submodule:before{
     content:"";
     position:absolute;
-    left:3px;
+    left:10px;
+    top:-11px;
+    bottom:50%;
+    width:1px;
+    background:#d7cfee
+}
+
+.sm-submodule:after{
+    content:"";
+    position:absolute;
+    left:10px;
     top:50%;
-    width:9px;
-    border-top:1px solid #cfc5e8
+    width:13px;
+    height:1px;
+    background:#d7cfee
+}
+
+.sm-child-row .sm-row-icon{
+    width:27px;
+    height:27px;
+    flex:0 0 27px;
+    border-radius:7px;
+    background:#f5f1ff;
+    color:#8b5cf6;
+    font-size:11px
+}
+
+.sm-child-row .sm-module-title{
+    color:#51495f;
+    font-weight:700
+}
+
+.sm-child-row .sm-module-code{
+    color:#aaa2b8
+}
+
+.sm-parent-label,
+.sm-child-label{
+    display:inline-flex;
+    align-items:center;
+    gap:5px;
+    padding:4px 7px;
+    border-radius:999px;
+    font-size:8px;
+    font-weight:700
+}
+
+.sm-parent-label{
+    background:#eef2ff;
+    color:#4338ca
+}
+
+.sm-child-label{
+    background:#f5f3ff;
+    color:#7c3aed
 }
 
 .sm-badge{
@@ -626,6 +695,32 @@ body.fp-sidebar-collapsed .fp-main{
 .sm-badge.sidebar{background:#f1ecff;color:#6d28d9}
 .sm-badge.hidden{background:#fff7ed;color:#c2410c}
 .sm-badge.core{background:#eef2ff;color:#4338ca}
+
+.sm-table th:nth-child(1),
+.sm-table td:nth-child(1){
+    width:58px;
+    text-align:center
+}
+
+.sm-table th:nth-child(5),
+.sm-table td:nth-child(5){
+    width:72px;
+    text-align:center
+}
+
+.sm-table th:nth-child(6),
+.sm-table td:nth-child(6),
+.sm-table th:nth-child(7),
+.sm-table td:nth-child(7),
+.sm-table th:nth-child(8),
+.sm-table td:nth-child(8){
+    text-align:center
+}
+
+.sm-table th:last-child,
+.sm-table td:last-child{
+    width:125px
+}
 
 .sm-actions{
     display:flex;
@@ -1105,20 +1200,42 @@ foreach ($cards as $card):
 <tr><td colspan="9"><div class="sm-empty">No sidebar modules found.</div></td></tr>
 <?php else: ?>
 <?php foreach ($modules as $index => $module): ?>
-<tr>
+<tr class="<?= $module['parent_id'] ? 'sm-child-row' : 'sm-parent-row' ?>">
     <td><?= $index + 1 ?></td>
     <td>
         <div class="<?= $module['parent_id'] ? 'sm-submodule' : '' ?>">
             <div class="sm-module-name">
-                <span class="sm-row-icon"><i class="<?= sm_h($module['icon_name'] ?: 'bi bi-grid') ?>"></i></span>
+                <span class="sm-row-icon">
+                    <i class="<?= sm_h(
+                        $module['icon_name']
+                            ?: ($module['parent_id'] ? 'bi bi-dot' : 'bi bi-grid')
+                    ) ?>"></i>
+                </span>
                 <span>
-                    <span class="sm-module-title"><?= sm_h($module['module_name']) ?></span>
-                    <span class="sm-module-code"><?= sm_h($module['module_code']) ?></span>
+                    <span class="sm-module-title">
+                        <?= sm_h($module['module_name']) ?>
+                    </span>
+                    <span class="sm-module-code">
+                        <?= $module['parent_id'] ? 'Child · ' : 'Parent · ' ?>
+                        <?= sm_h($module['module_code']) ?>
+                    </span>
                 </span>
             </div>
         </div>
     </td>
-    <td><?= sm_h($module['parent_name'] ?: 'Root') ?></td>
+    <td>
+        <?php if ($module['parent_id']): ?>
+            <span class="sm-child-label">
+                <i class="bi bi-arrow-return-right"></i>
+                <?= sm_h($module['parent_name']) ?>
+            </span>
+        <?php else: ?>
+            <span class="sm-parent-label">
+                <i class="bi bi-folder2-open"></i>
+                Parent
+            </span>
+        <?php endif; ?>
+    </td>
     <td><?= sm_h($module['menu_url'] ?: '-') ?></td>
     <td><?= (int)$module['menu_order'] ?></td>
     <td><span class="sm-badge <?= (int)$module['is_sidebar_item'] === 1 ? 'sidebar' : 'hidden' ?>"><?= (int)$module['is_sidebar_item'] === 1 ? 'Visible' : 'Hidden' ?></span></td>
@@ -1239,6 +1356,8 @@ foreach ($cards as $card):
 </div>
 
 <?php require_once __DIR__ . '/includes/footer.php'; ?>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 
 <script>
 (function(){

@@ -1,12 +1,478 @@
 <?php
+require_once __DIR__ . '/includes/db.php';
+
 $pageTitle = 'Platform Dashboard';
 $activePage = 'dashboard';
 
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
 
-?>
-<?php
-$pageTitle = isset($pageTitle) ? $pageTitle : 'Dashboard';
-$activePage = isset($activePage) ? $activePage : 'dashboard';
+function dash_h($value)
+{
+    return htmlspecialchars(
+        (string)($value === null ? '' : $value),
+        ENT_QUOTES,
+        'UTF-8'
+    );
+}
+
+function dash_table_exists(PDO $pdo, $table)
+{
+    static $cache = array();
+
+    if (isset($cache[$table])) {
+        return $cache[$table];
+    }
+
+    $stmt = $pdo->prepare("
+        SELECT COUNT(*)
+        FROM INFORMATION_SCHEMA.TABLES
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = :table_name
+    ");
+
+    $stmt->execute(array(
+        ':table_name' => $table
+    ));
+
+    $cache[$table] = ((int)$stmt->fetchColumn() > 0);
+
+    return $cache[$table];
+}
+
+function dash_column_exists(PDO $pdo, $table, $column)
+{
+    static $cache = array();
+    $key = $table . '.' . $column;
+
+    if (isset($cache[$key])) {
+        return $cache[$key];
+    }
+
+    $stmt = $pdo->prepare("
+        SELECT COUNT(*)
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = :table_name
+          AND COLUMN_NAME = :column_name
+    ");
+
+    $stmt->execute(array(
+        ':table_name' => $table,
+        ':column_name' => $column
+    ));
+
+    $cache[$key] = ((int)$stmt->fetchColumn() > 0);
+
+    return $cache[$key];
+}
+
+function dash_scalar(PDO $pdo, $sql, array $params = array())
+{
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    return $stmt->fetchColumn();
+}
+
+function dash_time_ago($datetime)
+{
+    if (!$datetime) {
+        return '';
+    }
+
+    $time = strtotime($datetime);
+
+    if (!$time) {
+        return '';
+    }
+
+    $diff = time() - $time;
+
+    if ($diff < 0) {
+        return date('d M Y H:i', $time);
+    }
+
+    if ($diff < 60) {
+        return 'Just now';
+    }
+
+    if ($diff < 3600) {
+        $minutes = (int)floor($diff / 60);
+        return $minutes . ' minute' . ($minutes === 1 ? '' : 's') . ' ago';
+    }
+
+    if ($diff < 86400) {
+        $hours = (int)floor($diff / 3600);
+        return $hours . ' hour' . ($hours === 1 ? '' : 's') . ' ago';
+    }
+
+    if ($diff < 172800) {
+        return 'Yesterday';
+    }
+
+    if ($diff < 604800) {
+        $days = (int)floor($diff / 86400);
+        return $days . ' days ago';
+    }
+
+    return date('d M Y', $time);
+}
+
+function dash_activity_icon($eventType)
+{
+    $eventType = strtolower((string)$eventType);
+
+    if (strpos($eventType, 'tenant') !== false) {
+        return 'bi bi-building-add';
+    }
+
+    if (strpos($eventType, 'payment') !== false) {
+        return 'bi bi-credit-card';
+    }
+
+    if (
+        strpos($eventType, 'subscription') !== false ||
+        strpos($eventType, 'renew') !== false ||
+        strpos($eventType, 'plan') !== false
+    ) {
+        return 'bi bi-arrow-repeat';
+    }
+
+    if (strpos($eventType, 'user') !== false) {
+        return 'bi bi-person-plus';
+    }
+
+    if (strpos($eventType, 'job') !== false) {
+        return 'bi bi-briefcase';
+    }
+
+    if (strpos($eventType, 'quote') !== false) {
+        return 'bi bi-file-earmark-text';
+    }
+
+    if (strpos($eventType, 'request') !== false) {
+        return 'bi bi-inbox';
+    }
+
+    return 'bi bi-activity';
+}
+
+$tenantHasDeletedAt = dash_column_exists($pdo, 'tenants', 'deleted_at');
+$subscriptionHasDeletedAt = dash_column_exists($pdo, 'subscriptions', 'deleted_at');
+$userHasDeletedAt = dash_column_exists($pdo, 'users', 'deleted_at');
+$platformUserHasDeletedAt = dash_column_exists($pdo, 'platform_users', 'deleted_at');
+$hasSubscriptionPayments = dash_table_exists($pdo, 'subscription_payments');
+$hasActivityEvents = dash_table_exists($pdo, 'activity_events');
+
+$tenantWhere = $tenantHasDeletedAt ? ' WHERE deleted_at IS NULL ' : '';
+$subscriptionWhere = $subscriptionHasDeletedAt ? ' WHERE deleted_at IS NULL ' : '';
+$userWhere = $userHasDeletedAt ? ' WHERE deleted_at IS NULL ' : '';
+$platformUserWhere = $platformUserHasDeletedAt ? ' WHERE deleted_at IS NULL ' : '';
+
+$totalTenants = (int)dash_scalar(
+    $pdo,
+    'SELECT COUNT(*) FROM tenants' . $tenantWhere
+);
+
+$tenantsThisMonthSql = "
+    SELECT COUNT(*)
+    FROM tenants
+    WHERE created_at >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+";
+if ($tenantHasDeletedAt) {
+    $tenantsThisMonthSql .= ' AND deleted_at IS NULL ';
+}
+$tenantsThisMonth = (int)dash_scalar($pdo, $tenantsThisMonthSql);
+
+$activeTenantsSql = "SELECT COUNT(*) FROM tenants WHERE status = 'active'";
+if ($tenantHasDeletedAt) {
+    $activeTenantsSql .= ' AND deleted_at IS NULL ';
+}
+$activeTenants = (int)dash_scalar($pdo, $activeTenantsSql);
+
+$trialTenantsSql = "SELECT COUNT(*) FROM tenants WHERE status = 'trial'";
+if ($tenantHasDeletedAt) {
+    $trialTenantsSql .= ' AND deleted_at IS NULL ';
+}
+$trialTenants = (int)dash_scalar($pdo, $trialTenantsSql);
+
+$trialExpiringWeekSql = "
+    SELECT COUNT(*)
+    FROM subscriptions
+    WHERE status = 'trial'
+      AND trial_end_date IS NOT NULL
+      AND trial_end_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 7 DAY)
+";
+if ($subscriptionHasDeletedAt) {
+    $trialExpiringWeekSql .= ' AND deleted_at IS NULL ';
+}
+$trialExpiringWeek = (int)dash_scalar($pdo, $trialExpiringWeekSql);
+
+$totalSubscriptions = (int)dash_scalar(
+    $pdo,
+    'SELECT COUNT(*) FROM subscriptions' . $subscriptionWhere
+);
+
+$activeSubscriptionsSql = "SELECT COUNT(*) FROM subscriptions WHERE status = 'active'";
+if ($subscriptionHasDeletedAt) {
+    $activeSubscriptionsSql .= ' AND deleted_at IS NULL ';
+}
+$activeSubscriptions = (int)dash_scalar($pdo, $activeSubscriptionsSql);
+
+$platformUsers = (int)dash_scalar(
+    $pdo,
+    'SELECT COUNT(*) FROM platform_users' . $platformUserWhere
+);
+
+$activePlatformUsersSql = "SELECT COUNT(*) FROM platform_users WHERE status = 'active'";
+if ($platformUserHasDeletedAt) {
+    $activePlatformUsersSql .= ' AND deleted_at IS NULL ';
+}
+$activePlatformUsers = (int)dash_scalar($pdo, $activePlatformUsersSql);
+
+$tenantUsers = (int)dash_scalar(
+    $pdo,
+    'SELECT COUNT(*) FROM users' . $userWhere
+);
+
+$attentionExpirySql = "
+    SELECT COUNT(*)
+    FROM subscriptions
+    WHERE status IN ('active','trial','expired')
+      AND expiry_date IS NOT NULL
+      AND expiry_date <= DATE_ADD(CURDATE(), INTERVAL 7 DAY)
+";
+if ($subscriptionHasDeletedAt) {
+    $attentionExpirySql .= ' AND deleted_at IS NULL ';
+}
+$attentionExpiry = (int)dash_scalar($pdo, $attentionExpirySql);
+
+$attentionPayments = 0;
+$monthlyRevenueDisplay = '0.00';
+$monthlyRevenueMeta = 'No successful subscription payments this month';
+
+if ($hasSubscriptionPayments) {
+    $paymentHasDeletedAt = dash_column_exists(
+        $pdo,
+        'subscription_payments',
+        'deleted_at'
+    );
+
+    $attentionPaymentSql = "
+        SELECT COUNT(*)
+        FROM subscription_payments
+        WHERE status IN ('pending','failed')
+    ";
+
+    if ($paymentHasDeletedAt) {
+        $attentionPaymentSql .= ' AND deleted_at IS NULL ';
+    }
+
+    $attentionPayments = (int)dash_scalar(
+        $pdo,
+        $attentionPaymentSql
+    );
+
+    $revenueSql = "
+        SELECT
+            COALESCE(cur.currency_code, '') AS currency_code,
+            SUM(sp.amount) AS total_amount
+        FROM subscription_payments sp
+        LEFT JOIN currencies cur
+            ON cur.id = sp.currency_id
+        WHERE sp.status = 'succeeded'
+          AND sp.payment_date >= DATE_FORMAT(CURDATE(), '%Y-%m-01')
+          AND sp.payment_date < DATE_ADD(DATE_FORMAT(CURDATE(), '%Y-%m-01'), INTERVAL 1 MONTH)
+    ";
+
+    if ($paymentHasDeletedAt) {
+        $revenueSql .= ' AND sp.deleted_at IS NULL ';
+    }
+
+    $revenueSql .= "
+        GROUP BY sp.currency_id, cur.currency_code
+        ORDER BY total_amount DESC
+    ";
+
+    $revenueRows = $pdo->query($revenueSql)->fetchAll();
+
+    if (count($revenueRows) === 1) {
+        $monthlyRevenueDisplay =
+            ($revenueRows[0]['currency_code'] ?: '') .
+            ' ' .
+            number_format((float)$revenueRows[0]['total_amount'], 2);
+
+        $monthlyRevenueMeta = 'Successful subscription payments this month';
+    } elseif (count($revenueRows) > 1) {
+        $monthlyRevenueDisplay = count($revenueRows) . ' currencies';
+        $parts = array();
+
+        foreach (array_slice($revenueRows, 0, 3) as $row) {
+            $parts[] =
+                ($row['currency_code'] ?: '-') .
+                ' ' .
+                number_format((float)$row['total_amount'], 2);
+        }
+
+        $monthlyRevenueMeta = implode(' · ', $parts);
+    }
+}
+
+$needsAttention = $attentionExpiry + $attentionPayments;
+$activePercent = $totalTenants > 0
+    ? round(($activeTenants / $totalTenants) * 100)
+    : 0;
+
+/* Recent tenants */
+$recentTenantSql = "
+    SELECT
+        t.id,
+        t.tenant_code,
+        t.display_name,
+        t.legal_name,
+        t.status,
+        t.created_at,
+        c.name AS country_name,
+        (
+            SELECT p2.name
+            FROM subscriptions s2
+            LEFT JOIN plans p2 ON p2.id = s2.plan_id
+            WHERE s2.tenant_id = t.id
+";
+
+if ($subscriptionHasDeletedAt) {
+    $recentTenantSql .= ' AND s2.deleted_at IS NULL ';
+}
+
+$recentTenantSql .= "
+            ORDER BY s2.id DESC
+            LIMIT 1
+        ) AS plan_name,
+        (
+            SELECT COUNT(*)
+            FROM users u2
+            WHERE u2.tenant_id = t.id
+";
+
+if ($userHasDeletedAt) {
+    $recentTenantSql .= ' AND u2.deleted_at IS NULL ';
+}
+
+$recentTenantSql .= "
+        ) AS user_count
+    FROM tenants t
+    LEFT JOIN countries c ON c.id = t.country_id
+    WHERE 1=1
+";
+
+if ($tenantHasDeletedAt) {
+    $recentTenantSql .= ' AND t.deleted_at IS NULL ';
+}
+
+$recentTenantSql .= "
+    ORDER BY t.created_at DESC, t.id DESC
+    LIMIT 5
+";
+
+$recentTenants = $pdo->query($recentTenantSql)->fetchAll();
+
+/* Recent activity */
+$recentActivity = array();
+
+if ($hasActivityEvents) {
+    $activitySql = "
+        SELECT
+            ae.id,
+            ae.event_type,
+            ae.title,
+            ae.created_at,
+            ae.actor_type,
+            ae.tenant_id,
+            t.display_name AS tenant_name
+        FROM activity_events ae
+        LEFT JOIN tenants t ON t.id = ae.tenant_id
+        ORDER BY ae.created_at DESC, ae.id DESC
+        LIMIT 5
+    ";
+
+    $recentActivity = $pdo->query($activitySql)->fetchAll();
+}
+
+/* Subscription distribution */
+$distributionSql = "
+    SELECT
+        COALESCE(p.name, 'No Plan') AS plan_name,
+        COUNT(*) AS tenant_count
+    FROM subscriptions s
+    LEFT JOIN plans p ON p.id = s.plan_id
+    INNER JOIN (
+        SELECT tenant_id, MAX(id) AS latest_subscription_id
+        FROM subscriptions
+        WHERE status <> 'cancelled'
+";
+
+if ($subscriptionHasDeletedAt) {
+    $distributionSql .= ' AND deleted_at IS NULL ';
+}
+
+$distributionSql .= "
+        GROUP BY tenant_id
+    ) latest
+        ON latest.latest_subscription_id = s.id
+    WHERE s.status <> 'cancelled'
+";
+
+if ($subscriptionHasDeletedAt) {
+    $distributionSql .= ' AND s.deleted_at IS NULL ';
+}
+
+$distributionSql .= "
+    GROUP BY s.plan_id, p.name
+    ORDER BY tenant_count DESC, plan_name ASC
+    LIMIT 8
+";
+
+$subscriptionDistribution = $pdo->query($distributionSql)->fetchAll();
+$distributionTotal = 0;
+
+foreach ($subscriptionDistribution as $row) {
+    $distributionTotal += (int)$row['tenant_count'];
+}
+
+/* Welcome user */
+$welcomeName = '';
+
+if (!empty($_SESSION['platform_user_id'])) {
+    $welcomeStmt = $pdo->prepare("
+        SELECT first_name, last_name
+        FROM platform_users
+        WHERE id = :id
+        LIMIT 1
+    ");
+
+    $welcomeStmt->execute(array(
+        ':id' => (int)$_SESSION['platform_user_id']
+    ));
+
+    $welcomeUser = $welcomeStmt->fetch();
+
+    if ($welcomeUser) {
+        $welcomeName = trim(
+            $welcomeUser['first_name'] . ' ' .
+            ($welcomeUser['last_name'] ?: '')
+        );
+    }
+}
+
+if ($welcomeName === '') {
+    $welcomeName = !empty($_SESSION['platform_user_name'])
+        ? (string)$_SESSION['platform_user_name']
+        : 'Platform Admin';
+}
+
+$todayDay = date('l');
+$todayDate = date('d M Y');
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -743,16 +1209,16 @@ $activePage = isset($activePage) ? $activePage : 'dashboard';
 
                     <section class="dashboard-welcome">
                         <div>
-                            <h2>Welcome back, Sanjay</h2>
+                            <h2>Welcome back, <?= dash_h($welcomeName) ?></h2>
                             <p>
-                                Here is a sample overview of the FieldPlx platform. All numbers and records on this page
-                                are static sample data for frontend design only.
+                                Here is the live FieldPlx platform overview with current tenant, subscription,
+                                user, billing and activity information.
                             </p>
                         </div>
 
                         <div class="dashboard-date">
-                            Saturday
-                            <strong>22 Aug 2026</strong>
+                            <?= dash_h($todayDay) ?>
+                            <strong><?= dash_h($todayDate) ?></strong>
                         </div>
                     </section>
 
@@ -762,8 +1228,8 @@ $activePage = isset($activePage) ? $activePage : 'dashboard';
                             <span class="dashboard-stat-icon purple"><i class="bi bi-buildings"></i></span>
                             <span>
                                 <span class="dashboard-stat-label">Total Tenants</span>
-                                <span class="dashboard-stat-value">128</span>
-                                <span class="dashboard-stat-meta">+8 this month</span>
+                                <span class="dashboard-stat-value"><?= number_format($totalTenants) ?></span>
+                                <span class="dashboard-stat-meta">+<?= number_format($tenantsThisMonth) ?> this month</span>
                             </span>
                         </article>
 
@@ -771,8 +1237,8 @@ $activePage = isset($activePage) ? $activePage : 'dashboard';
                             <span class="dashboard-stat-icon green"><i class="bi bi-check-circle"></i></span>
                             <span>
                                 <span class="dashboard-stat-label">Active Tenants</span>
-                                <span class="dashboard-stat-value">96</span>
-                                <span class="dashboard-stat-meta">75% of all tenants</span>
+                                <span class="dashboard-stat-value"><?= number_format($activeTenants) ?></span>
+                                <span class="dashboard-stat-meta"><?= number_format($activePercent) ?>% of all tenants</span>
                             </span>
                         </article>
 
@@ -780,8 +1246,8 @@ $activePage = isset($activePage) ? $activePage : 'dashboard';
                             <span class="dashboard-stat-icon orange"><i class="bi bi-hourglass-split"></i></span>
                             <span>
                                 <span class="dashboard-stat-label">Trial Tenants</span>
-                                <span class="dashboard-stat-value">18</span>
-                                <span class="dashboard-stat-meta">6 expire this week</span>
+                                <span class="dashboard-stat-value"><?= number_format($trialTenants) ?></span>
+                                <span class="dashboard-stat-meta"><?= number_format($trialExpiringWeek) ?> expire this week</span>
                             </span>
                         </article>
 
@@ -789,8 +1255,8 @@ $activePage = isset($activePage) ? $activePage : 'dashboard';
                             <span class="dashboard-stat-icon blue"><i class="bi bi-credit-card"></i></span>
                             <span>
                                 <span class="dashboard-stat-label">Subscriptions</span>
-                                <span class="dashboard-stat-value">112</span>
-                                <span class="dashboard-stat-meta">108 currently active</span>
+                                <span class="dashboard-stat-value"><?= number_format($totalSubscriptions) ?></span>
+                                <span class="dashboard-stat-meta"><?= number_format($activeSubscriptions) ?> currently active</span>
                             </span>
                         </article>
 
@@ -798,8 +1264,8 @@ $activePage = isset($activePage) ? $activePage : 'dashboard';
                             <span class="dashboard-stat-icon cyan"><i class="bi bi-people"></i></span>
                             <span>
                                 <span class="dashboard-stat-label">Platform Users</span>
-                                <span class="dashboard-stat-value">12</span>
-                                <span class="dashboard-stat-meta">10 active administrators</span>
+                                <span class="dashboard-stat-value"><?= number_format($platformUsers) ?></span>
+                                <span class="dashboard-stat-meta"><?= number_format($activePlatformUsers) ?> active administrators</span>
                             </span>
                         </article>
 
@@ -807,7 +1273,7 @@ $activePage = isset($activePage) ? $activePage : 'dashboard';
                             <span class="dashboard-stat-icon indigo"><i class="bi bi-person-workspace"></i></span>
                             <span>
                                 <span class="dashboard-stat-label">Tenant Users</span>
-                                <span class="dashboard-stat-value">2,846</span>
+                                <span class="dashboard-stat-value"><?= number_format($tenantUsers) ?></span>
                                 <span class="dashboard-stat-meta">Across all workspaces</span>
                             </span>
                         </article>
@@ -816,8 +1282,8 @@ $activePage = isset($activePage) ? $activePage : 'dashboard';
                             <span class="dashboard-stat-icon red"><i class="bi bi-exclamation-circle"></i></span>
                             <span>
                                 <span class="dashboard-stat-label">Needs Attention</span>
-                                <span class="dashboard-stat-value">7</span>
-                                <span class="dashboard-stat-meta">Payments / expiries</span>
+                                <span class="dashboard-stat-value"><?= number_format($needsAttention) ?></span>
+                                <span class="dashboard-stat-meta"><?= number_format($attentionPayments) ?> payments · <?= number_format($attentionExpiry) ?> expiries</span>
                             </span>
                         </article>
 
@@ -825,8 +1291,8 @@ $activePage = isset($activePage) ? $activePage : 'dashboard';
                             <span class="dashboard-stat-icon gray"><i class="bi bi-currency-dollar"></i></span>
                             <span>
                                 <span class="dashboard-stat-label">Monthly Revenue</span>
-                                <span class="dashboard-stat-value">$18.4K</span>
-                                <span class="dashboard-stat-meta">Sample platform billing</span>
+                                <span class="dashboard-stat-value" style="font-size:16px"><?= dash_h($monthlyRevenueDisplay) ?></span>
+                                <span class="dashboard-stat-meta"><?= dash_h($monthlyRevenueMeta) ?></span>
                             </span>
                         </article>
 
@@ -840,7 +1306,7 @@ $activePage = isset($activePage) ? $activePage : 'dashboard';
                                     <h3 class="dashboard-card-title">Recent Tenants</h3>
                                     <div class="dashboard-card-subtitle">Latest registered businesses</div>
                                 </div>
-                                <a href="#" class="dashboard-card-link">View all</a>
+                                <a href="tenants.php" class="dashboard-card-link">View all</a>
                             </div>
 
                             <div class="dashboard-table-wrap">
@@ -856,65 +1322,39 @@ $activePage = isset($activePage) ? $activePage : 'dashboard';
                                         </tr>
                                     </thead>
                                     <tbody>
+                                    <?php if (!$recentTenants): ?>
+                                        <tr>
+                                            <td colspan="6" style="text-align:center;color:#9ca3af;">No tenants found.</td>
+                                        </tr>
+                                    <?php else: ?>
+                                        <?php foreach ($recentTenants as $tenant): ?>
+                                        <?php
+                                        $tenantStatusClass = 'status-pending';
+                                        if ($tenant['status'] === 'active') {
+                                            $tenantStatusClass = 'status-active';
+                                        } elseif ($tenant['status'] === 'trial') {
+                                            $tenantStatusClass = 'status-trial';
+                                        } elseif ($tenant['status'] === 'suspended') {
+                                            $tenantStatusClass = 'status-suspended';
+                                        }
+                                        ?>
                                         <tr>
                                             <td>
-                                                <div class="tenant-name">Prime HVAC Services</div>
-                                                <div class="tenant-code">TNT-00128</div>
+                                                <div class="tenant-name"><?= dash_h($tenant['display_name'] ?: $tenant['legal_name']) ?></div>
+                                                <div class="tenant-code"><?= dash_h($tenant['tenant_code']) ?></div>
                                             </td>
-                                            <td>Professional</td>
-                                            <td>India</td>
-                                            <td>18</td>
-                                            <td><span class="status-badge status-active">Active</span></td>
-                                            <td>22 Aug 2026</td>
-                                        </tr>
-
-                                        <tr>
+                                            <td><?= dash_h($tenant['plan_name'] ?: 'No Plan') ?></td>
+                                            <td><?= dash_h($tenant['country_name'] ?: '-') ?></td>
+                                            <td><?= number_format((int)$tenant['user_count']) ?></td>
                                             <td>
-                                                <div class="tenant-name">Urban Fix Solutions</div>
-                                                <div class="tenant-code">TNT-00127</div>
+                                                <span class="status-badge <?= dash_h($tenantStatusClass) ?>">
+                                                    <?= dash_h(ucfirst($tenant['status'])) ?>
+                                                </span>
                                             </td>
-                                            <td>Starter</td>
-                                            <td>UAE</td>
-                                            <td>5</td>
-                                            <td><span class="status-badge status-trial">Trial</span></td>
-                                            <td>21 Aug 2026</td>
+                                            <td><?= dash_h(date('d M Y', strtotime($tenant['created_at']))) ?></td>
                                         </tr>
-
-                                        <tr>
-                                            <td>
-                                                <div class="tenant-name">BlueLine Electrical</div>
-                                                <div class="tenant-code">TNT-00126</div>
-                                            </td>
-                                            <td>Enterprise</td>
-                                            <td>United Kingdom</td>
-                                            <td>64</td>
-                                            <td><span class="status-badge status-active">Active</span></td>
-                                            <td>20 Aug 2026</td>
-                                        </tr>
-
-                                        <tr>
-                                            <td>
-                                                <div class="tenant-name">GreenField Maintenance</div>
-                                                <div class="tenant-code">TNT-00125</div>
-                                            </td>
-                                            <td>Professional</td>
-                                            <td>Australia</td>
-                                            <td>22</td>
-                                            <td><span class="status-badge status-pending">Pending</span></td>
-                                            <td>19 Aug 2026</td>
-                                        </tr>
-
-                                        <tr>
-                                            <td>
-                                                <div class="tenant-name">Rapid Plumbing Co.</div>
-                                                <div class="tenant-code">TNT-00124</div>
-                                            </td>
-                                            <td>Starter</td>
-                                            <td>Canada</td>
-                                            <td>4</td>
-                                            <td><span class="status-badge status-suspended">Suspended</span></td>
-                                            <td>18 Aug 2026</td>
-                                        </tr>
+                                        <?php endforeach; ?>
+                                    <?php endif; ?>
                                     </tbody>
                                 </table>
                             </div>
@@ -924,48 +1364,38 @@ $activePage = isset($activePage) ? $activePage : 'dashboard';
                             <div class="dashboard-card-header">
                                 <div>
                                     <h3 class="dashboard-card-title">Recent Activity</h3>
-                                    <div class="dashboard-card-subtitle">Sample platform events</div>
+                                    <div class="dashboard-card-subtitle">Latest recorded platform and tenant events</div>
                                 </div>
-                                <a href="#" class="dashboard-card-link">View log</a>
+                                <a href="activity-logs.php" class="dashboard-card-link">View log</a>
                             </div>
 
                             <ul class="activity-list">
+                            <?php if (!$recentActivity): ?>
                                 <li class="activity-item">
-                                    <span class="activity-icon"><i class="bi bi-building-add"></i></span>
+                                    <span class="activity-icon"><i class="bi bi-info-circle"></i></span>
                                     <span>
-                                        <span class="activity-title">New tenant registered</span>
-                                        <span class="activity-text">Prime HVAC Services created a Professional
-                                            workspace.</span>
-                                        <span class="activity-time">8 minutes ago</span>
+                                        <span class="activity-title">No recent activity</span>
+                                        <span class="activity-text">Activity will appear here when events are recorded.</span>
                                     </span>
                                 </li>
-
+                            <?php else: ?>
+                                <?php foreach ($recentActivity as $activity): ?>
                                 <li class="activity-item">
-                                    <span class="activity-icon"><i class="bi bi-arrow-up-circle"></i></span>
+                                    <span class="activity-icon"><i class="<?= dash_h(dash_activity_icon($activity['event_type'])) ?>"></i></span>
                                     <span>
-                                        <span class="activity-title">Plan upgraded</span>
-                                        <span class="activity-text">BlueLine Electrical upgraded to Enterprise.</span>
-                                        <span class="activity-time">42 minutes ago</span>
+                                        <span class="activity-title"><?= dash_h($activity['title']) ?></span>
+                                        <span class="activity-text">
+                                            <?= dash_h(
+                                                $activity['tenant_name']
+                                                    ? $activity['tenant_name'] . ' · ' . ucwords(str_replace('_', ' ', $activity['event_type']))
+                                                    : ucwords(str_replace('_', ' ', $activity['event_type']))
+                                            ) ?>
+                                        </span>
+                                        <span class="activity-time"><?= dash_h(dash_time_ago($activity['created_at'])) ?></span>
                                     </span>
                                 </li>
-
-                                <li class="activity-item">
-                                    <span class="activity-icon"><i class="bi bi-credit-card"></i></span>
-                                    <span>
-                                        <span class="activity-title">Subscription renewed</span>
-                                        <span class="activity-text">ABC Facility Care renewed for another year.</span>
-                                        <span class="activity-time">2 hours ago</span>
-                                    </span>
-                                </li>
-
-                                <li class="activity-item">
-                                    <span class="activity-icon"><i class="bi bi-person-plus"></i></span>
-                                    <span>
-                                        <span class="activity-title">Platform user added</span>
-                                        <span class="activity-text">A new support administrator was added.</span>
-                                        <span class="activity-time">Yesterday</span>
-                                    </span>
-                                </li>
+                                <?php endforeach; ?>
+                            <?php endif; ?>
                             </ul>
                         </div>
 
@@ -977,42 +1407,43 @@ $activePage = isset($activePage) ? $activePage : 'dashboard';
                             <div class="dashboard-card-header">
                                 <div>
                                     <h3 class="dashboard-card-title">Subscription Distribution</h3>
-                                    <div class="dashboard-card-subtitle">Sample plan usage across tenants</div>
+                                    <div class="dashboard-card-subtitle">Current plan usage across tenants</div>
                                 </div>
                             </div>
 
                             <div class="subscription-progress">
-
+                            <?php if (!$subscriptionDistribution): ?>
                                 <div class="subscription-row">
                                     <div class="subscription-line">
-                                        <strong>Starter</strong>
-                                        <span>47 tenants · 42%</span>
-                                    </div>
-                                    <div class="progress">
-                                        <div class="progress-bar" style="width:42%;background:#8b5cf6;"></div>
+                                        <strong>No subscription data</strong>
+                                        <span>0 tenants</span>
                                     </div>
                                 </div>
-
+                            <?php else: ?>
+                                <?php foreach ($subscriptionDistribution as $distribution): ?>
+                                <?php
+                                $distributionCount = (int)$distribution['tenant_count'];
+                                $distributionPercent = $distributionTotal > 0
+                                    ? round(($distributionCount / $distributionTotal) * 100)
+                                    : 0;
+                                ?>
                                 <div class="subscription-row">
                                     <div class="subscription-line">
-                                        <strong>Professional</strong>
-                                        <span>43 tenants · 38%</span>
+                                        <strong><?= dash_h($distribution['plan_name']) ?></strong>
+                                        <span>
+                                            <?= number_format($distributionCount) ?> tenants ·
+                                            <?= number_format($distributionPercent) ?>%
+                                        </span>
                                     </div>
                                     <div class="progress">
-                                        <div class="progress-bar" style="width:38%;background:#5b5bd6;"></div>
+                                        <div
+                                            class="progress-bar"
+                                            style="width:<?= (int)$distributionPercent ?>%;background:#8b5cf6;"
+                                        ></div>
                                     </div>
                                 </div>
-
-                                <div class="subscription-row">
-                                    <div class="subscription-line">
-                                        <strong>Enterprise</strong>
-                                        <span>22 tenants · 20%</span>
-                                    </div>
-                                    <div class="progress">
-                                        <div class="progress-bar" style="width:20%;background:#37307a;"></div>
-                                    </div>
-                                </div>
-
+                                <?php endforeach; ?>
+                            <?php endif; ?>
                             </div>
                         </div>
 
@@ -1020,27 +1451,27 @@ $activePage = isset($activePage) ? $activePage : 'dashboard';
                             <div class="dashboard-card-header">
                                 <div>
                                     <h3 class="dashboard-card-title">Quick Actions</h3>
-                                    <div class="dashboard-card-subtitle">Frontend sample shortcuts</div>
+                                    <div class="dashboard-card-subtitle">Common platform administration shortcuts</div>
                                 </div>
                             </div>
 
                             <div class="quick-actions">
-                                <a href="#" class="quick-action">
+                                <a href="tenant-add.php" class="quick-action">
                                     <i class="bi bi-building-add"></i>
                                     <span>Add Tenant</span>
                                 </a>
 
-                                <a href="#" class="quick-action">
+                                <a href="plans.php" class="quick-action">
                                     <i class="bi bi-plus-square"></i>
                                     <span>Create Plan</span>
                                 </a>
 
-                                <a href="#" class="quick-action">
+                                <a href="platform-users.php" class="quick-action">
                                     <i class="bi bi-person-plus"></i>
                                     <span>Add Platform User</span>
                                 </a>
 
-                                <a href="#" class="quick-action">
+                                <a href="platform-settings.php" class="quick-action">
                                     <i class="bi bi-gear"></i>
                                     <span>Platform Settings</span>
                                 </a>
