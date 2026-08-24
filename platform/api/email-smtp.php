@@ -1,9 +1,107 @@
 <?php
 declare(strict_types=1);
 
-header('Content-Type: application/json; charset=utf-8');
+ob_start();
+ini_set('display_errors', '0');
+ini_set('html_errors', '0');
+ini_set('log_errors', '1');
 
-require_once __DIR__ . '/../includes/db.php';
+header('Content-Type: application/json; charset=utf-8');
+header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+
+$GLOBALS['es_json_sent'] = false;
+
+register_shutdown_function(function () {
+    if (!empty($GLOBALS['es_json_sent'])) {
+        return;
+    }
+
+    $error = error_get_last();
+
+    if (!$error) {
+        return;
+    }
+
+    $fatalTypes = array(
+        E_ERROR,
+        E_PARSE,
+        E_CORE_ERROR,
+        E_COMPILE_ERROR,
+        E_USER_ERROR
+    );
+
+    if (!in_array($error['type'], $fatalTypes, true)) {
+        return;
+    }
+
+    while (ob_get_level() > 0) {
+        @ob_end_clean();
+    }
+
+    if (!headers_sent()) {
+        http_response_code(500);
+        header('Content-Type: application/json; charset=utf-8');
+    }
+
+    error_log(
+        'FieldPlx Email/SMTP Fatal Error: ' .
+        $error['message'] .
+        ' in ' .
+        $error['file'] .
+        ':' .
+        $error['line']
+    );
+
+    echo json_encode(
+        array(
+            'success' => false,
+            'message' => 'Server PHP error while processing the email request. Check the PHP error log.'
+        ),
+        JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+    );
+});
+
+set_error_handler(function ($severity, $message, $file, $line) {
+    if (!(error_reporting() & $severity)) {
+        return false;
+    }
+
+    throw new ErrorException(
+        $message,
+        0,
+        $severity,
+        $file,
+        $line
+    );
+});
+
+try {
+    require_once __DIR__ . '/../includes/db.php';
+} catch (Throwable $e) {
+    while (ob_get_level() > 0) {
+        @ob_end_clean();
+    }
+
+    $GLOBALS['es_json_sent'] = true;
+
+    http_response_code(500);
+    header('Content-Type: application/json; charset=utf-8');
+
+    error_log(
+        'FieldPlx DB include error: ' .
+        $e->getMessage()
+    );
+
+    echo json_encode(
+        array(
+            'success' => false,
+            'message' => 'Database bootstrap failed. Check includes/db.php and the PHP error log.'
+        ),
+        JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+    );
+
+    exit;
+}
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
@@ -24,7 +122,17 @@ function es_json(
     string $message,
     array $extra = array()
 ): void {
+    $GLOBALS['es_json_sent'] = true;
+
+    while (ob_get_level() > 0) {
+        @ob_end_clean();
+    }
+
     http_response_code($status);
+
+    if (!headers_sent()) {
+        header('Content-Type: application/json; charset=utf-8');
+    }
 
     echo json_encode(
         array_merge(
@@ -50,6 +158,7 @@ function es_secret_key(): string
 
     if ($key === '') {
         $env = getenv('FIELDPLX_SMTP_ENCRYPTION_KEY');
+
         if ($env !== false) {
             $key = trim((string)$env);
         }
@@ -57,21 +166,17 @@ function es_secret_key(): string
 
     if ($key === '') {
         $env = getenv('APP_KEY');
+
         if ($env !== false) {
             $key = trim((string)$env);
         }
     }
 
-    /*
-     * Compatibility fallback:
-     * This avoids plaintext database storage when an application secret
-     * has not yet been configured. For production, define
-     * FIELDPLX_SMTP_ENCRYPTION_KEY in the server environment.
-     */
     if ($key === '') {
         $key = hash(
             'sha256',
-            __DIR__ . '|fieldplx|smtp|credential-protection'
+            dirname(__DIR__) .
+            '|fieldplx|smtp|credential-protection'
         );
     }
 
@@ -118,16 +223,13 @@ function es_decrypt(?string $stored): string
     }
 
     if (strpos($stored, 'v1:') !== 0) {
-        /*
-         * Legacy compatibility only.
-         * Existing projects may have previously stored another format.
-         * Returning an empty password is safer than treating unknown data
-         * as plaintext credentials.
-         */
         return '';
     }
 
-    $raw = base64_decode(substr($stored, 3), true);
+    $raw = base64_decode(
+        substr($stored, 3),
+        true
+    );
 
     if ($raw === false || strlen($raw) <= 16) {
         return '';
@@ -172,39 +274,151 @@ function es_load_config(PDO $pdo, int $id): array
     return $row;
 }
 
-function es_load_phpmailer(): bool
+function es_composer_autoload_path(): string
 {
-    if (class_exists('PHPMailer\\PHPMailer\\PHPMailer')) {
-        return true;
-    }
+    $projectRoot = dirname(dirname(__DIR__));
 
     $paths = array(
+        $projectRoot . '/vendor/autoload.php',
+        dirname(__DIR__) . '/vendor/autoload.php',
         __DIR__ . '/../../vendor/autoload.php',
-        __DIR__ . '/../vendor/autoload.php',
-        __DIR__ . '/../../mailer/vendor/autoload.php',
-        __DIR__ . '/../mailer/vendor/autoload.php'
+        __DIR__ . '/../vendor/autoload.php'
     );
 
     foreach ($paths as $path) {
         if (is_file($path)) {
-            require_once $path;
-
-            if (class_exists('PHPMailer\\PHPMailer\\PHPMailer')) {
-                return true;
-            }
+            return $path;
         }
     }
 
-    return false;
+    return '';
 }
 
-function es_send_test(array $config, string $recipient): void
+function es_installed_phpmailer_version(
+    string $autoloadPath
+): string {
+    if ($autoloadPath === '') {
+        return '';
+    }
+
+    $installedJson =
+        dirname($autoloadPath) .
+        '/composer/installed.json';
+
+    if (!is_file($installedJson)) {
+        return '';
+    }
+
+    $raw = @file_get_contents($installedJson);
+
+    if ($raw === false) {
+        return '';
+    }
+
+    $data = json_decode($raw, true);
+
+    if (!is_array($data)) {
+        return '';
+    }
+
+    $packages =
+        isset($data['packages']) &&
+        is_array($data['packages'])
+            ? $data['packages']
+            : $data;
+
+    foreach ($packages as $package) {
+        if (
+            is_array($package) &&
+            isset($package['name']) &&
+            $package['name'] === 'phpmailer/phpmailer'
+        ) {
+            return isset($package['version'])
+                ? (string)$package['version']
+                : '';
+        }
+    }
+
+    return '';
+}
+
+function es_load_phpmailer(): void
 {
-    if (!es_load_phpmailer()) {
+    if (
+        class_exists(
+            'PHPMailer\\PHPMailer\\PHPMailer',
+            false
+        )
+    ) {
+        return;
+    }
+
+    $autoloadPath = es_composer_autoload_path();
+
+    if ($autoloadPath === '') {
         throw new RuntimeException(
-            'PHPMailer is not available. Install PHPMailer with Composer to send a test email.'
+            'Composer vendor/autoload.php was not found. Run composer require phpmailer/phpmailer:^6.9 from the FieldPlx project root.'
         );
     }
+
+    $version = es_installed_phpmailer_version(
+        $autoloadPath
+    );
+
+    if (
+        PHP_VERSION_ID < 80100 &&
+        $version !== '' &&
+        preg_match('/^v?7\./i', $version)
+    ) {
+        throw new RuntimeException(
+            'PHPMailer ' .
+            $version .
+            ' is not compatible with PHP ' .
+            PHP_VERSION .
+            '. Install PHPMailer 6.9.x using: composer require phpmailer/phpmailer:^6.9'
+        );
+    }
+
+    require_once $autoloadPath;
+
+    if (
+        !class_exists(
+            'PHPMailer\\PHPMailer\\PHPMailer'
+        )
+    ) {
+        throw new RuntimeException(
+            'PHPMailer could not be loaded from Composer autoload.php.'
+        );
+    }
+}
+
+function es_update_test_result(
+    PDO $pdo,
+    int $id,
+    string $status,
+    string $message
+): void {
+    $stmt = $pdo->prepare("
+        UPDATE smtp_configurations
+        SET
+            last_test_status = :status,
+            last_test_message = :message,
+            last_tested_at = NOW()
+        WHERE id = :id
+    ");
+
+    $stmt->execute(array(
+        ':status' => $status,
+        ':message' => $message,
+        ':id' => $id
+    ));
+}
+
+function es_send_test(
+    array $config,
+    string $recipient
+): void {
+    es_load_phpmailer();
 
     $password = es_decrypt(
         isset($config['password_encrypted'])
@@ -215,41 +429,66 @@ function es_send_test(array $config, string $recipient): void
     $mail = new \PHPMailer\PHPMailer\PHPMailer(true);
 
     $mail->isSMTP();
-    $mail->Host = (string)$config['host'];
+    $mail->Host = trim((string)$config['host']);
     $mail->Port = (int)$config['port'];
     $mail->Timeout = 20;
-    $mail->SMTPAuth = trim((string)$config['username']) !== '';
+
+    if (property_exists($mail, 'Timelimit')) {
+        $mail->Timelimit = 20;
+    }
+
+    $mail->SMTPDebug = 0;
+
+    $username = trim((string)$config['username']);
+
+    $mail->SMTPAuth = $username !== '';
 
     if ($mail->SMTPAuth) {
-        $mail->Username = (string)$config['username'];
+        if ($password === '') {
+            throw new RuntimeException(
+                'SMTP password is empty or could not be decrypted. Edit this SMTP configuration, enter the password again, save it, then test again.'
+            );
+        }
+
+        $mail->Username = $username;
         $mail->Password = $password;
     }
 
-    $encryption = strtolower((string)$config['encryption']);
+    $encryption = strtolower(
+        trim((string)$config['encryption'])
+    );
 
     if ($encryption === 'ssl') {
         $mail->SMTPSecure =
             \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_SMTPS;
+        $mail->SMTPAutoTLS = false;
     } elseif (
         $encryption === 'tls' ||
         $encryption === 'starttls'
     ) {
         $mail->SMTPSecure =
             \PHPMailer\PHPMailer\PHPMailer::ENCRYPTION_STARTTLS;
+        $mail->SMTPAutoTLS = true;
     } else {
-        $mail->SMTPSecure = false;
+        $mail->SMTPSecure = '';
         $mail->SMTPAutoTLS = false;
     }
 
     $fromEmail = trim((string)$config['from_email']);
 
-    if (!filter_var($fromEmail, FILTER_VALIDATE_EMAIL)) {
+    if (
+        !filter_var(
+            $fromEmail,
+            FILTER_VALIDATE_EMAIL
+        )
+    ) {
         throw new RuntimeException(
             'The configured From Email is invalid.'
         );
     }
 
     $fromName = trim((string)$config['from_name']);
+
     if ($fromName === '') {
         $fromName = 'FieldPlx';
     }
@@ -258,25 +497,48 @@ function es_send_test(array $config, string $recipient): void
     $mail->setFrom($fromEmail, $fromName);
 
     $replyTo = trim((string)$config['reply_to_email']);
+
     if (
         $replyTo !== '' &&
-        filter_var($replyTo, FILTER_VALIDATE_EMAIL)
+        filter_var(
+            $replyTo,
+            FILTER_VALIDATE_EMAIL
+        )
     ) {
         $mail->addReplyTo($replyTo);
     }
 
     $mail->addAddress($recipient);
     $mail->isHTML(true);
-    $mail->Subject = 'FieldPlx SMTP Test';
-    $mail->Body = '
-        <div style="font-family:Arial,sans-serif">
-            <h2>FieldPlx SMTP Test</h2>
-            <p>Your SMTP configuration is working correctly.</p>
-            <p>This email was generated from the FieldPlx Platform SMTP page.</p>
-        </div>
-    ';
+    $mail->Subject = 'FieldPlx SMTP Test Email';
+
+    $safeConfigName = htmlspecialchars(
+        (string)$config['config_name'],
+        ENT_QUOTES,
+        'UTF-8'
+    );
+
+    $safeHost = htmlspecialchars(
+        (string)$config['host'],
+        ENT_QUOTES,
+        'UTF-8'
+    );
+
+    $mail->Body =
+        '<div style="font-family:Arial,sans-serif;line-height:1.6;color:#222">' .
+        '<h2 style="color:#6d28d9">FieldPlx SMTP Test</h2>' .
+        '<p>This is a real test email sent from your FieldPlx Platform SMTP settings.</p>' .
+        '<p><strong>SMTP Configuration:</strong> ' .
+        $safeConfigName .
+        '</p>' .
+        '<p><strong>SMTP Host:</strong> ' .
+        $safeHost .
+        '</p>' .
+        '<p>If you received this email, SMTP authentication and email delivery are working.</p>' .
+        '</div>';
+
     $mail->AltBody =
-        'FieldPlx SMTP Test - Your SMTP configuration is working correctly.';
+        'FieldPlx SMTP Test Email. If you received this message, SMTP authentication and email delivery are working.';
 
     $mail->send();
 }
@@ -325,11 +587,13 @@ try {
         $fromName = es_post('from_name');
         $fromEmail = es_post('from_email');
         $replyTo = es_post('reply_to_email');
+
         $isDefault =
             isset($_POST['is_default']) &&
             $_POST['is_default'] === '1'
                 ? 1
                 : 0;
+
         $isActive =
             es_post('is_active', '1') === '1'
                 ? 1
@@ -414,12 +678,10 @@ try {
             LIMIT 1
         ");
 
-        $dupStmt->execute(
-            array(
-                ':name' => $configName,
-                ':id' => $id
-            )
-        );
+        $dupStmt->execute(array(
+            ':name' => $configName,
+            ':id' => $id
+        ));
 
         if ($dupStmt->fetchColumn()) {
             es_json(
@@ -478,34 +740,24 @@ try {
                   AND scope_type = 'platform'
             ");
 
-            $stmt->execute(
-                array(
-                    ':config_name' => $configName,
-                    ':host' => $host,
-                    ':port' => $port,
-                    ':encryption' => $encryption,
-                    ':username' =>
-                        $username === ''
-                            ? null
-                            : $username,
-                    ':password_encrypted' =>
-                        $passwordEncrypted === ''
-                            ? null
-                            : $passwordEncrypted,
-                    ':from_name' =>
-                        $fromName === ''
-                            ? null
-                            : $fromName,
-                    ':from_email' => $fromEmail,
-                    ':reply_to_email' =>
-                        $replyTo === ''
-                            ? null
-                            : $replyTo,
-                    ':is_default' => $isDefault,
-                    ':is_active' => $isActive,
-                    ':id' => $id
-                )
-            );
+            $stmt->execute(array(
+                ':config_name' => $configName,
+                ':host' => $host,
+                ':port' => $port,
+                ':encryption' => $encryption,
+                ':username' =>
+                    $username === '' ? null : $username,
+                ':password_encrypted' =>
+                    $passwordEncrypted === '' ? null : $passwordEncrypted,
+                ':from_name' =>
+                    $fromName === '' ? null : $fromName,
+                ':from_email' => $fromEmail,
+                ':reply_to_email' =>
+                    $replyTo === '' ? null : $replyTo,
+                ':is_default' => $isDefault,
+                ':is_active' => $isActive,
+                ':id' => $id
+            ));
 
             $pdo->commit();
 
@@ -516,12 +768,13 @@ try {
             );
         }
 
-        $passwordEncrypted = '';
-
-        if ($password !== '') {
-            $passwordEncrypted =
-                es_encrypt($password);
+        if ($password === '') {
+            throw new RuntimeException(
+                'SMTP password is required when creating a new SMTP configuration.'
+            );
         }
+
+        $passwordEncrypted = es_encrypt($password);
 
         $stmt = $pdo->prepare("
             INSERT INTO smtp_configurations (
@@ -559,34 +812,23 @@ try {
             )
         ");
 
-        $stmt->execute(
-            array(
-                ':config_name' => $configName,
-                ':host' => $host,
-                ':port' => $port,
-                ':encryption' => $encryption,
-                ':username' =>
-                    $username === ''
-                        ? null
-                        : $username,
-                ':password_encrypted' =>
-                    $passwordEncrypted === ''
-                        ? null
-                        : $passwordEncrypted,
-                ':from_name' =>
-                    $fromName === ''
-                        ? null
-                        : $fromName,
-                ':from_email' => $fromEmail,
-                ':reply_to_email' =>
-                    $replyTo === ''
-                        ? null
-                        : $replyTo,
-                ':is_default' => $isDefault,
-                ':is_active' => $isActive,
-                ':created_by' => $createdBy
-            )
-        );
+        $stmt->execute(array(
+            ':config_name' => $configName,
+            ':host' => $host,
+            ':port' => $port,
+            ':encryption' => $encryption,
+            ':username' =>
+                $username === '' ? null : $username,
+            ':password_encrypted' => $passwordEncrypted,
+            ':from_name' =>
+                $fromName === '' ? null : $fromName,
+            ':from_email' => $fromEmail,
+            ':reply_to_email' =>
+                $replyTo === '' ? null : $replyTo,
+            ':is_default' => $isDefault,
+            ':is_active' => $isActive,
+            ':created_by' => $createdBy
+        ));
 
         $pdo->commit();
 
@@ -621,12 +863,10 @@ try {
               AND scope_type = 'platform'
         ");
 
-        $stmt->execute(
-            array(
-                ':is_active' => $isActive,
-                ':id' => $id
-            )
-        );
+        $stmt->execute(array(
+            ':is_active' => $isActive,
+            ':id' => $id
+        ));
 
         es_json(
             200,
@@ -648,7 +888,7 @@ try {
             );
         }
 
-        $config = es_load_config($pdo, $id);
+        es_load_config($pdo, $id);
 
         $checkStmt = $pdo->prepare("
             SELECT COUNT(*)
@@ -656,9 +896,7 @@ try {
             WHERE smtp_config_id = :id
         ");
 
-        $checkStmt->execute(
-            array(':id' => $id)
-        );
+        $checkStmt->execute(array(':id' => $id));
 
         if ((int)$checkStmt->fetchColumn() > 0) {
             es_json(
@@ -668,39 +906,13 @@ try {
             );
         }
 
-        $campaignCheck = $pdo->prepare("
-            SELECT COUNT(*)
-            FROM email_campaigns
-            WHERE smtp_config_id = :id
-        ");
-
-        try {
-            $campaignCheck->execute(
-                array(':id' => $id)
-            );
-
-            if (
-                (int)$campaignCheck->fetchColumn() > 0
-            ) {
-                es_json(
-                    409,
-                    false,
-                    'This SMTP configuration is already used by an email campaign. Deactivate it instead of deleting.'
-                );
-            }
-        } catch (Throwable $ignore) {
-            // Compatibility if email_campaigns is not enabled.
-        }
-
         $stmt = $pdo->prepare("
             DELETE FROM smtp_configurations
             WHERE id = :id
               AND scope_type = 'platform'
         ");
 
-        $stmt->execute(
-            array(':id' => $id)
-        );
+        $stmt->execute(array(':id' => $id));
 
         es_json(
             200,
@@ -722,15 +934,11 @@ try {
 
         $config = es_load_config($pdo, $id);
 
-        $host = trim(
-            (string)$config['host']
-        );
+        $host = trim((string)$config['host']);
         $port = (int)$config['port'];
 
         $transport =
-            strtolower(
-                (string)$config['encryption']
-            ) === 'ssl'
+            strtolower((string)$config['encryption']) === 'ssl'
                 ? 'ssl://'
                 : '';
 
@@ -754,20 +962,11 @@ try {
                         : 'Unable to reach SMTP server.'
                 );
 
-            $stmt = $pdo->prepare("
-                UPDATE smtp_configurations
-                SET
-                    last_test_status = 'failed',
-                    last_test_message = :message,
-                    last_tested_at = NOW()
-                WHERE id = :id
-            ");
-
-            $stmt->execute(
-                array(
-                    ':message' => $message,
-                    ':id' => $id
-                )
+            es_update_test_result(
+                $pdo,
+                $id,
+                'failed',
+                $message
             );
 
             es_json(
@@ -782,20 +981,11 @@ try {
         $message =
             'SMTP server connection successful.';
 
-        $stmt = $pdo->prepare("
-            UPDATE smtp_configurations
-            SET
-                last_test_status = 'success',
-                last_test_message = :message,
-                last_tested_at = NOW()
-            WHERE id = :id
-        ");
-
-        $stmt->execute(
-            array(
-                ':message' => $message,
-                ':id' => $id
-            )
+        es_update_test_result(
+            $pdo,
+            $id,
+            'success',
+            $message
         );
 
         es_json(
@@ -810,6 +1000,7 @@ try {
             'smtp_config_id',
             '0'
         );
+
         $recipient = es_post(
             'recipient_email'
         );
@@ -852,22 +1043,13 @@ try {
             );
 
             $message =
-                'Test email sent successfully.';
+                'Test email sent successfully. Please check the recipient inbox and spam folder.';
 
-            $stmt = $pdo->prepare("
-                UPDATE smtp_configurations
-                SET
-                    last_test_status = 'success',
-                    last_test_message = :message,
-                    last_tested_at = NOW()
-                WHERE id = :id
-            ");
-
-            $stmt->execute(
-                array(
-                    ':message' => $message,
-                    ':id' => $id
-                )
+            es_update_test_result(
+                $pdo,
+                $id,
+                'success',
+                $message
             );
 
             es_json(
@@ -881,21 +1063,19 @@ try {
                 'Test email failed: ' .
                 $e->getMessage();
 
-            $stmt = $pdo->prepare("
-                UPDATE smtp_configurations
-                SET
-                    last_test_status = 'failed',
-                    last_test_message = :message,
-                    last_tested_at = NOW()
-                WHERE id = :id
-            ");
-
-            $stmt->execute(
-                array(
-                    ':message' => $safeMessage,
-                    ':id' => $id
-                )
-            );
+            try {
+                es_update_test_result(
+                    $pdo,
+                    $id,
+                    'failed',
+                    $safeMessage
+                );
+            } catch (Throwable $logError) {
+                error_log(
+                    'Unable to save SMTP test result: ' .
+                    $logError->getMessage()
+                );
+            }
 
             error_log(
                 'FieldPlx SMTP Test Error: ' .
@@ -934,6 +1114,7 @@ try {
     es_json(
         500,
         false,
-        'Unable to complete the requested email/SMTP action.'
+        'Unable to complete the requested email/SMTP action: ' .
+        $e->getMessage()
     );
 }
