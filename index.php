@@ -270,7 +270,7 @@ body {
           <li class="nav-item"><a class="nav-link" href="#contact">Contact</a></li>
         </ul>
         <div class="d-flex gap-3 nav-actions">
-          <a href="login.php" class="btn btn-outline-dark px-4">Log In</a>
+          <a href="business/login.php" class="btn btn-outline-dark px-4">Log In</a>
           <a href="#contact" class="btn btn-brand px-4">Start Free Trial</a>
         </div>
       </div>
