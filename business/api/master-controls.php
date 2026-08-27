@@ -7,6 +7,38 @@ ini_set('log_errors','1');
 
 header('Content-Type: application/json; charset=utf-8');
 
+/* SMTP secret must never block normal Master Controls loading.
+ * The key is loaded lazily only when an SMTP password must be encrypted
+ * or decrypted. */
+function mcLoadSmtpSecretFile()
+{
+    if (defined('FIELDPLX_SMTP_ENCRYPTION_KEY')) {
+        return true;
+    }
+
+    $candidates = array(
+        __DIR__ . '/../includes/smtp-secret.php',
+        __DIR__ . '/../../includes/smtp-secret.php'
+    );
+
+    foreach ($candidates as $file) {
+        if (is_file($file)) {
+            try {
+                require_once $file;
+            } catch (Throwable $e) {
+                error_log('SMTP secret loader: '.$e->getMessage());
+                continue;
+            }
+
+            if (defined('FIELDPLX_SMTP_ENCRYPTION_KEY')) {
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 require_once __DIR__ . '/../includes/auth.php';
 
 if (file_exists(__DIR__ . '/../includes/audit.php')) {
@@ -168,38 +200,65 @@ function mcAudit(
     }
 }
 
+function mcSmtpSecretKey()
+{
+    $key = '';
+
+    mcLoadSmtpSecretFile();
+
+    if (defined('FIELDPLX_SMTP_ENCRYPTION_KEY')) {
+        $key = trim((string)FIELDPLX_SMTP_ENCRYPTION_KEY);
+    }
+
+    if ($key === '') {
+        $env = getenv('FIELDPLX_SMTP_ENCRYPTION_KEY');
+        if ($env !== false) {
+            $key = trim((string)$env);
+        }
+    }
+
+    if ($key === '') {
+        $env = getenv('APP_KEY');
+        if ($env !== false) {
+            $key = trim((string)$env);
+        }
+    }
+
+    if (
+        $key === '' ||
+        $key === 'CHANGE_THIS_TO_A_LONG_RANDOM_SECRET_KEY'
+    ) {
+        throw new RuntimeException(
+            'FIELDPLX_SMTP_ENCRYPTION_KEY is not configured. Configure the same permanent SMTP encryption key on localhost and live server.'
+        );
+    }
+
+    if (strlen($key) < 32) {
+        throw new RuntimeException(
+            'FIELDPLX_SMTP_ENCRYPTION_KEY must contain at least 32 characters.'
+        );
+    }
+
+    return hash('sha256',$key,true);
+}
+
 function mcEncryptPassword($plain,$tenantId)
 {
+    $plain = (string)$plain;
+
     if ($plain === '') {
         return null;
     }
 
-    $envKey = getenv('FIELDPLX_APP_KEY');
-
-    if ($envKey === false || trim($envKey) === '') {
-        /*
-         * Fallback keeps credentials encrypted for existing installations.
-         * Production deployments should define FIELDPLX_APP_KEY.
-         */
-        $seed =
-            (defined('DB_NAME') ? DB_NAME : '') .
-            '|' .
-            (defined('DB_USER') ? DB_USER : '') .
-            '|' .
-            (defined('DB_PASS') ? DB_PASS : '') .
-            '|' .
-            (int)$tenantId;
-    } else {
-        $seed = $envKey . '|' . (int)$tenantId;
+    if (!function_exists('openssl_encrypt')) {
+        throw new RuntimeException('OpenSSL extension is required for SMTP password encryption.');
     }
 
-    $key = hash('sha256',$seed,true);
     $iv = random_bytes(16);
-
     $cipher = openssl_encrypt(
         $plain,
         'AES-256-CBC',
-        $key,
+        mcSmtpSecretKey(),
         OPENSSL_RAW_DATA,
         $iv
     );
@@ -208,37 +267,55 @@ function mcEncryptPassword($plain,$tenantId)
         throw new RuntimeException('Unable to encrypt SMTP password.');
     }
 
-    return base64_encode($iv.$cipher);
+    /*
+     * v1 format is environment-independent. The same permanent
+     * FIELDPLX_SMTP_ENCRYPTION_KEY can decrypt it on localhost/live.
+     * tenantId remains in the signature for backward compatibility.
+     */
+    return 'v1:'.base64_encode($iv.$cipher);
 }
 
 function mcDecryptPassword($encrypted,$tenantId)
 {
     $encrypted = trim((string)$encrypted);
-    if ($encrypted === '') return '';
 
-    $raw = base64_decode($encrypted,true);
+    if ($encrypted === '') {
+        return '';
+    }
+
+    if (!function_exists('openssl_decrypt')) {
+        throw new RuntimeException('OpenSSL extension is required for SMTP password decryption.');
+    }
+
+    if (strpos($encrypted,'v1:') !== 0) {
+        throw new RuntimeException(
+            'This SMTP password was saved with the old encryption format. Re-enter the SMTP password and save the configuration once to convert it to the permanent encryption format.'
+        );
+    }
+
+    $raw = base64_decode(substr($encrypted,3),true);
+
     if ($raw === false || strlen($raw) <= 16) {
-        throw new RuntimeException('Stored SMTP password is invalid. Re-enter the SMTP password and save the configuration.');
+        throw new RuntimeException(
+            'Stored SMTP password is invalid. Re-enter the SMTP password and save the configuration.'
+        );
     }
 
-    $envKey = getenv('FIELDPLX_APP_KEY');
-    if ($envKey === false || trim($envKey) === '') {
-        $seed =
-            (defined('DB_NAME') ? DB_NAME : '') . '|' .
-            (defined('DB_USER') ? DB_USER : '') . '|' .
-            (defined('DB_PASS') ? DB_PASS : '') . '|' .
-            (int)$tenantId;
-    } else {
-        $seed = $envKey . '|' . (int)$tenantId;
-    }
-
-    $key = hash('sha256',$seed,true);
     $iv = substr($raw,0,16);
     $cipher = substr($raw,16);
-    $plain = openssl_decrypt($cipher,'AES-256-CBC',$key,OPENSSL_RAW_DATA,$iv);
+
+    $plain = openssl_decrypt(
+        $cipher,
+        'AES-256-CBC',
+        mcSmtpSecretKey(),
+        OPENSSL_RAW_DATA,
+        $iv
+    );
 
     if ($plain === false) {
-        throw new RuntimeException('Unable to decrypt SMTP password. Re-enter the password and save the configuration.');
+        throw new RuntimeException(
+            'Unable to decrypt SMTP password. Confirm localhost and live server use the exact same FIELDPLX_SMTP_ENCRYPTION_KEY, then re-enter and save the SMTP password.'
+        );
     }
 
     return $plain;
@@ -1309,6 +1386,7 @@ try {
         $port = (int)mcPost('port',587);
         $encryption = trim((string)mcPost('encryption','tls'));
         $password = (string)mcPost('password','');
+        $changePassword = mcPost('change_password','') !== '' ? 1 : 0;
         $isDefault = mcPost('is_default','') !== '' ? 1 : 0;
         $isActive = mcPost('is_active','') !== '' ? 1 : 0;
 
@@ -1362,9 +1440,24 @@ try {
             $clear->execute(array(':tenant_id'=>$tenantId));
         }
 
-        $passwordEncrypted = $password !== ''
-            ? mcEncryptPassword($password,$tenantId)
-            : null;
+        /* Existing SMTP password is changed only when the user explicitly
+         * enables Change SMTP Password. This blocks browser/password-manager
+         * autofill from silently replacing the stored SMTP password. */
+        $passwordEncrypted = null;
+
+        if ($id > 0) {
+            if ($changePassword === 1) {
+                if (trim($password) === '') {
+                    mcResponse(422,false,'Enter the new SMTP password.');
+                }
+                $passwordEncrypted = mcEncryptPassword($password,$tenantId);
+            }
+        } else {
+            if (trim($password) === '') {
+                mcResponse(422,false,'SMTP password is required for a new configuration.');
+            }
+            $passwordEncrypted = mcEncryptPassword($password,$tenantId);
+        }
 
         if ($id > 0) {
 
@@ -1417,10 +1510,6 @@ try {
             $stmt->execute($params);
 
         } else {
-
-            if ($password === '') {
-                mcResponse(422,false,'SMTP password is required for a new configuration.');
-            }
 
             $stmt = $pdo->prepare("
                 INSERT INTO smtp_configurations (
@@ -1804,17 +1893,25 @@ try {
 
 } catch (PDOException $e) {
 
-    error_log('Master controls PDO error: '.$e->getMessage());
+    error_log('Master controls PDO error ['.$action.']: '.$e->getMessage());
 
     if (isset($e->errorInfo[1]) && (int)$e->errorInfo[1] === 1062) {
         mcResponse(409,false,'A record with the same unique code or configuration already exists.');
+    }
+
+    if ($action === 'save_smtp' || $action === 'test_smtp') {
+        mcResponse(500,false,'SMTP configuration database update failed. Check the smtp_configurations table structure and the PHP error log.');
     }
 
     mcResponse(500,false,'Unable to process the master control request.');
 
 } catch (Throwable $e) {
 
-    error_log('Master controls error: '.$e->getMessage());
+    error_log('Master controls error ['.$action.']: '.$e->getMessage());
+
+    if ($action === 'save_smtp' || $action === 'test_smtp') {
+        mcResponse(500,false,$e->getMessage());
+    }
 
     mcResponse(500,false,'Unable to process the master control request.');
 }

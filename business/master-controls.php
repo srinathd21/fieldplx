@@ -3531,7 +3531,11 @@ function parseResponse(response){
             throw new Error(clean || 'Server returned an invalid response.');
         }
         if(!response.ok || !data.success){
-            throw new Error(data.message || 'Request failed.');
+            var fallback = 'Request failed';
+            if(response && response.status){
+                fallback += ' (HTTP '+response.status+')';
+            }
+            throw new Error(data.message || fallback+'.');
         }
         return data;
     });
@@ -3812,6 +3816,29 @@ function openModal(title,html,kind,id){
     var saveLabel = saveButton.querySelector('span:last-child');
     if(saveLabel) saveLabel.textContent = 'Save';
     modal.classList.add('show');
+
+    /* SMTP edit safety: never allow browser autofill to change a saved
+     * password unless the user explicitly checks Change SMTP Password. */
+    if(kind === 'smtp' && Number(id || 0) > 0){
+        var changePassword = document.getElementById('smtpChangePassword');
+        var passwordInput = document.getElementById('smtpPasswordInput');
+
+        if(changePassword && passwordInput){
+            changePassword.checked = false;
+            passwordInput.value = '';
+            passwordInput.disabled = true;
+            passwordInput.required = false;
+
+            changePassword.addEventListener('change',function(){
+                passwordInput.value = '';
+                passwordInput.disabled = !changePassword.checked;
+                passwordInput.required = changePassword.checked;
+                if(changePassword.checked){
+                    setTimeout(function(){ passwordInput.focus(); },0);
+                }
+            });
+        }
+    }
 }
 
 function closeModal(){
@@ -3925,8 +3952,10 @@ function smtpForm(row){
         '<div class="mc-field"><label>SMTP Host</label><input name="host" required maxlength="190" value="'+esc(row.host||'')+'"></div>'+
         '<div class="mc-field"><label>Port</label><input type="number" name="port" min="1" max="65535" value="'+esc(row.port||587)+'"></div>'+
         '<div class="mc-field"><label>Encryption</label><select name="encryption">'+['none','ssl','tls','starttls'].map(function(v){return '<option value="'+v+'"'+((row.encryption||'tls')===v?' selected':'')+'>'+v+'</option>';}).join('')+'</select></div>'+
-        '<div class="mc-field"><label>Username</label><input name="username" maxlength="190" value="'+esc(row.username||'')+'"></div>'+
-        '<div class="mc-field"><label>Password</label><input type="password" name="password" autocomplete="new-password" placeholder="'+(row.id?'Leave blank to keep current':'SMTP password')+'"></div>'+
+        '<div class="mc-field"><label>Username</label><input name="username" maxlength="190" autocomplete="off" value="'+esc(row.username||'')+'"></div>'+
+        (row.id
+            ? '<div class="mc-field"><label>Password</label><div class="mc-check-field" style="min-height:40px;display:flex;align-items:center"><label class="mc-check-label"><input type="checkbox" id="smtpChangePassword" name="change_password" value="1" autocomplete="off"> <span>Change SMTP Password</span></label></div><input type="password" id="smtpPasswordInput" name="password" value="" autocomplete="new-password" data-lpignore="true" data-1p-ignore="true" disabled placeholder="Enter new SMTP password" style="margin-top:6px"></div>'
+            : '<div class="mc-field"><label>Password</label><input type="password" id="smtpPasswordInput" name="password" value="" required autocomplete="new-password" data-lpignore="true" data-1p-ignore="true" placeholder="SMTP password / app password"></div>')+
         '<div class="mc-field"><label>From Name</label><input name="from_name" maxlength="190" value="'+esc(row.from_name||'')+'"></div>'+
         '<div class="mc-field"><label>From Email</label><input type="email" name="from_email" maxlength="190" value="'+esc(row.from_email||'')+'"></div>'+
         '<div class="mc-field"><label>Reply-To Email</label><input type="email" name="reply_to_email" maxlength="190" value="'+esc(row.reply_to_email||'')+'"></div>'+
@@ -4012,6 +4041,17 @@ document.addEventListener('click',function(event){
     }
 });
 
+modalBody.addEventListener('change',function(event){
+    if(event.target && event.target.id === 'smtpChangePassword'){
+        var passwordInput = document.getElementById('smtpPasswordInput');
+        if(!passwordInput) return;
+        passwordInput.disabled = !event.target.checked;
+        passwordInput.required = !!event.target.checked;
+        passwordInput.value = '';
+        if(event.target.checked) passwordInput.focus();
+    }
+});
+
 form.onsubmit = function(event){
     event.preventDefault();
 
@@ -4022,8 +4062,19 @@ form.onsubmit = function(event){
 
     var kind = form.dataset.kind;
     var id = Number(form.dataset.id || 0);
-    var fd = new FormData(form);
 
+    if(kind === 'smtp' && id > 0){
+        var changePassword = document.getElementById('smtpChangePassword');
+        var passwordInput = document.getElementById('smtpPasswordInput');
+        if(!changePassword || !changePassword.checked){
+            if(passwordInput){
+                passwordInput.value = '';
+                passwordInput.disabled = true;
+            }
+        }
+    }
+
+    var fd = new FormData(form);
     fd.append('action',kind === 'smtp_test' ? 'test_smtp' : 'save_'+kind);
     fd.append('id',id);
 
