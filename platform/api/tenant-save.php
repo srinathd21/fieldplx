@@ -9,6 +9,7 @@ declare(strict_types=1);
 
 header('Content-Type: application/json; charset=utf-8');
 
+require_once __DIR__ . '/../includes/smtp-secret.php';
 require_once __DIR__ . '/../includes/db.php';
 
 if (session_status() === PHP_SESSION_NONE) {
@@ -229,7 +230,7 @@ function tenantApiSmtpSecretKey(): string
     $key = '';
 
     if (defined('FIELDPLX_SMTP_ENCRYPTION_KEY')) {
-        $key = (string) FIELDPLX_SMTP_ENCRYPTION_KEY;
+        $key = trim((string) FIELDPLX_SMTP_ENCRYPTION_KEY);
     }
 
     if ($key === '') {
@@ -248,15 +249,18 @@ function tenantApiSmtpSecretKey(): string
         }
     }
 
-    /*
-     * Keep this fallback identical to the Email & SMTP API.
-     * For production, define FIELDPLX_SMTP_ENCRYPTION_KEY.
-     */
-    if ($key === '') {
-        $key = hash(
-            'sha256',
-            dirname(__DIR__) .
-            '|fieldplx|smtp|credential-protection'
+    if (
+        $key === '' ||
+        $key === 'CHANGE_THIS_TO_A_LONG_RANDOM_SECRET_KEY'
+    ) {
+        throw new RuntimeException(
+            'FIELDPLX_SMTP_ENCRYPTION_KEY is not configured.'
+        );
+    }
+
+    if (strlen($key) < 32) {
+        throw new RuntimeException(
+            'FIELDPLX_SMTP_ENCRYPTION_KEY must contain at least 32 characters.'
         );
     }
 

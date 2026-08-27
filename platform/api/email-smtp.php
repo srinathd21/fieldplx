@@ -76,6 +76,7 @@ set_error_handler(function ($severity, $message, $file, $line) {
 });
 
 try {
+    require_once __DIR__ . '/../includes/smtp-secret.php';
     require_once __DIR__ . '/../includes/db.php';
 } catch (Throwable $e) {
     while (ob_get_level() > 0) {
@@ -153,7 +154,7 @@ function es_secret_key(): string
     $key = '';
 
     if (defined('FIELDPLX_SMTP_ENCRYPTION_KEY')) {
-        $key = (string)FIELDPLX_SMTP_ENCRYPTION_KEY;
+        $key = trim((string)FIELDPLX_SMTP_ENCRYPTION_KEY);
     }
 
     if ($key === '') {
@@ -172,11 +173,18 @@ function es_secret_key(): string
         }
     }
 
-    if ($key === '') {
-        $key = hash(
-            'sha256',
-            dirname(__DIR__) .
-            '|fieldplx|smtp|credential-protection'
+    if (
+        $key === '' ||
+        $key === 'CHANGE_THIS_TO_A_LONG_RANDOM_SECRET_KEY'
+    ) {
+        throw new RuntimeException(
+            'FIELDPLX_SMTP_ENCRYPTION_KEY is not configured. Configure the same permanent SMTP encryption key on localhost and live server before saving SMTP credentials.'
+        );
+    }
+
+    if (strlen($key) < 32) {
+        throw new RuntimeException(
+            'FIELDPLX_SMTP_ENCRYPTION_KEY must contain at least 32 characters.'
         );
     }
 
@@ -431,13 +439,14 @@ function es_send_test(
     $mail->isSMTP();
     $mail->Host = trim((string)$config['host']);
     $mail->Port = (int)$config['port'];
-    $mail->Timeout = 20;
+    $mail->Timeout = 30;
 
     if (property_exists($mail, 'Timelimit')) {
-        $mail->Timelimit = 20;
+        $mail->Timelimit = 30;
     }
 
     $mail->SMTPDebug = 0;
+    $mail->SMTPKeepAlive = false;
 
     $username = trim((string)$config['username']);
 
@@ -950,12 +959,13 @@ try {
             $port,
             $errorNo,
             $errorString,
-            10
+            15
         );
 
         if (!is_resource($socket)) {
             $message =
-                'Connection failed: ' .
+                'Connection failed to ' .
+                $host . ':' . $port . ': ' .
                 (
                     $errorString !== ''
                         ? $errorString
