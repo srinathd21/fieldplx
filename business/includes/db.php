@@ -25,10 +25,10 @@
 |
 */
 
-define('DB_HOST', 'srv1336.hstgr.io');
+define('DB_HOST', 'localhost');
 define('DB_PORT', '3306');
-define('DB_NAME', 'u923280188_fieldplx');
-define('DB_USER', 'u923280188_fieldplx');
+define('DB_NAME', 'u399080022_fieldplx');
+define('DB_USER', 'u399080022_fieldplx');
 define('DB_PASS', 'Hifi@2026');
 
 /*
