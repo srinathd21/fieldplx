@@ -529,8 +529,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['website_action'])) {
             websiteJson(
                 true,
                 $leadType === 'demo'
-                    ? 'Thank you for your interest in FieldPlx. Your demo request has been received and our team will contact you soon.'
-                    : 'Thank you for reaching out to FieldPlx. Our team will contact you soon.',
+                ? 'Thank you for your interest in FieldPlx. Your demo request has been received and our team will contact you soon.'
+                : 'Thank you for reaching out to FieldPlx. Our team will contact you soon.',
                 array(
                     'mail_sent' => $mailSent
                 ),
@@ -782,177 +782,409 @@ include __DIR__ . '/topbar.php';
 ?>
 
 <style>
-.fp-web-modal{position:fixed;inset:0;z-index:5000;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(4,16,29,.62);backdrop-filter:blur(4px)}
-.fp-web-modal.show{display:flex}.fp-web-modal-card{width:min(620px,100%);max-height:calc(100vh - 36px);overflow:auto;border-radius:18px;background:#fff;box-shadow:0 28px 80px rgba(0,0,0,.28)}
-.fp-web-modal-head{padding:20px 22px 14px;display:flex;justify-content:space-between;gap:18px;border-bottom:1px solid #e7eaed}.fp-web-modal-head h3{margin:0;color:#071c2f;font-size:22px}.fp-web-modal-head p{margin:5px 0 0;color:#65717d;font-size:13px}.fp-web-modal-close{width:38px;height:38px;border:1px solid #dce2e6;border-radius:10px;background:#fff;font-size:24px;line-height:1;cursor:pointer}
-.fp-web-modal-body{padding:20px 22px 22px}.fp-web-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}.fp-web-field.full{grid-column:1/-1}.fp-web-field label{display:block;margin-bottom:6px;font-size:12px;font-weight:700;color:#263643}.fp-web-field .form-control,.fp-web-field .form-select{min-height:44px;font-size:14px}.fp-web-actions{margin-top:18px;display:flex;justify-content:flex-end;gap:10px}.fp-web-note{margin:0 0 16px;padding:11px 13px;border-radius:10px;background:#effaf1;color:#2f6d39;font-size:12px}.fp-web-alert{display:none;margin-bottom:14px;padding:11px 13px;border-radius:10px;font-size:13px}.fp-web-alert.show{display:block}.fp-web-alert.error{background:#fef2f2;color:#b91c1c}.fp-web-alert.success{background:#ecfdf5;color:#047857}.fp-web-submit[disabled]{opacity:.65;cursor:not-allowed}
-@media(max-width:600px){.fp-web-grid{grid-template-columns:1fr}.fp-web-field.full{grid-column:auto}.fp-web-modal-head,.fp-web-modal-body{padding-left:16px;padding-right:16px}.fp-web-actions{flex-direction:column-reverse}.fp-web-actions .btn{width:100%}}
+    .fp-web-modal {
+        position: fixed;
+        inset: 0;
+        z-index: 5000;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 18px;
+        background: rgba(4, 16, 29, .62);
+        backdrop-filter: blur(4px)
+    }
+
+    .fp-web-modal.show {
+        display: flex
+    }
+
+    .fp-web-modal-card {
+        width: min(620px, 100%);
+        max-height: calc(100vh - 36px);
+        overflow: auto;
+        border-radius: 18px;
+        background: #fff;
+        box-shadow: 0 28px 80px rgba(0, 0, 0, .28)
+    }
+
+    .fp-web-modal-head {
+        padding: 20px 22px 14px;
+        display: flex;
+        justify-content: space-between;
+        gap: 18px;
+        border-bottom: 1px solid #e7eaed
+    }
+
+    .fp-web-modal-head h3 {
+        margin: 0;
+        color: #071c2f;
+        font-size: 22px
+    }
+
+    .fp-web-modal-head p {
+        margin: 5px 0 0;
+        color: #65717d;
+        font-size: 13px
+    }
+
+    .fp-web-modal-close {
+        width: 38px;
+        height: 38px;
+        border: 1px solid #dce2e6;
+        border-radius: 10px;
+        background: #fff;
+        font-size: 24px;
+        line-height: 1;
+        cursor: pointer
+    }
+
+    .fp-web-modal-body {
+        padding: 20px 22px 22px
+    }
+
+    .fp-web-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 13px
+    }
+
+    .fp-web-field.full {
+        grid-column: 1/-1
+    }
+
+    .fp-web-field label {
+        display: block;
+        margin-bottom: 6px;
+        font-size: 12px;
+        font-weight: 700;
+        color: #263643
+    }
+
+    .fp-web-field .form-control,
+    .fp-web-field .form-select {
+        min-height: 44px;
+        font-size: 14px
+    }
+
+    .fp-web-actions {
+        margin-top: 18px;
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px
+    }
+
+    .fp-web-note {
+        margin: 0 0 16px;
+        padding: 11px 13px;
+        border-radius: 10px;
+        background: #effaf1;
+        color: #2f6d39;
+        font-size: 12px
+    }
+
+    .fp-web-alert {
+        display: none;
+        margin-bottom: 14px;
+        padding: 11px 13px;
+        border-radius: 10px;
+        font-size: 13px
+    }
+
+    .fp-web-alert.show {
+        display: block
+    }
+
+    .fp-web-alert.error {
+        background: #fef2f2;
+        color: #b91c1c
+    }
+
+    .fp-web-alert.success {
+        background: #ecfdf5;
+        color: #047857
+    }
+
+    .fp-web-submit[disabled] {
+        opacity: .65;
+        cursor: not-allowed
+    }
+    .fp-web-modal {
+    z-index: 2147483000 !important;
+}
+
+.fp-web-modal-card {
+    position: relative;
+    z-index: 2147483001;
+}
+    @media(max-width:600px) {
+        .fp-web-grid {
+            grid-template-columns: 1fr
+        }
+
+        .fp-web-field.full {
+            grid-column: auto
+        }
+
+        .fp-web-modal-head,
+        .fp-web-modal-body {
+            padding-left: 16px;
+            padding-right: 16px
+        }
+
+        .fp-web-actions {
+            flex-direction: column-reverse
+        }
+
+        .fp-web-actions .btn {
+            width: 100%
+        }
+    }
 </style>
 
-  <main>
+<main>
     <section id="home" class="hero-section">
-      <div class="container-fluid site-container h-100">
-        <div class="row h-100 align-items-center">
-          <div class="col-lg-5 hero-copy">
-            <h1>Smarter Operations.<br><span>Stronger Business.</span></h1>
-            <p class="hero-lead">FieldPlx is the all-in-one field service management software built for small and mid-sized businesses. Streamline operations, dispatch smarter, and get paid faster—all in one powerful platform.</p>
+        <div class="container-fluid site-container h-100">
+            <div class="row h-100 align-items-center">
+                <div class="col-lg-5 hero-copy">
+                    <h1>Smarter Operations.<br><span>Stronger Business.</span></h1>
+                    <p class="hero-lead">FieldPlx is the all-in-one field service management software built for small
+                        and mid-sized businesses. Streamline operations, dispatch smarter, and get paid faster—all in
+                        one powerful platform.</p>
 
-            <div class="row row-cols-2 row-cols-md-4 g-3 hero-benefits">
-              <div class="col"><div class="benefit"><i class="bi bi-check-circle-fill"></i><span>All-in-One<br>Platform</span></div></div>
-              <div class="col"><div class="benefit"><i class="bi bi-check-circle-fill"></i><span>Easy to<br>Use</span></div></div>
-              <div class="col"><div class="benefit"><i class="bi bi-check-circle-fill"></i><span>Works<br>Anywhere</span></div></div>
-              <div class="col"><div class="benefit"><i class="bi bi-check-circle-fill"></i><span>Built for<br>Growth</span></div></div>
-            </div>
+                    <div class="row row-cols-2 row-cols-md-4 g-3 hero-benefits">
+                        <div class="col">
+                            <div class="benefit"><i
+                                    class="bi bi-check-circle-fill"></i><span>All-in-One<br>Platform</span></div>
+                        </div>
+                        <div class="col">
+                            <div class="benefit"><i class="bi bi-check-circle-fill"></i><span>Easy to<br>Use</span>
+                            </div>
+                        </div>
+                        <div class="col">
+                            <div class="benefit"><i class="bi bi-check-circle-fill"></i><span>Works<br>Anywhere</span>
+                            </div>
+                        </div>
+                        <div class="col">
+                            <div class="benefit"><i class="bi bi-check-circle-fill"></i><span>Built for<br>Growth</span>
+                            </div>
+                        </div>
+                    </div>
 
-            <div class="d-flex flex-wrap gap-3 hero-buttons">
-              <button type="button" class="btn btn-brand btn-lg hero-primary" data-open-modal="trialModal">Start Your Free Trial <i class="bi bi-arrow-right ms-2"></i></button>
-              <button type="button" class="btn btn-outline-brand btn-lg" data-open-modal="demoModal">Book a Demo</button>
-            </div>
+                    <div class="d-flex flex-wrap gap-3 hero-buttons">
+                        <button type="button" class="btn btn-brand btn-lg hero-primary"
+                            data-open-modal="trialModal">Start Your Free Trial <i
+                                class="bi bi-arrow-right ms-2"></i></button>
+                        <button type="button" class="btn btn-outline-brand btn-lg" data-open-modal="demoModal">Book a
+                            Demo</button>
+                    </div>
 
-            <div class="offer-card">
-              <div class="offer-icon"><i class="bi bi-gift"></i></div>
-              <div>
-                <div class="offer-kicker">LIMITED TIME OFFER</div>
-                <div class="offer-title">60 Days Free Trial!</div>
-                <div class="offer-subtitle">No credit card required. Cancel anytime.</div>
-              </div>
+                    <div class="offer-card">
+                        <div class="offer-icon"><i class="bi bi-gift"></i></div>
+                        <div>
+                            <div class="offer-kicker">LIMITED TIME OFFER</div>
+                            <div class="offer-title">60 Days Free Trial!</div>
+                            <div class="offer-subtitle">No credit card required. Cancel anytime.</div>
+                        </div>
+                    </div>
+                </div>
             </div>
-          </div>
         </div>
-      </div>
     </section>
 
     <section id="industries" class="industry-section">
-      <div class="container-fluid site-container">
-        <h2 class="section-heading">Built for <span>Every</span> Field Service Business</h2>
+        <div class="container-fluid site-container">
+            <h2 class="section-heading">Built for <span>Every</span> Field Service Business</h2>
 
-        <div id="industrySlider" class="industry-slider" aria-label="Field service industries">
-          <button class="industry-slider-arrow industry-slider-prev" type="button" aria-label="Previous industries">
-            <span aria-hidden="true">&#8249;</span>
-          </button>
+            <div id="industrySlider" class="industry-slider" aria-label="Field service industries">
+                <button class="industry-slider-arrow industry-slider-prev" type="button"
+                    aria-label="Previous industries">
+                    <span aria-hidden="true">&#8249;</span>
+                </button>
 
-          <div class="industry-slider-viewport">
-            <div class="industry-slider-track">
-              <article class="industry-card"><img src="site-assets/industry/industry-01.png" alt="HVAC"><div>HVAC</div></article>
-              <article class="industry-card"><img src="site-assets/industry/industry-02.png" alt="Electrical"><div>Electrical</div></article>
-              <article class="industry-card"><img src="site-assets/industry/industry-03.png" alt="Plumbing"><div>Plumbing</div></article>
-              <article class="industry-card"><img src="site-assets/industry/industry-04.png" alt="Landscaping"><div>Landscaping</div></article>
-              <article class="industry-card"><img src="site-assets/industry/industry-05.png" alt="Cleaning Services"><div>Cleaning Services</div></article>
-              <article class="industry-card"><img src="site-assets/industry/industry-06.png" alt="Pest Control"><div>Pest Control</div></article>
-              <article class="industry-card"><img src="site-assets/industry/industry-07.png" alt="Handyman"><div>Handyman</div></article>
-              <article class="industry-card"><img src="site-assets/industry/industry-08.png" alt="Roofing"><div>Roofing</div></article>
-              <article class="industry-card"><img src="site-assets/industry/industry-09.png" alt="Painting"><div>Painting</div></article>
-              <article class="industry-card"><img src="site-assets/industry/industry-10.png" alt="Pool Service"><div>Pool Service</div></article>
-              <article class="industry-card"><img src="site-assets/industry/industry-11.png" alt="Appliance Repair"><div>Appliance Repair</div></article>
-              <article class="industry-card"><img src="site-assets/industry/industry-12.png" alt="Junk Removal"><div>Junk Removal</div></article>
+                <div class="industry-slider-viewport">
+                    <div class="industry-slider-track">
+                        <article class="industry-card"><img src="site-assets/industry/industry-01.png" alt="HVAC">
+                            <div>HVAC</div>
+                        </article>
+                        <article class="industry-card"><img src="site-assets/industry/industry-02.png" alt="Electrical">
+                            <div>Electrical</div>
+                        </article>
+                        <article class="industry-card"><img src="site-assets/industry/industry-03.png" alt="Plumbing">
+                            <div>Plumbing</div>
+                        </article>
+                        <article class="industry-card"><img src="site-assets/industry/industry-04.png"
+                                alt="Landscaping">
+                            <div>Landscaping</div>
+                        </article>
+                        <article class="industry-card"><img src="site-assets/industry/industry-05.png"
+                                alt="Cleaning Services">
+                            <div>Cleaning Services</div>
+                        </article>
+                        <article class="industry-card"><img src="site-assets/industry/industry-06.png"
+                                alt="Pest Control">
+                            <div>Pest Control</div>
+                        </article>
+                        <article class="industry-card"><img src="site-assets/industry/industry-07.png" alt="Handyman">
+                            <div>Handyman</div>
+                        </article>
+                        <article class="industry-card"><img src="site-assets/industry/industry-08.png" alt="Roofing">
+                            <div>Roofing</div>
+                        </article>
+                        <article class="industry-card"><img src="site-assets/industry/industry-09.png" alt="Painting">
+                            <div>Painting</div>
+                        </article>
+                        <article class="industry-card"><img src="site-assets/industry/industry-10.png"
+                                alt="Pool Service">
+                            <div>Pool Service</div>
+                        </article>
+                        <article class="industry-card"><img src="site-assets/industry/industry-11.png"
+                                alt="Appliance Repair">
+                            <div>Appliance Repair</div>
+                        </article>
+                        <article class="industry-card"><img src="site-assets/industry/industry-12.png"
+                                alt="Junk Removal">
+                            <div>Junk Removal</div>
+                        </article>
+                    </div>
+                </div>
+
+                <button class="industry-slider-arrow industry-slider-next" type="button" aria-label="Next industries">
+                    <span aria-hidden="true">&#8250;</span>
+                </button>
             </div>
-          </div>
-
-          <button class="industry-slider-arrow industry-slider-next" type="button" aria-label="Next industries">
-            <span aria-hidden="true">&#8250;</span>
-          </button>
         </div>
-      </div>
     </section>
 
     <section id="features" class="features-strip">
-      <div class="container-fluid site-container">
-        <div class="row g-0 feature-row">
-          <div class="col-md feature-box">
-            <i class="bi bi-cpu"></i>
-            <div><h3>Built with<br>Advanced Tech Stack</h3><p>Modern, secure, and reliable technology that grows with your business.</p></div>
-          </div>
-          <div class="col-md feature-box">
-            <i class="bi bi-people-fill"></i>
-            <div><h3>Small Business<br>Friendly</h3><p>Simple to use, quick to set up, and affordable for businesses of all sizes.</p></div>
-          </div>
-          <div class="col-md feature-box">
-            <i class="bi bi-headset"></i>
-            <div><h3>U.S.-Based<br>Tech Support</h3><p>Real people. Real support. Right here in the USA when you need it.</p></div>
-          </div>
-          <div class="col-md feature-box">
-            <i class="bi bi-currency-dollar"></i>
-            <div><h3>40% to 50%<br>Cost Savings</h3><p>Save significantly compared to other field service software.</p></div>
-          </div>
-          <div class="col-md feature-box">
-            <div class="us-flag" aria-hidden="true"><span></span></div>
-            <div><h3>Born in the Heartland<br>Made in Ohio, USA</h3><p>Built with heart, integrity, and American values.</p></div>
-          </div>
+        <div class="container-fluid site-container">
+            <div class="row g-0 feature-row">
+                <div class="col-md feature-box">
+                    <i class="bi bi-cpu"></i>
+                    <div>
+                        <h3>Built with<br>Advanced Tech Stack</h3>
+                        <p>Modern, secure, and reliable technology that grows with your business.</p>
+                    </div>
+                </div>
+                <div class="col-md feature-box">
+                    <i class="bi bi-people-fill"></i>
+                    <div>
+                        <h3>Small Business<br>Friendly</h3>
+                        <p>Simple to use, quick to set up, and affordable for businesses of all sizes.</p>
+                    </div>
+                </div>
+                <div class="col-md feature-box">
+                    <i class="bi bi-headset"></i>
+                    <div>
+                        <h3>U.S.-Based<br>Tech Support</h3>
+                        <p>Real people. Real support. Right here in the USA when you need it.</p>
+                    </div>
+                </div>
+                <div class="col-md feature-box">
+                    <i class="bi bi-currency-dollar"></i>
+                    <div>
+                        <h3>40% to 50%<br>Cost Savings</h3>
+                        <p>Save significantly compared to other field service software.</p>
+                    </div>
+                </div>
+                <div class="col-md feature-box">
+                    <div class="us-flag" aria-hidden="true"><span></span></div>
+                    <div>
+                        <h3>Born in the Heartland<br>Made in Ohio, USA</h3>
+                        <p>Built with heart, integrity, and American values.</p>
+                    </div>
+                </div>
+            </div>
         </div>
-      </div>
     </section>
 
     <section id="contact" class="contact-section">
-      <div class="container-fluid site-container">
-        <div class="row g-3 align-items-stretch">
-          <div class="col-lg-4">
-            <div class="content-card testimonial-card h-100">
-              <h2>Trusted by Field Service Pros</h2>
-              <div class="stars">★★★★★</div>
-              <blockquote>“FieldPlx has completely transformed how we run our business. We save hours every week and our customers love the updates.”</blockquote>
-              <div class="d-flex align-items-center gap-3">
-                <img src="site-assets/avatar.png" alt="Customer avatar" class="avatar">
-                <div><strong>Mike T.</strong><br><span>Vinrock HVAC</span></div>
-              </div>
-            </div>
-          </div>
-          <div class="col-lg-3">
-            <div class="content-card photo-card h-100"><img src="site-assets/technician.png" alt="Field service technician"></div>
-          </div>
-          <div class="col-lg-5">
-            <div class="content-card contact-card h-100">
-              <div class="row g-3 h-100">
-                <div class="col-md-6">
-                  <h2>Let’s Talk</h2>
-                  <p>Have questions? We’re here to help.</p>
-                  <ul class="contact-list">
-                    <li><i class="bi bi-telephone"></i><strong>5134464241</strong></li>
-                    <li><i class="bi bi-envelope"></i><strong>support@coreplx.com</strong></li>
-                    <li><i class="bi bi-geo-alt"></i><strong>Born in the Heartland<br>Made in Ohio, USA</strong></li>
-                  </ul>
+        <div class="container-fluid site-container">
+            <div class="row g-3 align-items-stretch">
+                <div class="col-lg-4">
+                    <div class="content-card testimonial-card h-100">
+                        <h2>Trusted by Field Service Pros</h2>
+                        <div class="stars">★★★★★</div>
+                        <blockquote>“FieldPlx has completely transformed how we run our business. We save hours every
+                            week and our customers love the updates.”</blockquote>
+                        <div class="d-flex align-items-center gap-3">
+                            <img src="site-assets/avatar.png" alt="Customer avatar" class="avatar">
+                            <div><strong>Mike T.</strong><br><span>Vinrock HVAC</span></div>
+                        </div>
+                    </div>
                 </div>
-                <div class="col-md-6">
-                  <form class="contact-form" id="contactLeadForm" method="post">
-                    <input type="hidden" name="website_action" value="save_lead">
-                    <input type="hidden" name="csrf_token" value="<?= e($websiteCsrf) ?>">
-                    <input type="hidden" name="lead_type" value="contact">
-                    <div class="fp-web-alert" data-form-alert></div>
-                    <input class="form-control" type="text" name="full_name" placeholder="Full Name" aria-label="Full Name" required>
-                    <input class="form-control" type="email" name="email" placeholder="Email Address" aria-label="Email Address" required>
-                    <input class="form-control" type="tel" name="phone" placeholder="Phone Number" aria-label="Phone Number">
-                    <textarea class="form-control" name="message" rows="2" placeholder="How can we help?" aria-label="How can we help?"></textarea>
-                    <button type="submit" class="btn btn-brand w-100 fp-web-submit">Get in Touch</button>
-                  </form>
+                <div class="col-lg-3">
+                    <div class="content-card photo-card h-100"><img src="site-assets/technician.png"
+                            alt="Field service technician"></div>
                 </div>
-              </div>
+                <div class="col-lg-5">
+                    <div class="content-card contact-card h-100">
+                        <div class="row g-3 h-100">
+                            <div class="col-md-6">
+                                <h2>Let’s Talk</h2>
+                                <p>Have questions? We’re here to help.</p>
+                                <ul class="contact-list">
+                                    <li><i class="bi bi-telephone"></i><strong>5134464241</strong></li>
+                                    <li><i class="bi bi-envelope"></i><strong>support@coreplx.com</strong></li>
+                                    <li><i class="bi bi-geo-alt"></i><strong>Born in the Heartland<br>Made in Ohio,
+                                            USA</strong></li>
+                                </ul>
+                            </div>
+                            <div class="col-md-6">
+                                <form class="contact-form" id="contactLeadForm" method="post">
+                                    <input type="hidden" name="website_action" value="save_lead">
+                                    <input type="hidden" name="csrf_token" value="<?= e($websiteCsrf) ?>">
+                                    <input type="hidden" name="lead_type" value="contact">
+                                    <div class="fp-web-alert" data-form-alert></div>
+                                    <input class="form-control" type="text" name="full_name" placeholder="Full Name"
+                                        aria-label="Full Name" required>
+                                    <input class="form-control" type="email" name="email" placeholder="Email Address"
+                                        aria-label="Email Address" required>
+                                    <input class="form-control" type="tel" name="phone" placeholder="Phone Number"
+                                        aria-label="Phone Number">
+                                    <textarea class="form-control" name="message" rows="2"
+                                        placeholder="How can we help?" aria-label="How can we help?"></textarea>
+                                    <button type="submit" class="btn btn-brand w-100 fp-web-submit">Get in
+                                        Touch</button>
+                                </form>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
-          </div>
         </div>
-      </div>
     </section>
-  </main>
+</main>
 
 
 <!-- FREE TRIAL ONBOARDING MODAL -->
 <div class="fp-web-modal" id="trialModal" role="dialog" aria-modal="true" aria-labelledby="trialModalTitle">
-  <div class="fp-web-modal-card">
-    <div class="fp-web-modal-head">
-      <div><h3 id="trialModalTitle">Start Your 60-Day Free Trial</h3><p>We will create your FieldPlx workspace and email you an activation link.</p></div>
-      <button type="button" class="fp-web-modal-close" data-close-modal aria-label="Close">&times;</button>
-    </div>
-    <div class="fp-web-modal-body">
-      <div class="fp-web-note"><strong>60 days free.</strong>You will create your password securely from the activation email.</div>
-      <form id="trialOnboardingForm" method="post">
-        <input type="hidden" name="website_action" value="start_trial">
-        <input type="hidden" name="csrf_token" value="<?= e($websiteCsrf) ?>">
-        <div class="fp-web-alert" data-form-alert></div>
-        <div class="fp-web-grid">
-          <div class="fp-web-field full"><label>Business Name *</label><input class="form-control" type="text" name="business_name" maxlength="190" required></div>
-          <div class="fp-web-field"><label>Your Full Name *</label><input class="form-control" type="text" name="full_name" maxlength="190" required></div>
-          <div class="fp-web-field"><label>Business Type</label><input class="form-control" type="text" name="business_type" maxlength="120" placeholder="HVAC, Plumbing, Electrical..."></div>
-          <div class="fp-web-field"><label>Business Email *</label><input class="form-control" type="email" name="email" maxlength="190" required></div>
-          <div class="fp-web-field"><label>Phone</label><input class="form-control" type="tel" name="phone" maxlength="50"></div>
-          <div class="fp-web-field full">
+    <div class="fp-web-modal-card">
+        <div class="fp-web-modal-head">
+            <div>
+                <h3 id="trialModalTitle">Start Your 60-Day Free Trial</h3>
+                <p>We will create your FieldPlx workspace and email you an activation link.</p>
+            </div>
+            <button type="button" class="fp-web-modal-close" data-close-modal aria-label="Close">&times;</button>
+        </div>
+        <div class="fp-web-modal-body">
+            <div class="fp-web-note"><strong>60 days free.</strong>You will create your password securely from the
+                activation email.</div>
+            <form id="trialOnboardingForm" method="post">
+                <input type="hidden" name="website_action" value="start_trial">
+                <input type="hidden" name="csrf_token" value="<?= e($websiteCsrf) ?>">
+                <div class="fp-web-alert" data-form-alert></div>
+                <div class="fp-web-grid">
+                    <div class="fp-web-field full"><label>Business Name *</label><input class="form-control" type="text"
+                            name="business_name" maxlength="190" required></div>
+                    <div class="fp-web-field"><label>Your Full Name *</label><input class="form-control" type="text"
+                            name="full_name" maxlength="190" required></div>
+                    <div class="fp-web-field"><label>Business Type</label><input class="form-control" type="text"
+                            name="business_type" maxlength="120" placeholder="HVAC, Plumbing, Electrical..."></div>
+                    <div class="fp-web-field"><label>Business Email *</label><input class="form-control" type="email"
+                            name="email" maxlength="190" required></div>
+                    <div class="fp-web-field"><label>Phone</label><input class="form-control" type="tel" name="phone"
+                            maxlength="50"></div>
+                   <div class="fp-web-field full">
     <label>Country *</label>
     <select class="form-select" name="country_id" required>
         <option value="">Select country</option>
@@ -966,81 +1198,98 @@ include __DIR__ . '/topbar.php';
         <?php endforeach; ?>
     </select>
 </div>
+
+                </div>
+                <div class="fp-web-actions"><button type="button" class="btn btn-outline-secondary"
+                        data-close-modal>Cancel</button><button type="submit" class="btn btn-brand fp-web-submit">Create
+                        Free Trial</button></div>
+            </form>
         </div>
-        <div class="fp-web-actions"><button type="button" class="btn btn-outline-secondary" data-close-modal>Cancel</button><button type="submit" class="btn btn-brand fp-web-submit">Create Free Trial</button></div>
-      </form>
     </div>
-  </div>
 </div>
 
 <!-- BOOK DEMO MODAL -->
 <div class="fp-web-modal" id="demoModal" role="dialog" aria-modal="true" aria-labelledby="demoModalTitle">
-  <div class="fp-web-modal-card">
-    <div class="fp-web-modal-head">
-      <div><h3 id="demoModalTitle">Book a Demo</h3><p>Tell us a convenient date and time. We will contact you to confirm.</p></div>
-      <button type="button" class="fp-web-modal-close" data-close-modal aria-label="Close">&times;</button>
-    </div>
-    <div class="fp-web-modal-body">
-      <form id="demoLeadForm" method="post">
-        <input type="hidden" name="website_action" value="save_lead">
-        <input type="hidden" name="csrf_token" value="<?= e($websiteCsrf) ?>"><input type="hidden" name="lead_type" value="demo"><div class="fp-web-alert" data-form-alert></div>
-        <div class="fp-web-grid">
-          <div class="fp-web-field"><label>Full Name *</label><input class="form-control" type="text" name="full_name" required></div>
-          <div class="fp-web-field"><label>Business Name *</label><input class="form-control" type="text" name="business_name" required></div>
-          <div class="fp-web-field"><label>Email *</label><input class="form-control" type="email" name="email" required></div>
-          <div class="fp-web-field"><label>Phone</label><input class="form-control" type="tel" name="phone"></div>
-          <div class="fp-web-field"><label>Preferred Date</label><input class="form-control" type="date" name="preferred_date" min="<?= date('Y-m-d') ?>"></div>
-          <div class="fp-web-field"><label>Preferred Time</label><input class="form-control" type="time" name="preferred_time"></div>
-          <div class="fp-web-field full"><label>Anything we should know?</label><textarea class="form-control" name="message" rows="3"></textarea></div>
+    <div class="fp-web-modal-card">
+        <div class="fp-web-modal-head">
+            <div>
+                <h3 id="demoModalTitle">Book a Demo</h3>
+                <p>Tell us a convenient date and time. We will contact you to confirm.</p>
+            </div>
+            <button type="button" class="fp-web-modal-close" data-close-modal aria-label="Close">&times;</button>
         </div>
-        <div class="fp-web-actions"><button type="button" class="btn btn-outline-secondary" data-close-modal>Cancel</button><button type="submit" class="btn btn-brand fp-web-submit">Request Demo</button></div>
-      </form>
+        <div class="fp-web-modal-body">
+            <form id="demoLeadForm" method="post">
+                <input type="hidden" name="website_action" value="save_lead">
+                <input type="hidden" name="csrf_token" value="<?= e($websiteCsrf) ?>"><input type="hidden"
+                    name="lead_type" value="demo">
+                <div class="fp-web-alert" data-form-alert></div>
+                <div class="fp-web-grid">
+                    <div class="fp-web-field"><label>Full Name *</label><input class="form-control" type="text"
+                            name="full_name" required></div>
+                    <div class="fp-web-field"><label>Business Name *</label><input class="form-control" type="text"
+                            name="business_name" required></div>
+                    <div class="fp-web-field"><label>Email *</label><input class="form-control" type="email"
+                            name="email" required></div>
+                    <div class="fp-web-field"><label>Phone</label><input class="form-control" type="tel" name="phone">
+                    </div>
+                    <div class="fp-web-field"><label>Preferred Date</label><input class="form-control" type="date"
+                            name="preferred_date" min="<?= date('Y-m-d') ?>"></div>
+                    <div class="fp-web-field"><label>Preferred Time</label><input class="form-control" type="time"
+                            name="preferred_time"></div>
+                    <div class="fp-web-field full"><label>Anything we should know?</label><textarea class="form-control"
+                            name="message" rows="3"></textarea></div>
+                </div>
+                <div class="fp-web-actions"><button type="button" class="btn btn-outline-secondary"
+                        data-close-modal>Cancel</button><button type="submit"
+                        class="btn btn-brand fp-web-submit">Request Demo</button></div>
+            </form>
+        </div>
     </div>
-  </div>
 </div>
 
 <script>
-(function(){
-'use strict';
-function openModal(id){var m=document.getElementById(id);if(m){m.classList.add('show');document.body.style.overflow='hidden';}}
-function closeModal(m){if(m){m.classList.remove('show');document.body.style.overflow='';}}
-document.querySelectorAll('[data-open-modal]').forEach(function(b){b.addEventListener('click',function(){openModal(b.getAttribute('data-open-modal'));});});
-document.querySelectorAll('[data-close-modal]').forEach(function(b){b.addEventListener('click',function(){closeModal(b.closest('.fp-web-modal'));});});
-document.querySelectorAll('.fp-web-modal').forEach(function(m){m.addEventListener('click',function(e){if(e.target===m){closeModal(m);}});});
-document.addEventListener('keydown',function(e){if(e.key==='Escape'){document.querySelectorAll('.fp-web-modal.show').forEach(closeModal);}});
-function alertBox(form,type,msg){var x=form.querySelector('[data-form-alert]');if(x){x.className='fp-web-alert show '+type;x.textContent=msg;}}
-function submit(form,done){
-  if(!form.checkValidity()){form.reportValidity();return;}
-  var x=form.querySelector('[data-form-alert]');
-  if(x){x.className='fp-web-alert';x.textContent='';}
-  var btn=form.querySelector('.fp-web-submit');
-  var old=btn.textContent;
-  btn.disabled=true;
-  btn.textContent='Please wait...';
+    (function () {
+        'use strict';
+        function openModal(id) { var m = document.getElementById(id); if (m) { m.classList.add('show'); document.body.style.overflow = 'hidden'; } }
+        function closeModal(m) { if (m) { m.classList.remove('show'); document.body.style.overflow = ''; } }
+        document.querySelectorAll('[data-open-modal]').forEach(function (b) { b.addEventListener('click', function () { openModal(b.getAttribute('data-open-modal')); }); });
+        document.querySelectorAll('[data-close-modal]').forEach(function (b) { b.addEventListener('click', function () { closeModal(b.closest('.fp-web-modal')); }); });
+        document.querySelectorAll('.fp-web-modal').forEach(function (m) { m.addEventListener('click', function (e) { if (e.target === m) { closeModal(m); } }); });
+        document.addEventListener('keydown', function (e) { if (e.key === 'Escape') { document.querySelectorAll('.fp-web-modal.show').forEach(closeModal); } });
+        function alertBox(form, type, msg) { var x = form.querySelector('[data-form-alert]'); if (x) { x.className = 'fp-web-alert show ' + type; x.textContent = msg; } }
+        function submit(form, done) {
+            if (!form.checkValidity()) { form.reportValidity(); return; }
+            var x = form.querySelector('[data-form-alert]');
+            if (x) { x.className = 'fp-web-alert'; x.textContent = ''; }
+            var btn = form.querySelector('.fp-web-submit');
+            var old = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = 'Please wait...';
 
-  fetch(window.location.pathname,{method:'POST',body:new FormData(form),credentials:'same-origin',headers:{'X-Requested-With':'XMLHttpRequest','Accept':'application/json'}})
-    .then(function(r){
-      return r.text().then(function(t){
-        var d;
-        try{d=JSON.parse(t);}catch(e){
-          console.error('FieldPlx server response:',t);
-          throw new Error('The server returned an invalid response. Please check the PHP error log.');
+            fetch(window.location.pathname, { method: 'POST', body: new FormData(form), credentials: 'same-origin', headers: { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' } })
+                .then(function (r) {
+                    return r.text().then(function (t) {
+                        var d;
+                        try { d = JSON.parse(t); } catch (e) {
+                            console.error('FieldPlx server response:', t);
+                            throw new Error('The server returned an invalid response. Please check the PHP error log.');
+                        }
+                        return { ok: r.ok, data: d };
+                    });
+                })
+                .then(function (r) {
+                    if (!r.ok || !r.data.success) { throw new Error(r.data.message || 'Unable to submit.'); }
+                    alertBox(form, 'success', r.data.message || 'Submitted successfully.');
+                    if (done) { done(r.data); }
+                })
+                .catch(function (e) { alertBox(form, 'error', e.message || 'Unable to submit.'); })
+                .then(function () { btn.disabled = false; btn.textContent = old; });
         }
-        return {ok:r.ok,data:d};
-      });
-    })
-    .then(function(r){
-      if(!r.ok||!r.data.success){throw new Error(r.data.message||'Unable to submit.');}
-      alertBox(form,'success',r.data.message||'Submitted successfully.');
-      if(done){done(r.data);}
-    })
-    .catch(function(e){alertBox(form,'error',e.message||'Unable to submit.');})
-    .then(function(){btn.disabled=false;btn.textContent=old;});
-}
-var trial=document.getElementById('trialOnboardingForm');if(trial){trial.addEventListener('submit',function(e){e.preventDefault();submit(trial,function(d){if(d.mail_sent){trial.reset();}});});}
-var demo=document.getElementById('demoLeadForm');if(demo){demo.addEventListener('submit',function(e){e.preventDefault();submit(demo,function(){demo.reset();});});}
-var contact=document.getElementById('contactLeadForm');if(contact){contact.addEventListener('submit',function(e){e.preventDefault();submit(contact,function(){contact.reset();});});}
-})();
+        var trial = document.getElementById('trialOnboardingForm'); if (trial) { trial.addEventListener('submit', function (e) { e.preventDefault(); submit(trial, function (d) { if (d.mail_sent) { trial.reset(); } }); }); }
+        var demo = document.getElementById('demoLeadForm'); if (demo) { demo.addEventListener('submit', function (e) { e.preventDefault(); submit(demo, function () { demo.reset(); }); }); }
+        var contact = document.getElementById('contactLeadForm'); if (contact) { contact.addEventListener('submit', function (e) { e.preventDefault(); submit(contact, function () { contact.reset(); }); }); }
+    })();
 </script>
 
 <?php include __DIR__ . '/footer.php'; ?>
