@@ -1,158 +1,623 @@
 <?php
-/* FieldPlx Customers Page - Version 3.2.0 - 2026-09-02 - Clickable Customer Rows */
+/* FieldPlx Insights - Dynamic Business Analytics - 2026-09-02 */
 require_once __DIR__ . '/includes/auth.php';
 
-$pageTitle = 'Customers';
-$activePage = 'clients';
+$pageTitle = 'Insights';
+$activePage = 'insights';
 
 if (session_status() === PHP_SESSION_NONE) {
-  session_start();
+    session_start();
 }
 
-if (empty($_SESSION['clients_csrf_token'])) {
-  $_SESSION['clients_csrf_token'] = bin2hex(random_bytes(32));
-}
+$insTenantId = isset($_SESSION['tenant_id']) ? (int)$_SESSION['tenant_id'] : 0;
+$insCurrencySymbol = isset($_SESSION['tenant_currency_symbol']) && $_SESSION['tenant_currency_symbol'] !== ''
+    ? (string)$_SESSION['tenant_currency_symbol']
+    : '₹';
 
-$clientsCsrfToken = (string) $_SESSION['clients_csrf_token'];
-
-/*
- * Customer statistics are loaded directly on this page.
- * No separate customer-stats API request is used.
- *
- * CRM definition preserved from the existing FieldPlx logic:
- * - an explicit client record is already a customer;
- * - a lead becomes a customer on its first qualifying Job or Invoice;
- * - cancelled/archived operational records do not qualify.
- */
-$customerStats = array(
-  'total' => 0,
-  'lead_total' => 0,
-  'customer_total' => 0,
-  'active_total' => 0,
-  'inactive_total' => 0,
-  'new_leads_30' => 0,
-  'prior_leads_30' => 0,
-  'new_leads_change' => 0.0,
-  'new_customers_30' => 0,
-  'prior_customers_30' => 0,
-  'new_customers_change' => 0.0,
-  'current_period_label' => date('M j', strtotime('-29 days')) . ' - ' . date('M j'),
-  'prior_period_label' => date('M j', strtotime('-59 days')) . ' - ' . date('M j', strtotime('-30 days'))
-);
-
-$customerStatsTenantId = isset($_SESSION['tenant_id']) ? (int) $_SESSION['tenant_id'] : 0;
-$customerStatsPdo = null;
+$insPdo = null;
 if (isset($pdo) && $pdo instanceof PDO) {
-  $customerStatsPdo = $pdo;
+    $insPdo = $pdo;
 } elseif (isset($db) && $db instanceof PDO) {
-  $customerStatsPdo = $db;
+    $insPdo = $db;
 }
 
-if ($customerStatsTenantId > 0 && $customerStatsPdo instanceof PDO) {
-  try {
-    $customerStatsStmt = $customerStatsPdo->prepare(
-      "SELECT
-          COUNT(*) AS total,
-          SUM(CASE WHEN effective_customer_at IS NULL AND original_type = 'lead' THEN 1 ELSE 0 END) AS lead_total,
-          SUM(CASE WHEN effective_customer_at IS NOT NULL OR original_type = 'client' THEN 1 ELSE 0 END) AS customer_total,
-          SUM(CASE WHEN crm_status = 'active' THEN 1 ELSE 0 END) AS active_total,
-          SUM(CASE WHEN crm_status = 'inactive' THEN 1 ELSE 0 END) AS inactive_total,
-          SUM(CASE
-                WHEN effective_customer_at IS NULL
-                 AND original_type = 'lead'
-                 AND client_created_at >= DATE_SUB(CURDATE(), INTERVAL 29 DAY)
-                 AND client_created_at < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
-                THEN 1 ELSE 0
-              END) AS new_leads_30,
-          SUM(CASE
-                WHEN effective_customer_at IS NULL
-                 AND original_type = 'lead'
-                 AND client_created_at >= DATE_SUB(CURDATE(), INTERVAL 59 DAY)
-                 AND client_created_at < DATE_SUB(CURDATE(), INTERVAL 29 DAY)
-                THEN 1 ELSE 0
-              END) AS prior_leads_30,
-          SUM(CASE
-                WHEN effective_customer_at >= DATE_SUB(CURDATE(), INTERVAL 29 DAY)
-                 AND effective_customer_at < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
-                THEN 1 ELSE 0
-              END) AS new_customers_30,
-          SUM(CASE
-                WHEN effective_customer_at >= DATE_SUB(CURDATE(), INTERVAL 59 DAY)
-                 AND effective_customer_at < DATE_SUB(CURDATE(), INTERVAL 29 DAY)
-                THEN 1 ELSE 0
-              END) AS prior_customers_30
-       FROM (
-          SELECT
-            c.id,
-            c.client_type AS original_type,
-            c.status AS crm_status,
-            c.created_at AS client_created_at,
-            CASE
-              WHEN c.client_type = 'client' THEN c.created_at
-              WHEN j.first_job_at IS NULL THEN i.first_invoice_at
-              WHEN i.first_invoice_at IS NULL THEN j.first_job_at
-              WHEN j.first_job_at <= i.first_invoice_at THEN j.first_job_at
-              ELSE i.first_invoice_at
-            END AS effective_customer_at
-          FROM clients c
-          LEFT JOIN (
-            SELECT tenant_id, client_id, MIN(created_at) AS first_job_at
-            FROM jobs
-            WHERE deleted_at IS NULL
-              AND status NOT IN ('draft', 'cancelled', 'archived')
-            GROUP BY tenant_id, client_id
-          ) j
-            ON j.tenant_id = c.tenant_id
-           AND j.client_id = c.id
-          LEFT JOIN (
-            SELECT tenant_id, client_id, MIN(created_at) AS first_invoice_at
-            FROM invoices
-            WHERE status NOT IN ('cancelled', 'archived', 'written_off')
-            GROUP BY tenant_id, client_id
-          ) i
-            ON i.tenant_id = c.tenant_id
-           AND i.client_id = c.id
-          WHERE c.tenant_id = :tenant_id
-            AND c.deleted_at IS NULL
-            AND c.client_type <> 'archived'
-       ) crm"
-    );
-    $customerStatsStmt->execute(array(':tenant_id' => $customerStatsTenantId));
-    $customerStatsRow = $customerStatsStmt->fetch(PDO::FETCH_ASSOC);
+function ins_table_exists(PDO $pdo, $table)
+{
+    static $cache = array();
+    if (isset($cache[$table])) return $cache[$table];
+    $q = $pdo->prepare("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=:n");
+    $q->execute(array(':n' => $table));
+    $cache[$table] = ((int)$q->fetchColumn() > 0);
+    return $cache[$table];
+}
 
-    if ($customerStatsRow) {
-      $currentLeads = isset($customerStatsRow['new_leads_30']) ? (int) $customerStatsRow['new_leads_30'] : 0;
-      $priorLeads = isset($customerStatsRow['prior_leads_30']) ? (int) $customerStatsRow['prior_leads_30'] : 0;
-      $currentCustomers = isset($customerStatsRow['new_customers_30']) ? (int) $customerStatsRow['new_customers_30'] : 0;
-      $priorCustomers = isset($customerStatsRow['prior_customers_30']) ? (int) $customerStatsRow['prior_customers_30'] : 0;
+function ins_column_exists(PDO $pdo, $table, $column)
+{
+    static $cache = array();
+    $key = $table . '.' . $column;
+    if (isset($cache[$key])) return $cache[$key];
+    $q = $pdo->prepare("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=:t AND COLUMN_NAME=:c");
+    $q->execute(array(':t' => $table, ':c' => $column));
+    $cache[$key] = ((int)$q->fetchColumn() > 0);
+    return $cache[$key];
+}
 
-      $customerStats['total'] = isset($customerStatsRow['total']) ? (int) $customerStatsRow['total'] : 0;
-      $customerStats['lead_total'] = isset($customerStatsRow['lead_total']) ? (int) $customerStatsRow['lead_total'] : 0;
-      $customerStats['customer_total'] = isset($customerStatsRow['customer_total']) ? (int) $customerStatsRow['customer_total'] : 0;
-      $customerStats['active_total'] = isset($customerStatsRow['active_total']) ? (int) $customerStatsRow['active_total'] : 0;
-      $customerStats['inactive_total'] = isset($customerStatsRow['inactive_total']) ? (int) $customerStatsRow['inactive_total'] : 0;
-      $customerStats['new_leads_30'] = $currentLeads;
-      $customerStats['prior_leads_30'] = $priorLeads;
-      $customerStats['new_leads_change'] = $priorLeads > 0
-        ? (($currentLeads - $priorLeads) / $priorLeads) * 100
-        : ($currentLeads > 0 ? 100.0 : 0.0);
-      $customerStats['new_customers_30'] = $currentCustomers;
-      $customerStats['prior_customers_30'] = $priorCustomers;
-      $customerStats['new_customers_change'] = $priorCustomers > 0
-        ? (($currentCustomers - $priorCustomers) / $priorCustomers) * 100
-        : ($currentCustomers > 0 ? 100.0 : 0.0);
+function ins_scalar(PDO $pdo, $sql, $params = array(), $default = 0)
+{
+    try {
+        $q = $pdo->prepare($sql);
+        $q->execute($params);
+        $v = $q->fetchColumn();
+        return $v === false || $v === null ? $default : $v;
+    } catch (Throwable $e) {
+        error_log('FieldPlx insights scalar error: ' . $e->getMessage());
+        return $default;
     }
-  } catch (Throwable $customerStatsError) {
-    error_log('FieldPlx customers direct stats error: ' . $customerStatsError->getMessage());
-  }
 }
 
-$leadChangeValue = (float) $customerStats['new_leads_change'];
-$customerChangeValue = (float) $customerStats['new_customers_change'];
-$leadTrendClass = $leadChangeValue > 0 ? '' : ($leadChangeValue < 0 ? ' down' : ' neutral');
-$customerTrendClass = $customerChangeValue > 0 ? '' : ($customerChangeValue < 0 ? ' down' : ' neutral');
-$leadTrendArrow = $leadChangeValue > 0 ? '↑ ' : ($leadChangeValue < 0 ? '↓ ' : '');
-$customerTrendArrow = $customerChangeValue > 0 ? '↑ ' : ($customerChangeValue < 0 ? '↓ ' : '');
+function ins_rows(PDO $pdo, $sql, $params = array())
+{
+    try {
+        $q = $pdo->prepare($sql);
+        $q->execute($params);
+        return $q->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        error_log('FieldPlx insights rows error: ' . $e->getMessage());
+        return array();
+    }
+}
+
+function ins_valid_date($value)
+{
+    if (!is_string($value) || !preg_match('/^\d{4}-\d{2}-\d{2}$/', $value)) return false;
+    $d = DateTime::createFromFormat('Y-m-d', $value);
+    return $d && $d->format('Y-m-d') === $value;
+}
+
+function ins_pct_change($current, $previous)
+{
+    $current = (float)$current;
+    $previous = (float)$previous;
+    if (abs($previous) < 0.00001) return abs($current) < 0.00001 ? 0.0 : 100.0;
+    return (($current - $previous) / abs($previous)) * 100.0;
+}
+
+function ins_trend_class($pct)
+{
+    return $pct > 0 ? '' : ($pct < 0 ? ' down' : ' neutral');
+}
+
+function ins_trend_text($pct)
+{
+    $prefix = $pct > 0 ? '↑ ' : ($pct < 0 ? '↓ ' : '');
+    return $prefix . rtrim(rtrim(number_format(abs((float)$pct), 1, '.', ''), '0'), '.') . '%';
+}
+
+function ins_date_label($date)
+{
+    $ts = strtotime($date);
+    return $ts ? date('M j, Y', $ts) : $date;
+}
+
+/* Default to the last complete calendar month, matching the reference Insights view. */
+$defaultFrom = date('Y-m-01', strtotime('first day of last month'));
+$defaultTo = date('Y-m-t', strtotime('last day of last month'));
+$insFrom = isset($_GET['from']) && ins_valid_date($_GET['from']) ? $_GET['from'] : $defaultFrom;
+$insTo = isset($_GET['to']) && ins_valid_date($_GET['to']) ? $_GET['to'] : $defaultTo;
+if (strtotime($insFrom) > strtotime($insTo)) {
+    $tmp = $insFrom;
+    $insFrom = $insTo;
+    $insTo = $tmp;
+}
+
+$insRangeDays = max(1, (int)floor((strtotime($insTo) - strtotime($insFrom)) / 86400) + 1);
+$insPrevTo = date('Y-m-d', strtotime($insFrom . ' -1 day'));
+$insPrevFrom = date('Y-m-d', strtotime($insPrevTo . ' -' . ($insRangeDays - 1) . ' days'));
+$insFromDT = $insFrom . ' 00:00:00';
+$insToExclusive = date('Y-m-d', strtotime($insTo . ' +1 day')) . ' 00:00:00';
+$insPrevFromDT = $insPrevFrom . ' 00:00:00';
+$insPrevToExclusive = date('Y-m-d', strtotime($insPrevTo . ' +1 day')) . ' 00:00:00';
+$insRangeLabel = ins_date_label($insFrom) . ' - ' . ins_date_label($insTo);
+$insPrevRangeLabel = ins_date_label($insPrevFrom) . ' - ' . ins_date_label($insPrevTo);
+
+$insDataError = '';
+$overview = array(
+    'new_leads' => 0,
+    'new_requests' => 0,
+    'converted_quotes' => 0,
+    'one_off_jobs' => 0,
+    'recurring_jobs' => 0,
+    'invoiced_value' => 0.0
+);
+$overviewPrev = $overview;
+
+$revenueYears = array();
+$leadSourceRevenue = array();
+$profitRows = array();
+$cashflow = array(
+    'receivables' => 0.0,
+    'receivable_clients' => 0,
+    'due_today' => 0.0,
+    'due_7_days' => 0.0,
+    'payment_days' => null
+);
+$paymentMethods = array();
+$leadConversion = array(
+    'lead_days' => null,
+    'quote_approval_days' => null,
+    'quote_conversion_rate' => 0.0
+);
+$leadFunnel = array('new_leads' => 0, 'sent_quote' => 0, 'job_created' => 0);
+$quoteTrend = array();
+$scheduledJobWeeks = array();
+$jobMix = array('one_off' => 0.0, 'recurring' => 0.0);
+$avgJobValue = array('one_off' => 0.0, 'recurring' => 0.0);
+
+if ($insPdo instanceof PDO && $insTenantId > 0) {
+    try {
+        $t = $insTenantId;
+
+        /* ---------------- Overview ---------------- */
+        if (ins_table_exists($insPdo, 'clients')) {
+            $overview['new_leads'] = (int)ins_scalar(
+                $insPdo,
+                "SELECT COUNT(*) FROM clients
+                 WHERE tenant_id=:t AND deleted_at IS NULL AND client_type='lead'
+                   AND created_at>=:f AND created_at<:x",
+                array(':t'=>$t, ':f'=>$insFromDT, ':x'=>$insToExclusive)
+            );
+            $overviewPrev['new_leads'] = (int)ins_scalar(
+                $insPdo,
+                "SELECT COUNT(*) FROM clients
+                 WHERE tenant_id=:t AND deleted_at IS NULL AND client_type='lead'
+                   AND created_at>=:f AND created_at<:x",
+                array(':t'=>$t, ':f'=>$insPrevFromDT, ':x'=>$insPrevToExclusive)
+            );
+        }
+
+        if (ins_table_exists($insPdo, 'service_requests')) {
+            $overview['new_requests'] = (int)ins_scalar(
+                $insPdo,
+                "SELECT COUNT(*) FROM service_requests
+                 WHERE tenant_id=:t AND created_at>=:f AND created_at<:x AND status<>'cancelled'",
+                array(':t'=>$t, ':f'=>$insFromDT, ':x'=>$insToExclusive)
+            );
+            $overviewPrev['new_requests'] = (int)ins_scalar(
+                $insPdo,
+                "SELECT COUNT(*) FROM service_requests
+                 WHERE tenant_id=:t AND created_at>=:f AND created_at<:x AND status<>'cancelled'",
+                array(':t'=>$t, ':f'=>$insPrevFromDT, ':x'=>$insPrevToExclusive)
+            );
+        }
+
+        if (ins_table_exists($insPdo, 'quotes') && ins_table_exists($insPdo, 'jobs')) {
+            /* A quote is counted as converted when a real job was created from that quote. */
+            $overview['converted_quotes'] = (int)ins_scalar(
+                $insPdo,
+                "SELECT COUNT(DISTINCT q.id)
+                   FROM quotes q
+                   JOIN jobs j ON j.quote_id=q.id AND j.tenant_id=q.tenant_id AND j.deleted_at IS NULL
+                  WHERE q.tenant_id=:t
+                    AND j.created_at>=:f AND j.created_at<:x
+                    AND j.status NOT IN('cancelled','archived')",
+                array(':t'=>$t, ':f'=>$insFromDT, ':x'=>$insToExclusive)
+            );
+            $overviewPrev['converted_quotes'] = (int)ins_scalar(
+                $insPdo,
+                "SELECT COUNT(DISTINCT q.id)
+                   FROM quotes q
+                   JOIN jobs j ON j.quote_id=q.id AND j.tenant_id=q.tenant_id AND j.deleted_at IS NULL
+                  WHERE q.tenant_id=:t
+                    AND j.created_at>=:f AND j.created_at<:x
+                    AND j.status NOT IN('cancelled','archived')",
+                array(':t'=>$t, ':f'=>$insPrevFromDT, ':x'=>$insPrevToExclusive)
+            );
+        }
+
+        if (ins_table_exists($insPdo, 'jobs')) {
+            foreach (array('one_off','recurring') as $jobType) {
+                $key = $jobType === 'one_off' ? 'one_off_jobs' : 'recurring_jobs';
+                $overview[$key] = (int)ins_scalar(
+                    $insPdo,
+                    "SELECT COUNT(*) FROM jobs
+                     WHERE tenant_id=:t AND deleted_at IS NULL AND job_type=:jt
+                       AND status NOT IN('cancelled','archived')
+                       AND created_at>=:f AND created_at<:x",
+                    array(':t'=>$t, ':jt'=>$jobType, ':f'=>$insFromDT, ':x'=>$insToExclusive)
+                );
+                $overviewPrev[$key] = (int)ins_scalar(
+                    $insPdo,
+                    "SELECT COUNT(*) FROM jobs
+                     WHERE tenant_id=:t AND deleted_at IS NULL AND job_type=:jt
+                       AND status NOT IN('cancelled','archived')
+                       AND created_at>=:f AND created_at<:x",
+                    array(':t'=>$t, ':jt'=>$jobType, ':f'=>$insPrevFromDT, ':x'=>$insPrevToExclusive)
+                );
+            }
+        }
+
+        if (ins_table_exists($insPdo, 'invoices')) {
+            $invoiceLiveStatuses = "status NOT IN('draft','cancelled','archived','written_off')";
+            $overview['invoiced_value'] = (float)ins_scalar(
+                $insPdo,
+                "SELECT COALESCE(SUM(total),0) FROM invoices
+                 WHERE tenant_id=:t AND $invoiceLiveStatuses
+                   AND issue_date>=:f AND issue_date<=:x",
+                array(':t'=>$t, ':f'=>$insFrom, ':x'=>$insTo)
+            );
+            $overviewPrev['invoiced_value'] = (float)ins_scalar(
+                $insPdo,
+                "SELECT COALESCE(SUM(total),0) FROM invoices
+                 WHERE tenant_id=:t AND $invoiceLiveStatuses
+                   AND issue_date>=:f AND issue_date<=:x",
+                array(':t'=>$t, ':f'=>$insPrevFrom, ':x'=>$insPrevTo)
+            );
+
+            /* ---------------- Revenue: previous vs current year ---------------- */
+            $currentYear = (int)date('Y');
+            $previousYear = $currentYear - 1;
+            $revenueYears = array(
+                (string)$previousYear => array_fill(1, 12, 0.0),
+                (string)$currentYear => array_fill(1, 12, 0.0)
+            );
+            $revRows = ins_rows(
+                $insPdo,
+                "SELECT YEAR(issue_date) y, MONTH(issue_date) m, COALESCE(SUM(total),0) total
+                   FROM invoices
+                  WHERE tenant_id=:t AND $invoiceLiveStatuses
+                    AND issue_date IS NOT NULL
+                    AND YEAR(issue_date) IN(:py,:cy)
+                  GROUP BY YEAR(issue_date),MONTH(issue_date)
+                  ORDER BY y,m",
+                array(':t'=>$t, ':py'=>$previousYear, ':cy'=>$currentYear)
+            );
+            foreach ($revRows as $r) {
+                $y = (string)(int)$r['y'];
+                $m = (int)$r['m'];
+                if (isset($revenueYears[$y]) && $m >= 1 && $m <= 12) $revenueYears[$y][$m] = (float)$r['total'];
+            }
+
+            /* Revenue by customer lead source in selected period. */
+            if (ins_table_exists($insPdo, 'clients')) {
+                $leadSourceRevenue = ins_rows(
+                    $insPdo,
+                    "SELECT COALESCE(NULLIF(TRIM(c.source),''),'Unspecified') source_name,
+                            COALESCE(SUM(i.total),0) total
+                       FROM invoices i
+                       JOIN clients c ON c.id=i.client_id AND c.tenant_id=i.tenant_id
+                      WHERE i.tenant_id=:t AND $invoiceLiveStatuses
+                        AND i.issue_date>=:f AND i.issue_date<=:x
+                      GROUP BY COALESCE(NULLIF(TRIM(c.source),''),'Unspecified')
+                      ORDER BY total DESC",
+                    array(':t'=>$t, ':f'=>$insFrom, ':x'=>$insTo)
+                );
+            }
+
+            /* ---------------- Cashflow ---------------- */
+            $cashflow['receivables'] = (float)ins_scalar(
+                $insPdo,
+                "SELECT COALESCE(SUM(balance_due),0) FROM invoices
+                  WHERE tenant_id=:t AND balance_due>0
+                    AND status NOT IN('draft','cancelled','archived','written_off')",
+                array(':t'=>$t)
+            );
+            $cashflow['receivable_clients'] = (int)ins_scalar(
+                $insPdo,
+                "SELECT COUNT(DISTINCT client_id) FROM invoices
+                  WHERE tenant_id=:t AND balance_due>0
+                    AND status NOT IN('draft','cancelled','archived','written_off')",
+                array(':t'=>$t)
+            );
+            $cashflow['due_today'] = (float)ins_scalar(
+                $insPdo,
+                "SELECT COALESCE(SUM(balance_due),0) FROM invoices
+                  WHERE tenant_id=:t AND balance_due>0 AND due_date=CURDATE()
+                    AND status NOT IN('draft','cancelled','archived','written_off')",
+                array(':t'=>$t)
+            );
+            $cashflow['due_7_days'] = (float)ins_scalar(
+                $insPdo,
+                "SELECT COALESCE(SUM(balance_due),0) FROM invoices
+                  WHERE tenant_id=:t AND balance_due>0
+                    AND due_date>CURDATE() AND due_date<=DATE_ADD(CURDATE(),INTERVAL 7 DAY)
+                    AND status NOT IN('draft','cancelled','archived','written_off')",
+                array(':t'=>$t)
+            );
+            $paymentDays = ins_scalar(
+                $insPdo,
+                "SELECT AVG(DATEDIFF(DATE(paid_at),issue_date)) FROM invoices
+                  WHERE tenant_id=:t AND paid_at IS NOT NULL AND issue_date IS NOT NULL
+                    AND DATE(paid_at)>=:f AND DATE(paid_at)<=:x
+                    AND status='paid'",
+                array(':t'=>$t, ':f'=>$insFrom, ':x'=>$insTo),
+                null
+            );
+            $cashflow['payment_days'] = $paymentDays === null ? null : max(0.0, (float)$paymentDays);
+        }
+
+        if (ins_table_exists($insPdo, 'payments')) {
+            $paymentMethods = ins_rows(
+                $insPdo,
+                "SELECT payment_method, COALESCE(SUM(amount),0) total
+                   FROM payments
+                  WHERE tenant_id=:t AND status='succeeded'
+                    AND DATE(COALESCE(received_at,created_at))>=:f
+                    AND DATE(COALESCE(received_at,created_at))<=:x
+                  GROUP BY payment_method
+                  ORDER BY total DESC",
+                array(':t'=>$t, ':f'=>$insFrom, ':x'=>$insTo)
+            );
+        }
+
+        /* ---------------- Profit and loss ---------------- */
+        if (ins_table_exists($insPdo, 'jobs') && ins_table_exists($insPdo, 'clients')) {
+            $laborExpr = ins_table_exists($insPdo, 'time_entries')
+                ? "(SELECT COALESCE(SUM(COALESCE(te.labor_cost,0)),0)
+                     FROM time_entries te
+                    WHERE te.tenant_id=j.tenant_id AND te.job_id=j.id AND te.status<>'rejected')"
+                : "0";
+            $expenseExpr = "0";
+            if (ins_table_exists($insPdo, 'expenses')) {
+                $expenseDeletedCondition = ins_column_exists($insPdo, 'expenses', 'deleted_at') ? " AND e.deleted_at IS NULL" : "";
+                $expenseExpr = "(SELECT COALESCE(SUM(e.amount),0)
+                                   FROM expenses e
+                                  WHERE e.tenant_id=j.tenant_id AND e.job_id=j.id
+                                    AND e.status<>'rejected' $expenseDeletedCondition)";
+            }
+            $materialExpr = ins_table_exists($insPdo, 'job_material_costs')
+                ? "(SELECT COALESCE(SUM(jmc.total_cost),0)
+                     FROM job_material_costs jmc
+                    WHERE jmc.tenant_id=j.tenant_id AND jmc.job_id=j.id)"
+                : "0";
+
+            $profitRows = ins_rows(
+                $insPdo,
+                "SELECT j.id,j.job_no,j.title,j.status,j.total,
+                        c.display_name client_name,
+                        $laborExpr labor_cost,
+                        $expenseExpr direct_expense,
+                        $materialExpr material_cost
+                   FROM jobs j
+                   JOIN clients c ON c.id=j.client_id AND c.tenant_id=j.tenant_id
+                  WHERE j.tenant_id=:t AND j.deleted_at IS NULL
+                    AND j.job_type='one_off'
+                    AND j.status NOT IN('draft','cancelled','archived')
+                    AND DATE(j.created_at)>=:f AND DATE(j.created_at)<=:x
+                  ORDER BY COALESCE(j.completed_at,j.updated_at,j.created_at) DESC
+                  LIMIT 40",
+                array(':t'=>$t, ':f'=>$insFrom, ':x'=>$insTo)
+            );
+            foreach ($profitRows as &$pr) {
+                $price = (float)$pr['total'];
+                $labor = (float)$pr['labor_cost'];
+                $direct = (float)$pr['direct_expense'];
+                $material = (float)$pr['material_cost'];
+                $allExpenses = $direct + $material;
+                $profit = $price - $labor - $allExpenses;
+                $pr['expenses_total'] = $allExpenses;
+                $pr['profit'] = $profit;
+                $pr['margin'] = $price > 0 ? ($profit / $price) * 100 : null;
+                $pr['view_group'] = in_array($pr['status'], array('completed','invoiced','closed'), true) ? 'completed' : 'active';
+            }
+            unset($pr);
+        }
+
+        /* ---------------- Lead conversion ---------------- */
+        if (ins_table_exists($insPdo, 'clients') && ins_table_exists($insPdo, 'jobs')) {
+            $leadDays = ins_scalar(
+                $insPdo,
+                "SELECT AVG(DATEDIFF(first_job_at,client_created_at))
+                   FROM (
+                         SELECT c.id,c.created_at client_created_at,MIN(j.created_at) first_job_at
+                           FROM clients c
+                           JOIN jobs j ON j.client_id=c.id AND j.tenant_id=c.tenant_id
+                                      AND j.deleted_at IS NULL AND j.status NOT IN('cancelled','archived')
+                          WHERE c.tenant_id=:t AND c.deleted_at IS NULL
+                            AND DATE(c.created_at)>=:f AND DATE(c.created_at)<=:x
+                          GROUP BY c.id,c.created_at
+                        ) x",
+                array(':t'=>$t, ':f'=>$insFrom, ':x'=>$insTo),
+                null
+            );
+            $leadConversion['lead_days'] = $leadDays === null ? null : max(0.0, (float)$leadDays);
+        }
+
+        if (ins_table_exists($insPdo, 'quotes')) {
+            $approvalDays = ins_scalar(
+                $insPdo,
+                "SELECT AVG(TIMESTAMPDIFF(MINUTE,sent_at,approved_at))/1440
+                   FROM quotes
+                  WHERE tenant_id=:t AND sent_at IS NOT NULL AND approved_at IS NOT NULL
+                    AND DATE(approved_at)>=:f AND DATE(approved_at)<=:x",
+                array(':t'=>$t, ':f'=>$insFrom, ':x'=>$insTo),
+                null
+            );
+            $leadConversion['quote_approval_days'] = $approvalDays === null ? null : max(0.0, (float)$approvalDays);
+
+            $sentCount = (int)ins_scalar(
+                $insPdo,
+                "SELECT COUNT(*) FROM quotes
+                  WHERE tenant_id=:t
+                    AND COALESCE(sent_at,created_at)>=:f AND COALESCE(sent_at,created_at)<:x
+                    AND status NOT IN('draft','internal_approval','archived')",
+                array(':t'=>$t, ':f'=>$insFromDT, ':x'=>$insToExclusive)
+            );
+            $convertedCount = (int)ins_scalar(
+                $insPdo,
+                "SELECT COUNT(*) FROM quotes
+                  WHERE tenant_id=:t
+                    AND COALESCE(sent_at,created_at)>=:f AND COALESCE(sent_at,created_at)<:x
+                    AND status='converted'",
+                array(':t'=>$t, ':f'=>$insFromDT, ':x'=>$insToExclusive)
+            );
+            $leadConversion['quote_conversion_rate'] = $sentCount > 0 ? ($convertedCount / $sentCount) * 100 : 0.0;
+
+            $quoteTrend = ins_rows(
+                $insPdo,
+                "SELECT DATE(COALESCE(sent_at,created_at)) d,
+                        COUNT(*) sent_count,
+                        SUM(CASE WHEN status='converted' THEN 1 ELSE 0 END) converted_count,
+                        COALESCE(SUM(total),0) sent_value,
+                        COALESCE(SUM(CASE WHEN status='converted' THEN total ELSE 0 END),0) converted_value
+                   FROM quotes
+                  WHERE tenant_id=:t
+                    AND DATE(COALESCE(sent_at,created_at))>=:f
+                    AND DATE(COALESCE(sent_at,created_at))<=:x
+                    AND status NOT IN('draft','internal_approval','archived')
+                  GROUP BY DATE(COALESCE(sent_at,created_at))
+                  ORDER BY d",
+                array(':t'=>$t, ':f'=>$insFrom, ':x'=>$insTo)
+            );
+        }
+
+        /* Fixed 90-day funnel, as in the reference page. */
+        if (ins_table_exists($insPdo, 'clients')) {
+            $funnelStart = date('Y-m-d', strtotime('-89 days'));
+            $leadFunnel['new_leads'] = (int)ins_scalar(
+                $insPdo,
+                "SELECT COUNT(*) FROM clients
+                  WHERE tenant_id=:t AND deleted_at IS NULL
+                    AND created_at>=:f AND created_at<DATE_ADD(CURDATE(),INTERVAL 1 DAY)",
+                array(':t'=>$t, ':f'=>$funnelStart . ' 00:00:00')
+            );
+
+            if (ins_table_exists($insPdo, 'quotes')) {
+                $leadFunnel['sent_quote'] = (int)ins_scalar(
+                    $insPdo,
+                    "SELECT COUNT(DISTINCT c.id)
+                       FROM clients c
+                       JOIN quotes q ON q.client_id=c.id AND q.tenant_id=c.tenant_id
+                      WHERE c.tenant_id=:t AND c.deleted_at IS NULL
+                        AND c.created_at>=:f
+                        AND q.status NOT IN('draft','internal_approval','archived')",
+                    array(':t'=>$t, ':f'=>$funnelStart . ' 00:00:00')
+                );
+            }
+            if (ins_table_exists($insPdo, 'jobs')) {
+                $leadFunnel['job_created'] = (int)ins_scalar(
+                    $insPdo,
+                    "SELECT COUNT(DISTINCT c.id)
+                       FROM clients c
+                       JOIN jobs j ON j.client_id=c.id AND j.tenant_id=c.tenant_id
+                                  AND j.deleted_at IS NULL AND j.status NOT IN('cancelled','archived')
+                      WHERE c.tenant_id=:t AND c.deleted_at IS NULL
+                        AND c.created_at>=:f",
+                    array(':t'=>$t, ':f'=>$funnelStart . ' 00:00:00')
+                );
+            }
+        }
+
+        /* ---------------- Jobs ---------------- */
+        if (ins_table_exists($insPdo, 'jobs')) {
+            $today = new DateTime(date('Y-m-d'));
+            for ($w = 0; $w < 4; $w++) {
+                $start = clone $today;
+                $start->modify('+' . ($w * 7) . ' days');
+                $end = clone $start;
+                $end->modify('+6 days');
+                $scheduledJobWeeks[] = array(
+                    'label' => $start->format('M d'),
+                    'from' => $start->format('Y-m-d'),
+                    'to' => $end->format('Y-m-d'),
+                    'value' => 0.0
+                );
+            }
+            $scheduledRows = ins_rows(
+                $insPdo,
+                "SELECT start_date,COALESCE(SUM(total),0) total
+                   FROM jobs
+                  WHERE tenant_id=:t AND deleted_at IS NULL
+                    AND start_date>=CURDATE() AND start_date<=DATE_ADD(CURDATE(),INTERVAL 27 DAY)
+                    AND status NOT IN('draft','cancelled','archived','completed','closed','invoiced')
+                  GROUP BY start_date
+                  ORDER BY start_date",
+                array(':t'=>$t)
+            );
+            foreach ($scheduledRows as $sr) {
+                foreach ($scheduledJobWeeks as &$wk) {
+                    if ($sr['start_date'] >= $wk['from'] && $sr['start_date'] <= $wk['to']) {
+                        $wk['value'] += (float)$sr['total'];
+                        break;
+                    }
+                }
+                unset($wk);
+            }
+
+            $mixRows = ins_rows(
+                $insPdo,
+                "SELECT job_type,COALESCE(SUM(total),0) total,AVG(total) avg_value
+                   FROM jobs
+                  WHERE tenant_id=:t AND deleted_at IS NULL
+                    AND status NOT IN('draft','cancelled','archived')
+                    AND DATE(created_at)>=:f AND DATE(created_at)<=:x
+                  GROUP BY job_type",
+                array(':t'=>$t, ':f'=>$insFrom, ':x'=>$insTo)
+            );
+            foreach ($mixRows as $mr) {
+                $jt = $mr['job_type'];
+                if (isset($jobMix[$jt])) {
+                    $jobMix[$jt] = (float)$mr['total'];
+                    $avgJobValue[$jt] = (float)$mr['avg_value'];
+                }
+            }
+        }
+
+    } catch (Throwable $e) {
+        $insDataError = $e->getMessage();
+        error_log('FieldPlx insights main error: ' . $e->getMessage());
+    }
+} else {
+    $insDataError = 'Database connection or tenant session is unavailable.';
+}
+
+$overviewTrend = array();
+foreach ($overview as $key => $value) {
+    $overviewTrend[$key] = ins_pct_change($value, isset($overviewPrev[$key]) ? $overviewPrev[$key] : 0);
+}
+
+$currentYear = (int)date('Y');
+$previousYear = $currentYear - 1;
+$monthLabels = array('Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec');
+$revenuePrevData = array();
+$revenueCurrData = array();
+for ($m=1; $m<=12; $m++) {
+    $revenuePrevData[] = isset($revenueYears[(string)$previousYear][$m]) ? (float)$revenueYears[(string)$previousYear][$m] : 0;
+    $revenueCurrData[] = isset($revenueYears[(string)$currentYear][$m]) ? (float)$revenueYears[(string)$currentYear][$m] : 0;
+}
+
+$leadSourceLabels = array();
+$leadSourceValues = array();
+foreach ($leadSourceRevenue as $r) {
+    $leadSourceLabels[] = $r['source_name'];
+    $leadSourceValues[] = (float)$r['total'];
+}
+
+$paymentMethodLabels = array();
+$paymentMethodValues = array();
+foreach ($paymentMethods as $r) {
+    $paymentMethodLabels[] = ucwords(str_replace('_',' ', $r['payment_method']));
+    $paymentMethodValues[] = (float)$r['total'];
+}
+
+$quoteLabels = array();
+$quoteConversionSeries = array();
+$quoteSentValueSeries = array();
+$quoteConvertedValueSeries = array();
+foreach ($quoteTrend as $r) {
+    $quoteLabels[] = date('M j', strtotime($r['d']));
+    $sent = (int)$r['sent_count'];
+    $converted = (int)$r['converted_count'];
+    $quoteConversionSeries[] = $sent > 0 ? round(($converted / $sent) * 100, 2) : 0;
+    $quoteSentValueSeries[] = (float)$r['sent_value'];
+    $quoteConvertedValueSeries[] = (float)$r['converted_value'];
+}
+
+$scheduledLabels = array();
+$scheduledValues = array();
+foreach ($scheduledJobWeeks as $w) {
+    $scheduledLabels[] = $w['label'];
+    $scheduledValues[] = (float)$w['value'];
+}
 ?>
 
 <!DOCTYPE html>
@@ -161,8 +626,9 @@ $customerTrendArrow = $customerChangeValue > 0 ? '↑ ' : ($customerChangeValue 
 <head>
     <meta charset="utf-8" />
     <meta content="width=device-width, initial-scale=1" name="viewport" />
-    <title>Customers - FieldPlx</title>
+    <title>Insights - FieldPlx</title>
     <?php require_once __DIR__ . '/includes/links.php'; ?>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
     <style>
     :root {
         --fieldplx-primary: #6d28d9;
@@ -4732,855 +5198,1502 @@ $customerTrendArrow = $customerChangeValue > 0 ? '↑ ' : ($customerChangeValue 
             min-width: 238px;
         }
     }
+
+
+    /* ==========================================================
+       FieldPlx Insights - 2026-09-02
+       ========================================================== */
+    .ins-header-actions {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+
+    .ins-date-form {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        flex-wrap: wrap;
+    }
+
+    .ins-date-field {
+        height: 39px;
+        min-width: 142px;
+        padding: 0 10px;
+        border: 1px solid var(--fd-border);
+        border-radius: 8px;
+        color: #43546c;
+        background: #fff;
+        font-size: 10px;
+        outline: 0;
+    }
+
+    .ins-date-field:focus {
+        border-color: #b9d78e;
+        box-shadow: 0 0 0 3px rgba(116, 184, 36, .10);
+    }
+
+    .ins-section {
+        margin-top: 22px;
+    }
+
+    .ins-section:first-of-type {
+        margin-top: 0;
+    }
+
+    .ins-section-title {
+        margin: 0 0 12px;
+        color: #10213c;
+        font-size: 19px;
+        line-height: 1.2;
+        font-weight: 700;
+    }
+
+    .ins-card {
+        border: 1px solid #dfe6ef;
+        border-radius: 12px;
+        background: #fff;
+        box-shadow: 0 3px 12px rgba(24, 45, 76, .035);
+    }
+
+    .ins-overview-card {
+        padding: 16px 18px;
+        margin-bottom: 18px;
+    }
+
+    .ins-card-head {
+        min-height: 34px;
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 12px;
+    }
+
+    .ins-card-title {
+        margin: 0;
+        color: #10213c;
+        font-size: 14px;
+        line-height: 1.2;
+        font-weight: 700;
+    }
+
+    .ins-card-subtitle {
+        display: block;
+        margin-top: 3px;
+        color: #7f8da1;
+        font-size: 9.5px;
+        line-height: 1.3;
+    }
+
+    .ins-range-label {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        color: #526279;
+        font-size: 10px;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+
+    .ins-overview-grid {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        border-top: 1px solid #eef2f6;
+    }
+
+    .ins-overview-item {
+        min-width: 0;
+        padding: 14px 16px 8px;
+        position: relative;
+        border-right: 1px solid #eef2f6;
+    }
+
+    .ins-overview-item:first-child {
+        padding-left: 0;
+    }
+
+    .ins-overview-item:last-child {
+        border-right: 0;
+    }
+
+    .ins-overview-label {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 6px;
+        color: #17243a;
+        font-size: 10.5px;
+        line-height: 1.25;
+        font-weight: 700;
+    }
+
+    .ins-overview-arrow {
+        color: #8492a6;
+        font-size: 11px;
+        flex: 0 0 auto;
+    }
+
+    .ins-overview-number-row {
+        min-height: 45px;
+        display: flex;
+        align-items: flex-end;
+        gap: 7px;
+        padding-top: 8px;
+    }
+
+    .ins-overview-value {
+        color: #030d1b;
+        font-size: 25px;
+        line-height: 1;
+        font-weight: 700;
+        letter-spacing: -.25px;
+        white-space: nowrap;
+    }
+
+    .ins-trend {
+        margin-bottom: 1px;
+        padding: 4px 6px;
+        border-radius: 999px;
+        color: #398523;
+        background: #edf7e8;
+        font-size: 9px;
+        line-height: 1;
+        font-weight: 700;
+        white-space: nowrap;
+    }
+
+    .ins-trend.down {
+        color: #bf4d54;
+        background: #fff0f1;
+    }
+
+    .ins-trend.neutral {
+        color: #64748b;
+        background: #f1f5f9;
+    }
+
+    .ins-grid-2 {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+    }
+
+    .ins-grid-3 {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+    }
+
+    .ins-chart-card {
+        min-height: 330px;
+        padding: 16px 18px;
+        position: relative;
+        overflow: hidden;
+    }
+
+    .ins-chart-card.large {
+        min-height: 360px;
+    }
+
+    .ins-chart-card.medium {
+        min-height: 300px;
+    }
+
+    .ins-chart-card.compact {
+        min-height: 250px;
+    }
+
+    .ins-chart-wrap {
+        height: 250px;
+        min-height: 0;
+        position: relative;
+    }
+
+    .ins-chart-card.large .ins-chart-wrap {
+        height: 285px;
+    }
+
+    .ins-chart-card.compact .ins-chart-wrap {
+        height: 175px;
+    }
+
+    .ins-chart-summary {
+        display: flex;
+        align-items: flex-end;
+        gap: 22px;
+        margin: -2px 0 10px;
+    }
+
+    .ins-chart-summary-item small {
+        display: block;
+        color: #7f8da1;
+        font-size: 9px;
+        line-height: 1.2;
+    }
+
+    .ins-chart-summary-item strong {
+        display: block;
+        margin-top: 2px;
+        color: #061326;
+        font-size: 22px;
+        line-height: 1;
+        font-weight: 700;
+    }
+
+    .ins-empty {
+        height: 100%;
+        min-height: 150px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        color: #8190a5;
+        text-align: center;
+        font-size: 10px;
+    }
+
+    .ins-empty i {
+        font-size: 22px;
+        color: #a6b2c2;
+    }
+
+    .ins-kpi-card {
+        min-height: 150px;
+        padding: 16px 18px;
+        position: relative;
+    }
+
+    .ins-kpi-arrow {
+        position: absolute;
+        top: 16px;
+        right: 17px;
+        color: #8191a6;
+        font-size: 13px;
+    }
+
+    .ins-kpi-value {
+        display: block;
+        margin-top: 16px;
+        color: #030d1b;
+        font-size: 28px;
+        line-height: 1;
+        font-weight: 700;
+    }
+
+    .ins-kpi-caption {
+        display: block;
+        margin-top: 6px;
+        color: #7f8da1;
+        font-size: 9.5px;
+        line-height: 1.35;
+    }
+
+    .ins-kpi-stack {
+        display: grid;
+        gap: 12px;
+        margin-top: 14px;
+    }
+
+    .ins-kpi-stack-row {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 10px;
+    }
+
+    .ins-kpi-stack-row span {
+        color: #6f7e92;
+        font-size: 9.5px;
+    }
+
+    .ins-kpi-stack-row strong {
+        color: #061326;
+        font-size: 18px;
+    }
+
+    .ins-table-wrap {
+        overflow-x: auto;
+    }
+
+    .ins-table {
+        width: 100%;
+        border-collapse: collapse;
+    }
+
+    .ins-table th {
+        padding: 10px 12px;
+        border-bottom: 1px solid #e6ecf2;
+        color: #526279;
+        background: #fbfcfd;
+        text-align: left;
+        white-space: nowrap;
+        font-size: 8.5px;
+        font-weight: 800;
+        letter-spacing: .35px;
+        text-transform: uppercase;
+    }
+
+    .ins-table td {
+        padding: 11px 12px;
+        border-bottom: 1px solid #eef2f6;
+        color: #43546c;
+        font-size: 9.5px;
+        vertical-align: middle;
+    }
+
+    .ins-table tr:last-child td {
+        border-bottom: 0;
+    }
+
+    .ins-table strong {
+        color: #17243a;
+        font-weight: 700;
+    }
+
+    .ins-profit-positive {
+        color: #398523 !important;
+        font-weight: 700;
+    }
+
+    .ins-profit-negative {
+        color: #bf4d54 !important;
+        font-weight: 700;
+    }
+
+    .ins-tabs {
+        display: inline-flex;
+        overflow: hidden;
+        border: 1px solid #dfe6ef;
+        border-radius: 8px;
+        background: #fff;
+    }
+
+    .ins-tab {
+        min-height: 31px;
+        padding: 0 12px;
+        display: inline-flex;
+        align-items: center;
+        border: 0;
+        border-right: 1px solid #e6ecf2;
+        color: #526279;
+        background: #fff;
+        font-size: 9.5px;
+        font-weight: 700;
+        cursor: pointer;
+    }
+
+    .ins-tab:last-child {
+        border-right: 0;
+    }
+
+    .ins-tab.active {
+        color: #4f7e18;
+        background: #eff8e4;
+        box-shadow: inset 0 0 0 1px #8ac244;
+    }
+
+    .ins-pl-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 14px 16px;
+        border-bottom: 1px solid #edf1f5;
+    }
+
+    .ins-pl-left {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+    }
+
+    .ins-pl-title {
+        color: #17243a;
+        font-size: 11px;
+        font-weight: 700;
+    }
+
+    .ins-no-rows {
+        padding: 28px 16px !important;
+        color: #8190a5 !important;
+        text-align: center;
+    }
+
+    .ins-donut-layout {
+        min-height: 220px;
+        display: grid;
+        grid-template-columns: minmax(180px, 260px) minmax(0, 1fr);
+        align-items: center;
+        gap: 20px;
+    }
+
+    .ins-donut-chart {
+        height: 200px;
+        position: relative;
+    }
+
+    .ins-legend {
+        display: grid;
+        gap: 8px;
+    }
+
+    .ins-legend-row {
+        display: grid;
+        grid-template-columns: 9px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 8px;
+        color: #5d6c82;
+        font-size: 9.5px;
+    }
+
+    .ins-legend-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #68aa1d;
+    }
+
+    .ins-legend-row strong {
+        color: #17243a;
+        font-size: 9.5px;
+    }
+
+    .ins-lead-metrics {
+        display: grid;
+        grid-template-columns: 1fr 2fr;
+        gap: 14px;
+        margin-bottom: 14px;
+    }
+
+    .ins-lead-left {
+        display: grid;
+        gap: 12px;
+    }
+
+    .ins-small-metric {
+        min-height: 118px;
+        padding: 15px 16px;
+    }
+
+    .ins-small-metric-value {
+        display: flex;
+        align-items: flex-end;
+        gap: 7px;
+        margin-top: 18px;
+    }
+
+    .ins-small-metric-value strong {
+        color: #061326;
+        font-size: 22px;
+        line-height: 1;
+    }
+
+    .ins-funnel-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+    }
+
+    .ins-jobs-bottom {
+        margin-top: 14px;
+        padding: 15px 18px;
+    }
+
+    .ins-average-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 18px;
+        margin-top: 10px;
+    }
+
+    .ins-average-item {
+        padding-right: 18px;
+        border-right: 1px solid #edf1f5;
+    }
+
+    .ins-average-item:last-child {
+        border-right: 0;
+    }
+
+    .ins-average-item span {
+        display: block;
+        color: #7f8da1;
+        font-size: 9.5px;
+    }
+
+    .ins-average-item strong {
+        display: block;
+        margin-top: 5px;
+        color: #061326;
+        font-size: 22px;
+    }
+
+    @media(max-width:1199.98px) {
+        .ins-overview-grid {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+        }
+
+        .ins-overview-item:nth-child(3) {
+            border-right: 0;
+        }
+
+        .ins-overview-item:nth-child(n+4) {
+            border-top: 1px solid #eef2f6;
+        }
+
+        .ins-lead-metrics {
+            grid-template-columns: 1fr;
+        }
+    }
+
+    @media(max-width:991.98px) {
+        .ins-grid-3 {
+            grid-template-columns: 1fr 1fr;
+        }
+
+        .ins-grid-2,
+        .ins-funnel-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .ins-donut-layout {
+            grid-template-columns: 1fr;
+        }
+
+        .ins-donut-chart {
+            height: 180px;
+        }
+    }
+
+    @media(max-width:767.98px) {
+        .fd-teams-header {
+            flex-direction: column;
+        }
+
+        .ins-header-actions,
+        .ins-date-form {
+            width: 100%;
+            justify-content: flex-start;
+        }
+
+        .ins-date-field {
+            flex: 1 1 135px;
+            min-width: 0;
+        }
+
+        .ins-overview-grid {
+            grid-template-columns: 1fr 1fr;
+        }
+
+        .ins-overview-item {
+            border-right: 1px solid #eef2f6;
+            border-top: 1px solid #eef2f6;
+            padding-left: 12px;
+        }
+
+        .ins-overview-item:nth-child(-n+2) {
+            border-top: 0;
+        }
+
+        .ins-overview-item:nth-child(2n) {
+            border-right: 0;
+        }
+
+        .ins-grid-3 {
+            grid-template-columns: 1fr;
+        }
+
+        .ins-chart-card,
+        .ins-chart-card.large {
+            min-height: 290px;
+            padding: 14px;
+        }
+
+        .ins-chart-wrap,
+        .ins-chart-card.large .ins-chart-wrap {
+            height: 220px;
+        }
+    }
+
+    @media(max-width:480px) {
+        .ins-overview-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .ins-overview-item {
+            border-right: 0 !important;
+            border-top: 1px solid #eef2f6 !important;
+            padding-left: 0;
+        }
+
+        .ins-overview-item:first-child {
+            border-top: 0 !important;
+        }
+
+        .ins-average-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .ins-average-item {
+            border-right: 0;
+            padding-right: 0;
+        }
+    }
     </style>
 </head>
 
 <body>
     <?php require_once __DIR__ . '/includes/nav.php'; ?>
+
     <div class="fieldplx-main-layout">
         <?php require_once __DIR__ . '/includes/sidebar.php'; ?>
+
         <main class="fieldplx-main-content">
             <div class="fieldplx-content-wrapper">
                 <div class="fd-dashboard">
+
                     <section class="fd-teams-header">
                         <div>
-                            <h1 class="fd-teams-title">Customers</h1>
-                            <p class="fd-teams-subtitle">Manage CRM leads and customers, contact preferences, branch
-                                ownership, tax
-                                details and account manager assignments.</p>
+                            <h1 class="fd-teams-title">Insights</h1>
+                            <p class="fd-teams-subtitle">Track CRM conversion, revenue, profitability, cashflow, quote
+                                performance and job value using live FieldPlx data.</p>
                         </div>
-                        <div class="fd-teams-actions"><a class="fd-team-button primary" href="client-form.php"><i
-                                    class="bi bi-person-plus"></i> Add Customer</a>
-                            <div class="fd-customer-more" id="customerMoreActions">
-                                <button type="button" class="fd-team-button" id="customerMoreActionsButton"
-                                    aria-expanded="false"><i class="bi bi-three-dots"></i> More Actions <i
-                                        class="bi bi-chevron-down"></i></button>
-                                <div class="fd-customer-more-menu" role="menu" aria-label="Customer actions">
-                                    <a class="fd-customer-more-item" href="customer-import.php" role="menuitem"><i
-                                            class="bi bi-upload"></i> Import Customers</a>
-                                    <button class="fd-customer-more-item" type="button" id="exportCustomersButton"
-                                        role="menuitem"><i class="bi bi-download"></i> Export Customers</button>
-                                </div>
-                            </div>
-                        </div>
-                    </section>
-                    <section class="row g-3 fd-customer-summary">
-                        <div class="col-xl-3 col-md-6">
-                            <article class="fd-customer-summary-card">
-                                <h2 class="fd-customer-summary-title">Overview</h2>
-                                <div class="fd-customer-overview-list">
-                                    <div class="fd-customer-overview-row"><span
-                                            class="fd-customer-overview-dot lead"></span><span>Leads</span><strong><?= (int) $customerStats['lead_total'] ?></strong>
-                                    </div>
-                                    <div class="fd-customer-overview-row"><span
-                                            class="fd-customer-overview-dot customer"></span><span>Customers</span><strong><?= (int) $customerStats['customer_total'] ?></strong>
-                                    </div>
-                                    <div class="fd-customer-overview-row"><span
-                                            class="fd-customer-overview-dot active"></span><span>Active</span><strong><?= (int) $customerStats['active_total'] ?></strong>
-                                    </div>
-                                    <div class="fd-customer-overview-row"><span
-                                            class="fd-customer-overview-dot inactive"></span><span>Inactive</span><strong><?= (int) $customerStats['inactive_total'] ?></strong>
-                                    </div>
-                                </div>
-                            </article>
-                        </div>
-
-                        <div class="col-xl-3 col-md-6">
-                            <article class="fd-customer-summary-card">
-                                <span class="fd-customer-summary-arrow"><i class="bi bi-arrow-up-right"></i></span>
-                                <h2 class="fd-customer-summary-title">Total CRM</h2>
-                                <span class="fd-customer-summary-period">All customers and leads</span>
-                                <div class="fd-customer-summary-number-row">
-                                    <strong class="fd-customer-summary-value"
-                                        id="statTotal"><?= (int) $customerStats['total'] ?></strong>
-                                </div>
-                            </article>
-                        </div>
-
-                        <div class="col-xl-3 col-md-6">
-                            <article class="fd-customer-summary-card">
-                                <span class="fd-customer-summary-arrow"><i class="bi bi-arrow-up-right"></i></span>
-                                <h2 class="fd-customer-summary-title">New Leads</h2>
-                                <span class="fd-customer-summary-period">Past 30 days</span>
-                                <div class="fd-customer-summary-number-row">
-                                    <strong class="fd-customer-summary-value"
-                                        id="statNewLeads"><?= (int) $customerStats['new_leads_30'] ?></strong>
-                                    <span
-                                        class="fd-customer-trend-change<?= htmlspecialchars($leadTrendClass, ENT_QUOTES, 'UTF-8') ?>"
-                                        id="statNewLeadsChange" tabindex="0">
-                                        <?= htmlspecialchars($leadTrendArrow . rtrim(rtrim(number_format(abs($leadChangeValue), 1, '.', ''), '0'), '.') . '%', ENT_QUOTES, 'UTF-8') ?>
-                                        <span class="fd-customer-trend-tooltip">
-                                            <span class="fd-customer-tooltip-title">New leads</span>
-                                            <span
-                                                class="fd-customer-tooltip-row"><span><?= htmlspecialchars($customerStats['prior_period_label'], ENT_QUOTES, 'UTF-8') ?></span><strong><?= (int) $customerStats['prior_leads_30'] ?></strong></span>
-                                            <span
-                                                class="fd-customer-tooltip-row"><span><?= htmlspecialchars($customerStats['current_period_label'], ENT_QUOTES, 'UTF-8') ?></span><strong><?= (int) $customerStats['new_leads_30'] ?></strong></span>
-                                        </span>
-                                    </span>
-                                </div>
-                            </article>
-                        </div>
-
-                        <div class="col-xl-3 col-md-6">
-                            <article class="fd-customer-summary-card">
-                                <span class="fd-customer-summary-arrow"><i class="bi bi-arrow-up-right"></i></span>
-                                <h2 class="fd-customer-summary-title">New Customers</h2>
-                                <span class="fd-customer-summary-period">Past 30 days</span>
-                                <div class="fd-customer-summary-number-row">
-                                    <strong class="fd-customer-summary-value"
-                                        id="statNewCustomers"><?= (int) $customerStats['new_customers_30'] ?></strong>
-                                    <span
-                                        class="fd-customer-trend-change<?= htmlspecialchars($customerTrendClass, ENT_QUOTES, 'UTF-8') ?>"
-                                        id="statNewCustomersChange" tabindex="0">
-                                        <?= htmlspecialchars($customerTrendArrow . rtrim(rtrim(number_format(abs($customerChangeValue), 1, '.', ''), '0'), '.') . '%', ENT_QUOTES, 'UTF-8') ?>
-                                        <span class="fd-customer-trend-tooltip">
-                                            <span class="fd-customer-tooltip-title">New customers</span>
-                                            <span
-                                                class="fd-customer-tooltip-row"><span><?= htmlspecialchars($customerStats['prior_period_label'], ENT_QUOTES, 'UTF-8') ?></span><strong><?= (int) $customerStats['prior_customers_30'] ?></strong></span>
-                                            <span
-                                                class="fd-customer-tooltip-row"><span><?= htmlspecialchars($customerStats['current_period_label'], ENT_QUOTES, 'UTF-8') ?></span><strong><?= (int) $customerStats['new_customers_30'] ?></strong></span>
-                                        </span>
-                                    </span>
-                                </div>
-                            </article>
+                        <div class="ins-header-actions">
+                            <form class="ins-date-form" method="get">
+                                <input class="ins-date-field" type="date" name="from"
+                                    value="<?= htmlspecialchars($insFrom, ENT_QUOTES, 'UTF-8') ?>"
+                                    aria-label="From date">
+                                <input class="ins-date-field" type="date" name="to"
+                                    value="<?= htmlspecialchars($insTo, ENT_QUOTES, 'UTF-8') ?>" aria-label="To date">
+                                <button type="submit" class="fd-team-button primary"><i class="bi bi-funnel"></i>
+                                    Apply</button>
+                                <a class="fd-team-button" href="insights.php"><i
+                                        class="bi bi-arrow-counterclockwise"></i> Reset</a>
+                            </form>
                         </div>
                     </section>
 
-                    <section class="fd-card fd-teams-card">
-                        <div class="fd-teams-toolbar">
-                            <div class="fd-team-search"><i class="bi bi-search"></i><input type="search"
-                                    id="clientsSearch" placeholder="Search name, company, email or phone"
-                                    autocomplete="off"></div><select class="fd-team-filter" id="typeFilter">
-                                <option value="">All Types</option>
-                                <option value="lead">Lead</option>
-                                <option value="client">Customer</option>
-                                <option value="archived">Archived</option>
-                            </select><select class="fd-team-filter" id="statusFilter">
-                                <option value="">All Status</option>
-                                <option value="new">New</option>
-                                <option value="active">Active</option>
-                                <option value="inactive">Inactive</option>
-                                <option value="archived">Archived</option>
-                            </select><select class="fd-team-filter" id="branchFilter">
-                                <option value="">All Branches</option>
-                            </select>
-                            <div class="fd-team-toolbar-spacer"></div><button type="button" class="fd-team-button"
-                                id="clearFiltersButton"><i class="bi bi-x-circle"></i> Clear</button>
-                        </div>
-                        <div class="fd-team-table-wrap">
-                            <table class="fd-team-table fd-client-table">
-                                <thead>
-                                    <tr>
-                                        <th>S/No</th>
-                                        <th>Customer</th>
-                                        <th>Type</th>
-                                        <th>Contact</th>
-                                        <th>Branch</th>
-                                        <th>Source</th>
-                                        <th>Preferred Contact</th>
-                                        <th>Account Manager</th>
-                                        <th>Locations</th>
-                                        <th>Status</th>
-                                        <th>Last Activity</th>
-                                        <th>Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="clientsTableBody">
-                                    <tr>
-                                        <td colspan="12" class="fd-team-empty">Loading customers...</td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
-                        <div class="fd-team-pagination"><span id="clientsCountText">Showing 0 customers</span>
-                            <div class="fd-team-pagination-actions"><button type="button" class="fd-team-button"
-                                    id="prevPageButton"><i class="bi bi-chevron-left"></i></button><button type="button"
-                                    class="fd-team-button" id="nextPageButton"><i
-                                        class="bi bi-chevron-right"></i></button></div>
-                        </div>
-                    </section>
-
-                    <div class="fd-client-row-more-menu" id="clientRowMoreMenu" role="menu" aria-hidden="true">
-                        <a class="fd-customer-more-item" id="clientRowAddQuotation" href="#" role="menuitem"><i
-                                class="bi bi-file-earmark-text"></i> Add Quotation</a>
-                        <a class="fd-customer-more-item" id="clientRowCreateJob" href="#" role="menuitem"><i
-                                class="bi bi-hammer"></i> Create Job</a>
-                        <a class="fd-customer-more-item" id="clientRowAddInvoice" href="#" role="menuitem"><i
-                                class="bi bi-receipt"></i> Add Invoice</a>
-                        <a class="fd-customer-more-item" id="clientRowPayment" href="#" role="menuitem"><i
-                                class="bi bi-cash-coin"></i> Payment</a>
+                    <?php if ($insDataError !== ''): ?>
+                    <div class="alert alert-warning py-2 px-3" style="font-size:11px;">
+                        Some Insights data could not be loaded:
+                        <?= htmlspecialchars($insDataError, ENT_QUOTES, 'UTF-8') ?>
                     </div>
-                </div>
-                <div class="fd-team-modal-backdrop" id="clientModalBackdrop" aria-hidden="true">
-                    <section class="fd-team-modal" role="dialog" aria-modal="true">
-                        <div class="fd-team-modal-header"><span class="fd-team-modal-icon"><i
-                                    class="bi bi-person-vcard"></i></span>
-                            <div class="fd-team-modal-heading">
-                                <h3 id="clientModalTitle">Add Customer</h3>
-                                <p id="clientModalSubtitle">Create a lead or active customer record.</p>
-                            </div><button type="button" class="fd-team-modal-close" id="clientModalClose"><i
-                                    class="bi bi-x-lg"></i></button>
-                        </div>
-                        <form id="clientForm">
-                            <div class="fd-team-modal-body"><input type="hidden" id="clientId" name="client_id"
-                                    value="0">
-                                <div class="fd-team-form-grid">
-                                    <div class="fd-team-section-title">Customer Identity</div>
-                                    <div class="fd-team-field"><label>Customer Type</label><select id="clientType"
-                                            name="client_type">
-                                            <option value="lead">Lead</option>
-                                            <option value="client">Customer</option>
-                                            <option value="archived">Archived</option>
-                                        </select></div>
-                                    <div class="fd-team-field"><label>Status</label><select id="clientStatus"
-                                            name="status">
-                                            <option value="new">New</option>
-                                            <option value="active">Active</option>
-                                            <option value="inactive">Inactive</option>
-                                            <option value="archived">Archived</option>
-                                        </select></div>
-                                    <div class="fd-team-field"><label>Display Name</label><input type="text"
-                                            id="displayName" name="display_name" maxlength="190" required></div>
-                                    <div class="fd-team-field"><label>Company Name</label><input type="text"
-                                            id="companyName" name="company_name" maxlength="190"></div>
-                                    <div class="fd-team-field"><label>First Name</label><input type="text"
-                                            id="firstName" name="first_name" maxlength="120"></div>
-                                    <div class="fd-team-field"><label>Last Name</label><input type="text" id="lastName"
-                                            name="last_name" maxlength="120"></div>
-                                    <div class="fd-team-section-title">Contact & Ownership</div>
-                                    <div class="fd-team-field"><label>Email</label><input type="email" id="email"
-                                            name="email" maxlength="190"></div>
-                                    <div class="fd-team-field"><label>Phone</label><input type="text" id="phone"
-                                            name="phone" maxlength="50"></div>
-                                    <div class="fd-team-field"><label>Alternate Phone</label><input type="text"
-                                            id="alternatePhone" name="alternate_phone" maxlength="50"></div>
-                                    <div class="fd-team-field"><label>Source</label><input type="text" id="source"
-                                            name="source" maxlength="120" placeholder="Website / Referral / Walk-in">
+                    <?php endif; ?>
+
+                    <section class="ins-section">
+                        <article class="ins-card ins-overview-card">
+                            <div class="ins-card-head">
+                                <div>
+                                    <h2 class="ins-card-title">Overview</h2>
+                                    <span class="ins-card-subtitle">Performance for the selected period compared with
+                                        the immediately preceding period.</span>
+                                </div>
+                                <span class="ins-range-label"><i
+                                        class="bi bi-calendar3"></i><?= htmlspecialchars($insRangeLabel, ENT_QUOTES, 'UTF-8') ?></span>
+                            </div>
+
+                            <div class="ins-overview-grid">
+                                <?php
+                  $overviewItems = array(
+                    array('key'=>'new_leads','label'=>'New leads','money'=>false),
+                    array('key'=>'new_requests','label'=>'New requests','money'=>false),
+                    array('key'=>'converted_quotes','label'=>'Converted quotes','money'=>false),
+                    array('key'=>'one_off_jobs','label'=>'New one-off jobs','money'=>false),
+                    array('key'=>'recurring_jobs','label'=>'New recurring jobs','money'=>false),
+                    array('key'=>'invoiced_value','label'=>'Invoiced value','money'=>true)
+                  );
+                  foreach ($overviewItems as $item):
+                    $key = $item['key'];
+                    $pct = $overviewTrend[$key];
+                ?>
+                                <div class="ins-overview-item">
+                                    <div class="ins-overview-label">
+                                        <span><?= htmlspecialchars($item['label'], ENT_QUOTES, 'UTF-8') ?></span>
+                                        <i class="bi bi-arrow-up-right ins-overview-arrow"></i>
                                     </div>
-                                    <div class="fd-team-field"><label>Branch</label><select id="branchId"
-                                            name="branch_id">
-                                            <option value="">No Branch</option>
-                                        </select></div>
-                                    <div class="fd-team-field"><label>Account Manager</label><select
-                                            id="accountManagerId" name="account_manager_id">
-                                            <option value="">No Account Manager</option>
-                                        </select></div>
-                                    <div class="fd-team-field"><label>Preferred Contact</label><select
-                                            id="preferredContactMethod" name="preferred_contact_method">
-                                            <option value="email">Email</option>
-                                            <option value="sms">SMS</option>
-                                            <option value="phone">Phone</option>
-                                            <option value="whatsapp">WhatsApp</option>
-                                            <option value="none">None</option>
-                                        </select></div>
-                                    <div class="fd-team-field"><label>Tax Number</label><input type="text"
-                                            id="taxNumber" name="tax_number" maxlength="100"></div>
-                                    <div class="fd-client-checks"><label class="fd-client-check"><input type="checkbox"
-                                                id="allowEmail" name="allow_email" value="1" checked> Allow
-                                            Email</label><label class="fd-client-check"><input type="checkbox"
-                                                id="allowSms" name="allow_sms" value="1" checked> Allow SMS</label>
+                                    <div class="ins-overview-number-row">
+                                        <strong class="ins-overview-value">
+                                            <?php if ($item['money']): ?>
+                                            <?= htmlspecialchars($insCurrencySymbol, ENT_QUOTES, 'UTF-8') ?><?= number_format((float)$overview[$key], 2) ?>
+                                            <?php else: ?>
+                                            <?= number_format((float)$overview[$key], 0) ?>
+                                            <?php endif; ?>
+                                        </strong>
+                                        <span
+                                            class="ins-trend<?= htmlspecialchars(ins_trend_class($pct), ENT_QUOTES, 'UTF-8') ?>"
+                                            title="Previous period: <?= htmlspecialchars((string)$overviewPrev[$key], ENT_QUOTES, 'UTF-8') ?>">
+                                            <?= htmlspecialchars(ins_trend_text($pct), ENT_QUOTES, 'UTF-8') ?>
+                                        </span>
                                     </div>
-                                    <div class="fd-team-section-title">Internal Notes</div>
-                                    <div class="fd-team-field full"><label>Notes</label><textarea id="notes"
-                                            name="notes" maxlength="5000"></textarea></div>
+                                </div>
+                                <?php endforeach; ?>
+                            </div>
+                        </article>
+                    </section>
+
+                    <section class="ins-section">
+                        <h2 class="ins-section-title">Revenue</h2>
+
+                        <article class="ins-card ins-chart-card large">
+                            <div class="ins-card-head">
+                                <div>
+                                    <h3 class="ins-card-title">Revenue</h3>
+                                    <span class="ins-card-subtitle">Invoiced revenue by month for
+                                        <?= (int)$previousYear ?> and <?= (int)$currentYear ?>. Draft, cancelled,
+                                        archived and written-off invoices are excluded.</span>
+                                </div>
+                                <span class="ins-range-label"><i class="bi bi-calendar3"></i>Jan 1,
+                                    <?= (int)$previousYear ?> - <?= date('M j, Y') ?></span>
+                            </div>
+                            <div class="ins-chart-summary">
+                                <div class="ins-chart-summary-item">
+                                    <small><?= (int)$previousYear ?></small>
+                                    <strong><?= htmlspecialchars($insCurrencySymbol, ENT_QUOTES, 'UTF-8') ?><?= number_format(array_sum($revenuePrevData), 2) ?></strong>
+                                </div>
+                                <div class="ins-chart-summary-item">
+                                    <small><?= (int)$currentYear ?></small>
+                                    <strong><?= htmlspecialchars($insCurrencySymbol, ENT_QUOTES, 'UTF-8') ?><?= number_format(array_sum($revenueCurrData), 2) ?></strong>
                                 </div>
                             </div>
-                            <div class="fd-team-modal-footer"><button type="button" class="fd-team-button"
-                                    id="cancelClientButton">Cancel</button><button type="submit"
-                                    class="fd-team-button primary" id="saveClientButton"><span
-                                        class="fd-team-loader"></span><i class="bi bi-check-lg"></i><span
-                                        id="saveClientText">Save Customer</span></button></div>
-                        </form>
-                    </section>
-                </div>
-                <div class="fd-team-modal-backdrop" id="archiveModalBackdrop" aria-hidden="true">
-                    <section class="fd-team-modal fd-team-confirm">
-                        <div class="fd-team-modal-header"><span class="fd-team-modal-icon"><i
-                                    class="bi bi-archive"></i></span>
-                            <div class="fd-team-modal-heading">
-                                <h3>Delete Customer</h3>
-                                <p>Historical CRM and operational references will be preserved.</p>
-                            </div><button type="button" class="fd-team-modal-close" id="archiveModalClose"><i
-                                    class="bi bi-x-lg"></i></button>
+                            <div class="ins-chart-wrap"><canvas id="revenueChart"></canvas></div>
+                        </article>
+
+                        <div style="margin-top:14px;">
+                            <article class="ins-card ins-chart-card medium">
+                                <div class="ins-card-head">
+                                    <div>
+                                        <h3 class="ins-card-title">Revenue by lead source</h3>
+                                        <span
+                                            class="ins-card-subtitle"><?= htmlspecialchars($insRangeLabel, ENT_QUOTES, 'UTF-8') ?></span>
+                                    </div>
+                                    <i class="bi bi-arrow-up-right ins-overview-arrow"></i>
+                                </div>
+                                <?php if (array_sum($leadSourceValues) > 0): ?>
+                                <div class="ins-donut-layout">
+                                    <div class="ins-donut-chart"><canvas id="leadSourceChart"></canvas></div>
+                                    <div class="ins-legend" id="leadSourceLegend"></div>
+                                </div>
+                                <?php else: ?>
+                                <div class="ins-empty"><i class="bi bi-pie-chart"></i><span>No invoiced revenue by lead
+                                        source for this period.</span></div>
+                                <?php endif; ?>
+                            </article>
                         </div>
-                        <div class="fd-team-modal-body" id="archiveClientMessage">Delete this customer?</div>
-                        <div class="fd-team-modal-footer"><button type="button" class="fd-team-button"
-                                id="cancelArchiveButton">Cancel</button><button type="button"
-                                class="fd-team-button danger" id="confirmArchiveButton"><span
-                                    class="fd-team-loader"></span><i class="bi bi-trash"></i>
-                                Delete</button></div>
                     </section>
+
+                    <section class="ins-section">
+                        <h2 class="ins-section-title">Profit and loss</h2>
+                        <article class="ins-card">
+                            <div class="ins-pl-header">
+                                <div class="ins-pl-left">
+                                    <span class="ins-pl-title">Recent one-off jobs</span>
+                                    <div class="ins-tabs">
+                                        <button type="button" class="ins-tab active"
+                                            data-profit-view="completed">Completed</button>
+                                        <button type="button" class="ins-tab" data-profit-view="active">Active</button>
+                                    </div>
+                                </div>
+                                <span class="ins-range-label"><i
+                                        class="bi bi-calendar3"></i><?= htmlspecialchars($insRangeLabel, ENT_QUOTES, 'UTF-8') ?></span>
+                            </div>
+                            <div class="ins-table-wrap">
+                                <table class="ins-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Client</th>
+                                            <th>Job #</th>
+                                            <th>Total price</th>
+                                            <th>Labour cost</th>
+                                            <th>Expenses</th>
+                                            <th>Profit</th>
+                                            <th>Profit margin</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="profitTableBody">
+                                        <?php if (empty($profitRows)): ?>
+                                        <tr>
+                                            <td colspan="7" class="ins-no-rows">No recent one-off jobs to display.</td>
+                                        </tr>
+                                        <?php else: ?>
+                                        <?php foreach ($profitRows as $row): ?>
+                                        <tr
+                                            data-profit-group="<?= htmlspecialchars($row['view_group'], ENT_QUOTES, 'UTF-8') ?>">
+                                            <td><strong><?= htmlspecialchars($row['client_name'], ENT_QUOTES, 'UTF-8') ?></strong>
+                                            </td>
+                                            <td><strong><?= htmlspecialchars($row['job_no'], ENT_QUOTES, 'UTF-8') ?></strong>
+                                            </td>
+                                            <td><?= htmlspecialchars($insCurrencySymbol, ENT_QUOTES, 'UTF-8') ?><?= number_format((float)$row['total'], 2) ?>
+                                            </td>
+                                            <td><?= htmlspecialchars($insCurrencySymbol, ENT_QUOTES, 'UTF-8') ?><?= number_format((float)$row['labor_cost'], 2) ?>
+                                            </td>
+                                            <td><?= htmlspecialchars($insCurrencySymbol, ENT_QUOTES, 'UTF-8') ?><?= number_format((float)$row['expenses_total'], 2) ?>
+                                            </td>
+                                            <td
+                                                class="<?= (float)$row['profit'] >= 0 ? 'ins-profit-positive' : 'ins-profit-negative' ?>">
+                                                <?= htmlspecialchars($insCurrencySymbol, ENT_QUOTES, 'UTF-8') ?><?= number_format((float)$row['profit'], 2) ?>
+                                            </td>
+                                            <td
+                                                class="<?= $row['margin'] !== null && (float)$row['margin'] >= 0 ? 'ins-profit-positive' : 'ins-profit-negative' ?>">
+                                                <?= $row['margin'] === null ? '—' : number_format((float)$row['margin'], 1) . '%' ?>
+                                            </td>
+                                        </tr>
+                                        <?php endforeach; ?>
+                                        <tr id="profitNoRows" style="display:none;">
+                                            <td colspan="7" class="ins-no-rows">No jobs in this view.</td>
+                                        </tr>
+                                        <?php endif; ?>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </article>
+                    </section>
+
+                    <section class="ins-section">
+                        <h2 class="ins-section-title">Cashflow</h2>
+                        <div class="ins-grid-3">
+                            <article class="ins-card ins-kpi-card">
+                                <i class="bi bi-arrow-up-right ins-kpi-arrow"></i>
+                                <h3 class="ins-card-title">Receivables</h3>
+                                <strong
+                                    class="ins-kpi-value"><?= htmlspecialchars($insCurrencySymbol, ENT_QUOTES, 'UTF-8') ?><?= number_format((float)$cashflow['receivables'], 2) ?></strong>
+                                <span class="ins-kpi-caption"><?= (int)$cashflow['receivable_clients'] ?>
+                                    client<?= (int)$cashflow['receivable_clients'] === 1 ? '' : 's' ?> owe you</span>
+                            </article>
+
+                            <article class="ins-card ins-kpi-card">
+                                <i class="bi bi-arrow-up-right ins-kpi-arrow"></i>
+                                <h3 class="ins-card-title">Projected income</h3>
+                                <div class="ins-kpi-stack">
+                                    <div class="ins-kpi-stack-row">
+                                        <div>
+                                            <strong><?= htmlspecialchars($insCurrencySymbol, ENT_QUOTES, 'UTF-8') ?><?= number_format((float)$cashflow['due_today'], 2) ?></strong><span>Due
+                                                today</span></div>
+                                    </div>
+                                    <div class="ins-kpi-stack-row">
+                                        <div>
+                                            <strong><?= htmlspecialchars($insCurrencySymbol, ENT_QUOTES, 'UTF-8') ?><?= number_format((float)$cashflow['due_7_days'], 2) ?></strong><span>Due
+                                                in the next 7 days</span></div>
+                                    </div>
+                                </div>
+                            </article>
+
+                            <article class="ins-card ins-kpi-card">
+                                <i class="bi bi-arrow-up-right ins-kpi-arrow"></i>
+                                <h3 class="ins-card-title">Invoice payment time</h3>
+                                <span class="ins-card-subtitle">Selected period</span>
+                                <strong class="ins-kpi-value">
+                                    <?= $cashflow['payment_days'] === null ? '—' : number_format((float)$cashflow['payment_days'], 1) . ' days' ?>
+                                </strong>
+                                <span class="ins-kpi-caption">Average days from invoice issue date to paid date.</span>
+                            </article>
+                        </div>
+
+                        <div style="margin-top:14px;">
+                            <article class="ins-card ins-chart-card compact">
+                                <div class="ins-card-head">
+                                    <div>
+                                        <h3 class="ins-card-title">Payment methods</h3>
+                                        <span
+                                            class="ins-card-subtitle"><?= htmlspecialchars($insRangeLabel, ENT_QUOTES, 'UTF-8') ?>
+                                            · Successful payments only</span>
+                                    </div>
+                                </div>
+                                <?php if (array_sum($paymentMethodValues) > 0): ?>
+                                <div class="ins-donut-layout">
+                                    <div class="ins-donut-chart"><canvas id="paymentMethodChart"></canvas></div>
+                                    <div class="ins-legend" id="paymentMethodLegend"></div>
+                                </div>
+                                <?php else: ?>
+                                <div class="ins-empty"><i class="bi bi-credit-card"></i><span>No successful payments in
+                                        this period.</span></div>
+                                <?php endif; ?>
+                            </article>
+                        </div>
+                    </section>
+
+                    <section class="ins-section">
+                        <h2 class="ins-section-title">Lead conversion</h2>
+
+                        <div class="ins-lead-metrics">
+                            <div class="ins-lead-left">
+                                <article class="ins-card ins-small-metric">
+                                    <h3 class="ins-card-title">Lead conversion time</h3>
+                                    <span class="ins-card-subtitle">Selected-period average</span>
+                                    <div class="ins-small-metric-value">
+                                        <strong><?= $leadConversion['lead_days'] === null ? '—' : number_format((float)$leadConversion['lead_days'], 1) . ' days' ?></strong>
+                                    </div>
+                                </article>
+                                <article class="ins-card ins-small-metric">
+                                    <h3 class="ins-card-title">Quote approval time</h3>
+                                    <span class="ins-card-subtitle">Selected-period average</span>
+                                    <div class="ins-small-metric-value">
+                                        <strong><?= $leadConversion['quote_approval_days'] === null ? '—' : number_format((float)$leadConversion['quote_approval_days'], 1) . ' days' ?></strong>
+                                    </div>
+                                </article>
+                            </div>
+
+                            <article class="ins-card ins-chart-card compact">
+                                <div class="ins-card-head">
+                                    <div>
+                                        <h3 class="ins-card-title">Lead funnel</h3>
+                                        <span class="ins-card-subtitle">Past 90 days</span>
+                                    </div>
+                                </div>
+                                <div class="ins-chart-wrap"><canvas id="leadFunnelChart"></canvas></div>
+                            </article>
+                        </div>
+
+                        <div class="ins-funnel-grid">
+                            <article class="ins-card ins-chart-card medium">
+                                <div class="ins-card-head">
+                                    <div>
+                                        <h3 class="ins-card-title">Quote conversion rate</h3>
+                                        <span
+                                            class="ins-card-subtitle"><?= htmlspecialchars($insRangeLabel, ENT_QUOTES, 'UTF-8') ?></span>
+                                    </div>
+                                    <strong
+                                        style="font-size:23px;color:#061326;"><?= number_format((float)$leadConversion['quote_conversion_rate'], 1) ?>%</strong>
+                                </div>
+                                <?php if (!empty($quoteLabels)): ?>
+                                <div class="ins-chart-wrap"><canvas id="quoteConversionChart"></canvas></div>
+                                <?php else: ?>
+                                <div class="ins-empty"><i class="bi bi-graph-up-arrow"></i><span>No sent quotes in this
+                                        period.</span></div>
+                                <?php endif; ?>
+                            </article>
+
+                            <article class="ins-card ins-chart-card medium">
+                                <div class="ins-card-head">
+                                    <div>
+                                        <h3 class="ins-card-title">Quote value</h3>
+                                        <span
+                                            class="ins-card-subtitle"><?= htmlspecialchars($insRangeLabel, ENT_QUOTES, 'UTF-8') ?></span>
+                                    </div>
+                                    <i class="bi bi-arrow-up-right ins-overview-arrow"></i>
+                                </div>
+                                <?php if (!empty($quoteLabels)): ?>
+                                <div class="ins-chart-summary">
+                                    <div class="ins-chart-summary-item">
+                                        <small>Sent</small><strong><?= htmlspecialchars($insCurrencySymbol, ENT_QUOTES, 'UTF-8') ?><?= number_format(array_sum($quoteSentValueSeries), 2) ?></strong>
+                                    </div>
+                                    <div class="ins-chart-summary-item">
+                                        <small>Converted</small><strong><?= htmlspecialchars($insCurrencySymbol, ENT_QUOTES, 'UTF-8') ?><?= number_format(array_sum($quoteConvertedValueSeries), 2) ?></strong>
+                                    </div>
+                                </div>
+                                <div class="ins-chart-wrap"><canvas id="quoteValueChart"></canvas></div>
+                                <?php else: ?>
+                                <div class="ins-empty"><i class="bi bi-file-earmark-text"></i><span>No quote value data
+                                        in this period.</span></div>
+                                <?php endif; ?>
+                            </article>
+                        </div>
+                    </section>
+
+                    <section class="ins-section">
+                        <h2 class="ins-section-title">Jobs</h2>
+                        <div class="ins-grid-2">
+                            <article class="ins-card ins-chart-card medium">
+                                <div class="ins-card-head">
+                                    <div>
+                                        <h3 class="ins-card-title">Scheduled job value</h3>
+                                        <span class="ins-card-subtitle">Next 28 days</span>
+                                    </div>
+                                </div>
+                                <div class="ins-chart-summary">
+                                    <div class="ins-chart-summary-item"><small>Scheduled
+                                            value</small><strong><?= htmlspecialchars($insCurrencySymbol, ENT_QUOTES, 'UTF-8') ?><?= number_format(array_sum($scheduledValues), 2) ?></strong>
+                                    </div>
+                                </div>
+                                <div class="ins-chart-wrap"><canvas id="scheduledJobsChart"></canvas></div>
+                            </article>
+
+                            <article class="ins-card ins-chart-card medium">
+                                <div class="ins-card-head">
+                                    <div>
+                                        <h3 class="ins-card-title">Recurring vs One-off</h3>
+                                        <span
+                                            class="ins-card-subtitle"><?= htmlspecialchars($insRangeLabel, ENT_QUOTES, 'UTF-8') ?>
+                                            · Job value mix</span>
+                                    </div>
+                                    <i class="bi bi-arrow-up-right ins-overview-arrow"></i>
+                                </div>
+                                <?php if (($jobMix['one_off'] + $jobMix['recurring']) > 0): ?>
+                                <div class="ins-donut-layout">
+                                    <div class="ins-donut-chart"><canvas id="jobMixChart"></canvas></div>
+                                    <div class="ins-legend" id="jobMixLegend"></div>
+                                </div>
+                                <?php else: ?>
+                                <div class="ins-empty"><i class="bi bi-briefcase"></i><span>No job value data in this
+                                        period.</span></div>
+                                <?php endif; ?>
+                            </article>
+                        </div>
+
+                        <article class="ins-card ins-jobs-bottom">
+                            <h3 class="ins-card-title">Average job value</h3>
+                            <div class="ins-average-grid">
+                                <div class="ins-average-item">
+                                    <span>One-off jobs</span>
+                                    <strong><?= htmlspecialchars($insCurrencySymbol, ENT_QUOTES, 'UTF-8') ?><?= number_format((float)$avgJobValue['one_off'], 2) ?></strong>
+                                </div>
+                                <div class="ins-average-item">
+                                    <span>Recurring jobs</span>
+                                    <strong><?= htmlspecialchars($insCurrencySymbol, ENT_QUOTES, 'UTF-8') ?><?= number_format((float)$avgJobValue['recurring'], 2) ?></strong>
+                                </div>
+                            </div>
+                        </article>
+                    </section>
+
                 </div>
-                <div class="fd-team-toast info" id="clientsToast"><span class="fd-team-toast-message"
-                        id="clientsToastMessage">Notification</span><button type="button" class="fd-team-toast-close"
-                        id="clientsToastClose"><i class="bi bi-x"></i></button></div>
-                <script>
-                (function() {
-                    'use strict';
-                    var csrfToken = <?= json_encode($clientsCsrfToken) ?>;
-                    var state = {
-                        page: 1,
-                        perPage: 10,
-                        search: '',
-                        type: '',
-                        status: '',
-                        branchId: '',
-                        archiveId: 0,
-                        meta: {
-                            branches: [],
-                            users: []
-                        }
-                    };
-                    var tableBody = document.getElementById('clientsTableBody'),
-                        clientModal = document.getElementById('clientModalBackdrop'),
-                        archiveModal = document.getElementById('archiveModalBackdrop'),
-                        clientForm = document.getElementById('clientForm'),
-                        saveButton = document.getElementById('saveClientButton'),
-                        toast = document.getElementById('clientsToast'),
-                        toastMessage = document.getElementById('clientsToastMessage'),
-                        toastTimer = null,
-                        searchTimer = null;
-
-                    function esc(v) {
-                        return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g,
-                            '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;')
-                    }
-
-                    function initials(v) {
-                        var p = String(v || '').trim().split(/\s+/),
-                            x = '';
-                        if (p.length) x += p[0].charAt(0);
-                        if (p.length > 1) x += p[p.length - 1].charAt(0);
-                        return x.toUpperCase() || 'C'
-                    }
-
-                    function toastShow(t, m) {
-                        if (toastTimer) clearTimeout(toastTimer);
-                        toast.className = 'fd-team-toast ' + (t || 'info') + ' show';
-                        toastMessage.textContent = m || 'Notification';
-                        toastTimer = setTimeout(function() {
-                            toast.classList.remove('show')
-                        }, 3000)
-                    }
-
-                    function loading(b, on) {
-                        if (!b) return;
-                        b.disabled = !!on;
-                        b.classList.toggle('loading', !!on)
-                    }
-
-                    function parseResponse(r) {
-                        return r.text().then(function(raw) {
-                            var t = (raw || '').trim(),
-                                d;
-                            try {
-                                d = t ? JSON.parse(t) : {}
-                            } catch (e) {
-                                var c = t.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]*>/g, ' ').replace(
-                                    /\s+/g, ' ').trim();
-                                throw new Error(c ? 'Server error: ' + c :
-                                    'Server returned an invalid response.')
-                            }
-                            if (!r.ok || !d.success) throw new Error(d.message || 'Request failed.');
-                            return d
-                        })
-                    }
-
-                    function request(fd) {
-                        fd.append('csrf_token', csrfToken);
-                        return fetch('api/clients.php', {
-                            method: 'POST',
-                            body: fd,
-                            credentials: 'same-origin',
-                            headers: {
-                                'X-Requested-With': 'XMLHttpRequest',
-                                'Accept': 'application/json'
-                            }
-                        }).then(parseResponse)
-                    }
-
-                    function fmtDate(v) {
-                        if (!v) return '-';
-                        var d = new Date(String(v).replace(' ', 'T'));
-                        return isNaN(d.getTime()) ? esc(v) : d.toLocaleDateString(undefined, {
-                            day: '2-digit',
-                            month: 'short',
-                            year: 'numeric'
-                        })
-                    }
-
-                    function applyMeta(meta) {
-                        state.meta = meta || state.meta;
-                        var bh = '<option value="">No Branch</option>',
-                            bf = '<option value="">All Branches</option>';
-                        state.meta.branches.forEach(function(x) {
-                            bh += '<option value="' + Number(x.id) + '">' + esc(x.name) + '</option>';
-                            bf += '<option value="' + Number(x.id) + '">' + esc(x.name) + '</option>'
-                        });
-                        document.getElementById('branchId').innerHTML = bh;
-                        document.getElementById('branchFilter').innerHTML = bf;
-                        var mh = '<option value="">No Account Manager</option>';
-                        state.meta.users.forEach(function(x) {
-                            mh += '<option value="' + Number(x.id) + '">' + esc(x.name) + '</option>'
-                        });
-                        document.getElementById('accountManagerId').innerHTML = mh
-                    }
-
-                    function render(rows) {
-                        if (!rows.length) {
-                            tableBody.innerHTML =
-                                '<tr><td colspan="12" class="fd-team-empty">No customers found.</td></tr>';
-                            return;
-                        }
-
-                        var h = '';
-                        rows.forEach(function(r, i) {
-                            var clientId = Number(r.id || 0);
-                            var serial = ((state.page - 1) * state.perPage + i + 1);
-
-                            h += '<tr class="fd-client-click-row" data-client-id="' + clientId + '">' +
-                                '<td>' + serial + '</td>' +
-                                '<td><div class="fd-team-name"><span class="fd-team-name-icon">' + esc(
-                                    initials(r.display_name)) + '</span><span><strong>' + esc(r
-                                    .display_name) + '</strong><small>' + esc(r.company_name || ((r
-                                    .first_name || '') + (r.last_name ? ' ' + r.last_name : '')) || '-') +
-                                '</small></span></div></td>' +
-                                '<td><span class="fd-client-type ' + esc(r.client_type) + '">' + esc(r
-                                    .client_type) + '</span></td>' +
-                                '<td>' + esc(r.email || '-') + '<br><small>' + esc(r.phone || '-') +
-                                '</small></td>' +
-                                '<td>' + esc(r.branch_name || '-') + '</td>' +
-                                '<td>' + esc(r.source || '-') + '</td>' +
-                                '<td>' + esc(r.preferred_contact_method || '-') + '</td>' +
-                                '<td>' + esc(r.account_manager_name || '-') + '</td>' +
-                                '<td><a class="fd-client-location-link" href="client-locations.php?client_id=' +
-                                clientId +
-                                '" title="Manage Locations"><i class="bi bi-geo-alt"></i><span>' + Number(r
-                                    .location_count || 0) + '</span></a></td>' +
-                                '<td><span class="fd-client-type ' + esc(r.status) + '">' + esc(r.status) +
-                                '</span></td>' +
-                                '<td>' + fmtDate(r.last_activity_at || r.updated_at || r.created_at) +
-                                '</td>' +
-                                '<td><div class="fd-team-actions-cell fd-client-actions-cell">' +
-                                '<a class="fd-team-icon-button" href="client-locations.php?client_id=' +
-                                clientId +
-                                '" title="Locations" aria-label="Locations"><i class="bi bi-geo-alt"></i></a>' +
-                                '<a class="fd-team-icon-button" href="client-form.php?client_id=' +
-                                clientId +
-                                '" title="Edit Customer" aria-label="Edit Customer"><i class="bi bi-pencil"></i></a>' +
-                                '<button type="button" class="fd-team-icon-button danger" data-action="delete" data-id="' +
-                                clientId +
-                                '" title="Delete Customer" aria-label="Delete Customer"><i class="bi bi-trash"></i></button>' +
-                                '<span class="fd-client-action-divider" aria-hidden="true"></span>' +
-                                '<button type="button" class="fd-client-row-more-button" data-action="row-more" data-id="' +
-                                clientId +
-                                '" aria-expanded="false"><i class="bi bi-three-dots"></i> More</button>' +
-                                '</div></td>' +
-                                '</tr>';
-                        });
-
-                        tableBody.innerHTML = h;
-                    }
-
-                    function load() {
-                        var fd = new FormData();
-                        fd.append('action', 'list');
-                        fd.append('page', state.page);
-                        fd.append('per_page', state.perPage);
-                        fd.append('search', state.search);
-                        fd.append('client_type', state.type);
-                        fd.append('status', state.status);
-                        fd.append('branch_id', state.branchId);
-                        tableBody.innerHTML =
-                            '<tr><td colspan="12" class="fd-team-empty">Loading customers...</td></tr>';
-                        request(fd).then(function(d) {
-                            render(d.clients || []);
-                            applyMeta(d.meta || {});
-                            var p = d.pagination || {};
-                            document.getElementById('clientsCountText').textContent = 'Showing ' + Number(p
-                                    .from || 0) + '-' + Number(p.to || 0) + ' of ' + Number(p.total || 0) +
-                                ' customers';
-                            document.getElementById('prevPageButton').disabled = state.page <= 1;
-                            document.getElementById('nextPageButton').disabled = state.page >= Number(p
-                                .pages || 1);
-                        }).catch(function(e) {
-                            tableBody.innerHTML = '<tr><td colspan="12" class="fd-team-empty">' + esc(e
-                                .message) + '</td></tr>';
-                            toastShow('error', e.message)
-                        })
-                    }
-
-                    function resetForm() {
-                        clientForm.reset();
-                        document.getElementById('clientId').value = 0;
-                        document.getElementById('clientType').value = 'lead';
-                        document.getElementById('clientStatus').value = 'new';
-                        document.getElementById('preferredContactMethod').value = 'email';
-                        document.getElementById('allowEmail').checked = true;
-                        document.getElementById('allowSms').checked = true
-                    }
-
-                    function openClient(id) {
-                        resetForm();
-                        clientModal.classList.add('show');
-                        if (id <= 0) {
-                            document.getElementById('clientModalTitle').textContent = 'Add Customer';
-                            document.getElementById('saveClientText').textContent = 'Save Customer';
-                            return
-                        }
-                        var fd = new FormData();
-                        fd.append('action', 'get');
-                        fd.append('client_id', id);
-                        request(fd).then(function(d) {
-                            applyMeta(d.meta || {});
-                            var r = d.client || {};
-                            document.getElementById('clientModalTitle').textContent = 'Edit Customer';
-                            document.getElementById('saveClientText').textContent = 'Update Customer';
-                            ['clientId', 'displayName', 'companyName', 'firstName', 'lastName', 'email',
-                                'phone', 'alternatePhone', 'source', 'taxNumber', 'notes'
-                            ].forEach(function(k) {
-                                var map = {
-                                    clientId: 'id',
-                                    displayName: 'display_name',
-                                    companyName: 'company_name',
-                                    firstName: 'first_name',
-                                    lastName: 'last_name',
-                                    alternatePhone: 'alternate_phone',
-                                    taxNumber: 'tax_number'
-                                };
-                                document.getElementById(k).value = r[map[k] || k] || ''
-                            });
-                            document.getElementById('clientType').value = r.client_type || 'lead';
-                            document.getElementById('clientStatus').value = r.status || 'new';
-                            document.getElementById('branchId').value = r.branch_id || '';
-                            document.getElementById('accountManagerId').value = r.account_manager_id || '';
-                            document.getElementById('preferredContactMethod').value = r
-                                .preferred_contact_method || 'email';
-                            document.getElementById('allowEmail').checked = Number(r.allow_email) === 1;
-                            document.getElementById('allowSms').checked = Number(r.allow_sms) === 1
-                        }).catch(function(e) {
-                            closeClient();
-                            toastShow('error', e.message)
-                        })
-                    }
-
-                    function closeClient() {
-                        clientModal.classList.remove('show')
-                    }
-                    clientForm.onsubmit = function(e) {
-                        e.preventDefault();
-                        if (!clientForm.reportValidity()) {
-                            toastShow('warning', 'Complete the required customer fields.');
-                            return
-                        }
-                        var fd = new FormData(clientForm);
-                        fd.append('action', 'save');
-                        loading(saveButton, true);
-                        request(fd).then(function(d) {
-                            closeClient();
-                            toastShow('success', d.message);
-                            load()
-                        }).catch(function(e) {
-                            toastShow('error', e.message)
-                        }).finally(function() {
-                            loading(saveButton, false)
-                        })
-                    };
-
-                    function toggle(id, current) {
-                        var fd = new FormData();
-                        fd.append('action', 'change_status');
-                        fd.append('client_id', id);
-                        fd.append('status', current === 'active' ? 'inactive' : 'active');
-                        request(fd).then(function(d) {
-                            toastShow('success', d.message);
-                            load()
-                        }).catch(function(e) {
-                            toastShow('error', e.message)
-                        })
-                    }
-
-                    function archiveOpen(id, name) {
-                        state.archiveId = Number(id);
-                        document.getElementById('archiveClientMessage').textContent = 'Delete customer "' + (name ||
-                                'this customer') +
-                            '"? The customer will be soft-deleted so existing operational history remains preserved.';
-                        archiveModal.classList.add('show')
-                    }
-
-                    function archiveClose() {
-                        state.archiveId = 0;
-                        archiveModal.classList.remove('show')
-                    }
-                    document.getElementById('confirmArchiveButton').onclick = function() {
-                        if (state.archiveId <= 0) return;
-                        var b = this,
-                            fd = new FormData();
-                        fd.append('action', 'delete');
-                        fd.append('client_id', state.archiveId);
-                        loading(b, true);
-                        request(fd).then(function(d) {
-                            archiveClose();
-                            toastShow('success', d.message);
-                            window.setTimeout(function() {
-                                window.location.reload();
-                            }, 350)
-                        }).catch(function(e) {
-                            toastShow('error', e.message)
-                        }).finally(function() {
-                            loading(b, false)
-                        })
-                    };
-                    tableBody.onclick = function(e) {
-                        var b = e.target.closest('[data-action]');
-                        if (b && tableBody.contains(b)) {
-                            var a = b.dataset.action,
-                                id = Number(b.dataset.id);
-                            if (a === 'edit') openClient(id);
-                            else if (a === 'toggle') toggle(id, b.dataset.status);
-                            else if (a === 'delete') {
-                                closeClientRowMore();
-                                var actionRow = b.closest('tr');
-                                archiveOpen(id, actionRow ? actionRow.querySelector('.fd-team-name strong')
-                                    .textContent : '');
-                            } else if (a === 'row-more') {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                toggleClientRowMore(b, id);
-                            }
-                            return;
-                        }
-
-                        /* Keep links/buttons inside the row independent from the row navigation. */
-                        if (e.target.closest('a, button, input, select, textarea, label')) return;
-
-                        var row = e.target.closest('tr[data-client-id]');
-                        if (!row || !tableBody.contains(row)) return;
-                        var clientId = Number(row.dataset.clientId || 0);
-                        if (clientId <= 0) return;
-
-                        closeClientRowMore();
-                        window.location.href = 'client-view.php?client_id=' + encodeURIComponent(clientId);
-                    };
-                    var clientRowMoreMenu = document.getElementById('clientRowMoreMenu');
-                    var activeClientRowMoreButton = null;
-
-                    function closeClientRowMore() {
-                        if (!clientRowMoreMenu) return;
-                        clientRowMoreMenu.classList.remove('show');
-                        clientRowMoreMenu.setAttribute('aria-hidden', 'true');
-                        if (activeClientRowMoreButton) {
-                            activeClientRowMoreButton.classList.remove('active');
-                            activeClientRowMoreButton.setAttribute('aria-expanded', 'false');
-                        }
-                        activeClientRowMoreButton = null;
-                    }
-
-                    function positionClientRowMore(button) {
-                        if (!clientRowMoreMenu || !button) return;
-                        var rect = button.getBoundingClientRect();
-                        var menuWidth = 190;
-                        var menuHeight = clientRowMoreMenu.offsetHeight || 164;
-                        var left = Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 10);
-                        left = Math.max(10, left);
-                        var top = rect.bottom + 6;
-                        if (top + menuHeight > window.innerHeight - 10) top = Math.max(10, rect.top - menuHeight -
-                            6);
-                        clientRowMoreMenu.style.left = Math.round(left) + 'px';
-                        clientRowMoreMenu.style.top = Math.round(top) + 'px';
-                    }
-
-                    function toggleClientRowMore(button, clientId) {
-                        if (!clientRowMoreMenu || !button || clientId <= 0) return;
-                        var isSameOpen = activeClientRowMoreButton === button && clientRowMoreMenu.classList
-                            .contains('show');
-                        closeClientRowMore();
-                        if (isSameOpen) return;
-                        document.getElementById('clientRowAddQuotation').href = 'add-quotation.php?client_id=' +
-                            clientId;
-                        document.getElementById('clientRowCreateJob').href = 'job-form.php?client_id=' + clientId;
-                        document.getElementById('clientRowAddInvoice').href = 'add-invoice.php?client_id=' +
-                            clientId;
-                        document.getElementById('clientRowPayment').href = 'payment.php?client_id=' + clientId;
-                        activeClientRowMoreButton = button;
-                        button.classList.add('active');
-                        button.setAttribute('aria-expanded', 'true');
-                        clientRowMoreMenu.classList.add('show');
-                        clientRowMoreMenu.setAttribute('aria-hidden', 'false');
-                        positionClientRowMore(button);
-                    }
-                    if (clientRowMoreMenu) {
-                        clientRowMoreMenu.addEventListener('click', function(e) {
-                            e.stopPropagation();
-                        });
-                    }
-                    window.addEventListener('resize', closeClientRowMore);
-                    window.addEventListener('scroll', closeClientRowMore, true);
-
-                    var moreActions = document.getElementById('customerMoreActions'),
-                        moreActionsButton = document.getElementById('customerMoreActionsButton'),
-                        moreActionsMenu = moreActions ? moreActions.querySelector('.fd-customer-more-menu') : null;
-
-                    function setMoreActions(open) {
-                        if (!moreActions || !moreActionsButton || !moreActionsMenu) return;
-                        moreActions.classList.toggle('open', !!open);
-                        moreActionsButton.setAttribute('aria-expanded', open ? 'true' : 'false');
-                        moreActionsMenu.setAttribute('aria-hidden', open ? 'false' : 'true');
-                    }
-                    if (moreActionsButton) {
-                        moreActionsButton.addEventListener('click', function(e) {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setMoreActions(!moreActions.classList.contains('open'));
-                        });
-                    }
-                    document.addEventListener('click', function(e) {
-                        if (moreActions && !moreActions.contains(e.target)) setMoreActions(false);
-                        if (clientRowMoreMenu && !clientRowMoreMenu.contains(e.target) && !(
-                                activeClientRowMoreButton && activeClientRowMoreButton.contains(e.target)))
-                            closeClientRowMore();
-                    });
-                    document.addEventListener('keydown', function(e) {
-                        if (e.key === 'Escape') {
-                            setMoreActions(false);
-                            closeClientRowMore();
-                            if (moreActionsButton) moreActionsButton.focus();
-                        }
-                    });
-                    document.getElementById('exportCustomersButton').onclick = function() {
-                        var button = this,
-                            fd = new FormData();
-                        fd.append('action', 'export');
-                        fd.append('search', state.search);
-                        fd.append('client_type', state.type);
-                        fd.append('status', state.status);
-                        fd.append('branch_id', state.branchId);
-                        loading(button, true);
-                        request(fd).then(function(d) {
-                            var rows = d.customers || [];
-                            var columns = [
-                                'Customer ID', 'Customer Type', 'Display Name', 'Company Name',
-                                'First Name', 'Last Name', 'Email', 'Phone', 'Alternate Phone',
-                                'Source', 'Preferred Contact', 'Allow Email', 'Allow SMS', 'Status',
-                                'Tax Number', 'Notes', 'Branch', 'Account Manager', 'Portal Status',
-                                'Last Activity', 'Created At', 'Updated At',
-                                'Location Count', 'Location ID', 'Location Type', 'Location Name',
-                                'Address Line 1', 'Address Line 2', 'City', 'State', 'Postal Code',
-                                'Country', 'Latitude', 'Longitude', 'Location Contact Name',
-                                'Location Contact Phone', 'Gate Code', 'Access Notes',
-                                'Service Instructions', 'Primary Location', 'Location Status'
-                            ];
-                            var keys = [
-                                'customer_id', 'client_type', 'display_name', 'company_name',
-                                'first_name', 'last_name', 'email', 'phone', 'alternate_phone',
-                                'source', 'preferred_contact_method', 'allow_email_label',
-                                'allow_sms_label', 'status', 'tax_number', 'notes', 'branch_name',
-                                'account_manager_name', 'portal_status', 'last_activity_at',
-                                'created_at', 'updated_at',
-                                'location_count', 'location_id', 'location_type', 'location_name',
-                                'address_line1', 'address_line2', 'city', 'state', 'postal_code',
-                                'country_name', 'latitude', 'longitude', 'location_contact_name',
-                                'location_contact_phone', 'gate_code', 'access_notes',
-                                'service_instructions', 'is_primary_label', 'location_status'
-                            ];
-                            var quote = function(v) {
-                                return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
-                            };
-                            var csv = '\ufeff' + columns.map(quote).join(',') + '\r\n' + rows.map(
-                                function(row) {
-                                    return keys.map(function(key) {
-                                        return quote(row[key]);
-                                    }).join(',');
-                                }).join('\r\n');
-                            var blob = new Blob([csv], {
-                                type: 'text/csv;charset=utf-8'
-                            });
-                            var url = URL.createObjectURL(blob),
-                                link = document.createElement('a');
-                            link.href = url;
-                            link.download = 'customers-with-locations-' + new Date().toISOString()
-                                .slice(0, 10) + '.csv';
-                            document.body.appendChild(link);
-                            link.click();
-                            link.remove();
-                            URL.revokeObjectURL(url);
-                            toastShow('success', d.message);
-                            setMoreActions(false);
-                        }).catch(function(e) {
-                            toastShow('error', e.message);
-                        }).finally(function() {
-                            loading(button, false);
-                        });
-                    };
-                    document.getElementById('clientModalClose').onclick = closeClient;
-                    document.getElementById('cancelClientButton').onclick = closeClient;
-                    document.getElementById('archiveModalClose').onclick = archiveClose;
-                    document.getElementById('cancelArchiveButton').onclick = archiveClose;
-                    document.getElementById('clientsToastClose').onclick = function() {
-                        toast.classList.remove('show')
-                    };
-                    document.getElementById('clearFiltersButton').onclick = function() {
-                        document.getElementById('clientsSearch').value = '';
-                        document.getElementById('typeFilter').value = '';
-                        document.getElementById('statusFilter').value = '';
-                        document.getElementById('branchFilter').value = '';
-                        state.search = '';
-                        state.type = '';
-                        state.status = '';
-                        state.branchId = '';
-                        state.page = 1;
-                        load()
-                    };
-                    document.getElementById('clientsSearch').oninput = function(e) {
-                        if (searchTimer) clearTimeout(searchTimer);
-                        searchTimer = setTimeout(function() {
-                            state.search = e.target.value.trim();
-                            state.page = 1;
-                            load()
-                        }, 250)
-                    };
-                    document.getElementById('typeFilter').onchange = function(e) {
-                        state.type = e.target.value;
-                        state.page = 1;
-                        load()
-                    };
-                    document.getElementById('statusFilter').onchange = function(e) {
-                        state.status = e.target.value;
-                        state.page = 1;
-                        load()
-                    };
-                    document.getElementById('branchFilter').onchange = function(e) {
-                        state.branchId = e.target.value;
-                        state.page = 1;
-                        load()
-                    };
-                    document.getElementById('prevPageButton').onclick = function() {
-                        if (state.page > 1) {
-                            state.page--;
-                            load()
-                        }
-                    };
-                    document.getElementById('nextPageButton').onclick = function() {
-                        state.page++;
-                        load()
-                    };
-                    clientModal.onclick = function(e) {
-                        if (e.target === clientModal) closeClient()
-                    };
-                    archiveModal.onclick = function(e) {
-                        if (e.target === archiveModal) archiveClose()
-                    };
-                    load();
-                })();
-                </script>
             </div>
         </main>
     </div>
+
     <?php require_once __DIR__ . '/includes/footer.php'; ?>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    (function() {
+        'use strict';
 
+        var currency = <?= json_encode($insCurrencySymbol, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+        var green = '#68aa1d';
+        var greenDark = '#4f7e18';
+        var greenSoft = 'rgba(104,170,29,.16)';
+        var navy = '#123d70';
+        var blueSoft = 'rgba(18,61,112,.13)';
+        var gold = '#d6a825';
+        var red = '#e45b66';
+        var grey = '#9aa9bc';
+        var grid = '#edf1f5';
+        var palette = [green, navy, gold, '#7c8ca5', '#95bf5e', '#3f7f91', '#c18b4d', red];
 
+        function money(v) {
+            return currency + Number(v || 0).toLocaleString(undefined, {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            });
+        }
+
+        function baseOptions(yMoney) {
+            return {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: {
+                    mode: 'index',
+                    intersect: false
+                },
+                plugins: {
+                    legend: {
+                        display: false
+                    },
+                    tooltip: {
+                        callbacks: {
+                            label: function(ctx) {
+                                var label = ctx.dataset.label ? ctx.dataset.label + ': ' : '';
+                                return label + (yMoney ? money(ctx.parsed.y) : ctx.parsed.y);
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        grid: {
+                            display: false
+                        },
+                        ticks: {
+                            color: '#7f8da1',
+                            font: {
+                                size: 9
+                            }
+                        }
+                    },
+                    y: {
+                        beginAtZero: true,
+                        grid: {
+                            color: grid
+                        },
+                        ticks: {
+                            color: '#7f8da1',
+                            font: {
+                                size: 9
+                            },
+                            callback: function(v) {
+                                return yMoney ? currency + Number(v).toLocaleString() : v;
+                            }
+                        }
+                    }
+                }
+            };
+        }
+
+        function renderLegend(elId, labels, values, colors, formatter) {
+            var el = document.getElementById(elId);
+            if (!el) return;
+            var h = '';
+            labels.forEach(function(label, i) {
+                h += '<div class="ins-legend-row"><span class="ins-legend-dot" style="background:' + colors[
+                        i % colors.length] + '"></span><span>' +
+                    String(label).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;') +
+                    '</span><strong>' + formatter(values[i]) + '</strong></div>';
+            });
+            el.innerHTML = h;
+        }
+
+        if (window.Chart) {
+            new Chart(document.getElementById('revenueChart'), {
+                type: 'line',
+                data: {
+                    labels: <?= json_encode($monthLabels) ?>,
+                    datasets: [{
+                            label: <?= json_encode((string)$previousYear) ?>,
+                            data: <?= json_encode($revenuePrevData) ?>,
+                            borderColor: grey,
+                            backgroundColor: 'rgba(154,169,188,.10)',
+                            borderWidth: 2,
+                            pointRadius: 2,
+                            tension: .28
+                        },
+                        {
+                            label: <?= json_encode((string)$currentYear) ?>,
+                            data: <?= json_encode($revenueCurrData) ?>,
+                            borderColor: green,
+                            backgroundColor: greenSoft,
+                            borderWidth: 2,
+                            pointRadius: 2,
+                            tension: .28
+                        }
+                    ]
+                },
+                options: Object.assign(baseOptions(true), {
+                    plugins: {
+                        legend: {
+                            display: true,
+                            position: 'top',
+                            align: 'start',
+                            labels: {
+                                boxWidth: 8,
+                                boxHeight: 8,
+                                usePointStyle: true,
+                                pointStyle: 'circle',
+                                color: '#526279',
+                                font: {
+                                    size: 9
+                                }
+                            }
+                        },
+                        tooltip: baseOptions(true).plugins.tooltip
+                    }
+                })
+            });
+
+            var leadLabels = <?= json_encode($leadSourceLabels, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+            var leadValues = <?= json_encode($leadSourceValues) ?>;
+            if (document.getElementById('leadSourceChart')) {
+                var leadColors = leadLabels.map(function(_, i) {
+                    return palette[i % palette.length];
+                });
+                new Chart(document.getElementById('leadSourceChart'), {
+                    type: 'doughnut',
+                    data: {
+                        labels: leadLabels,
+                        datasets: [{
+                            data: leadValues,
+                            backgroundColor: leadColors,
+                            borderWidth: 0,
+                            hoverOffset: 3
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        cutout: '67%',
+                        plugins: {
+                            legend: {
+                                display: false
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(c) {
+                                        return c.label + ': ' + money(c.parsed);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+                renderLegend('leadSourceLegend', leadLabels, leadValues, leadColors, money);
+            }
+
+            var paymentLabels =
+                <?= json_encode($paymentMethodLabels, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+            var paymentValues = <?= json_encode($paymentMethodValues) ?>;
+            if (document.getElementById('paymentMethodChart')) {
+                var paymentColors = paymentLabels.map(function(_, i) {
+                    return palette[i % palette.length];
+                });
+                new Chart(document.getElementById('paymentMethodChart'), {
+                    type: 'doughnut',
+                    data: {
+                        labels: paymentLabels,
+                        datasets: [{
+                            data: paymentValues,
+                            backgroundColor: paymentColors,
+                            borderWidth: 0,
+                            hoverOffset: 3
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        cutout: '67%',
+                        plugins: {
+                            legend: {
+                                display: false
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(c) {
+                                        return c.label + ': ' + money(c.parsed);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+                renderLegend('paymentMethodLegend', paymentLabels, paymentValues, paymentColors, money);
+            }
+
+            new Chart(document.getElementById('leadFunnelChart'), {
+                type: 'bar',
+                data: {
+                    labels: ['New leads', 'Leads with sent quote', 'Leads with job created'],
+                    datasets: [{
+                        data: [
+                            <?= (int)$leadFunnel['new_leads'] ?>,
+                            <?= (int)$leadFunnel['sent_quote'] ?>,
+                            <?= (int)$leadFunnel['job_created'] ?>
+                        ],
+                        backgroundColor: [green, '#8bbd52', '#b2cf8f'],
+                        borderRadius: 4,
+                        maxBarThickness: 85
+                    }]
+                },
+                options: Object.assign(baseOptions(false), {
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(c) {
+                                    return String(c.parsed.y);
+                                }
+                            }
+                        }
+                    }
+                })
+            });
+
+            var quoteLabels = <?= json_encode($quoteLabels, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+            if (document.getElementById('quoteConversionChart')) {
+                new Chart(document.getElementById('quoteConversionChart'), {
+                    type: 'line',
+                    data: {
+                        labels: quoteLabels,
+                        datasets: [{
+                            label: 'Conversion rate',
+                            data: <?= json_encode($quoteConversionSeries) ?>,
+                            borderColor: green,
+                            backgroundColor: greenSoft,
+                            borderWidth: 2,
+                            pointRadius: 2,
+                            tension: .25,
+                            fill: false
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: false
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(c) {
+                                        return Number(c.parsed.y).toFixed(1) + '%';
+                                    }
+                                }
+                            }
+                        },
+                        scales: {
+                            x: {
+                                grid: {
+                                    display: false
+                                },
+                                ticks: {
+                                    color: '#7f8da1',
+                                    font: {
+                                        size: 9
+                                    }
+                                }
+                            },
+                            y: {
+                                beginAtZero: true,
+                                suggestedMax: 100,
+                                grid: {
+                                    color: grid
+                                },
+                                ticks: {
+                                    color: '#7f8da1',
+                                    font: {
+                                        size: 9
+                                    },
+                                    callback: function(v) {
+                                        return v + '%';
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+
+            if (document.getElementById('quoteValueChart')) {
+                new Chart(document.getElementById('quoteValueChart'), {
+                    type: 'line',
+                    data: {
+                        labels: quoteLabels,
+                        datasets: [{
+                                label: 'Sent',
+                                data: <?= json_encode($quoteSentValueSeries) ?>,
+                                borderColor: grey,
+                                backgroundColor: 'rgba(154,169,188,.10)',
+                                borderWidth: 2,
+                                pointRadius: 2,
+                                tension: .25
+                            },
+                            {
+                                label: 'Converted',
+                                data: <?= json_encode($quoteConvertedValueSeries) ?>,
+                                borderColor: green,
+                                backgroundColor: greenSoft,
+                                borderWidth: 2,
+                                pointRadius: 2,
+                                tension: .25
+                            }
+                        ]
+                    },
+                    options: Object.assign(baseOptions(true), {
+                        plugins: {
+                            legend: {
+                                display: true,
+                                position: 'top',
+                                align: 'start',
+                                labels: {
+                                    boxWidth: 8,
+                                    boxHeight: 8,
+                                    usePointStyle: true,
+                                    pointStyle: 'circle',
+                                    color: '#526279',
+                                    font: {
+                                        size: 9
+                                    }
+                                }
+                            },
+                            tooltip: baseOptions(true).plugins.tooltip
+                        }
+                    })
+                });
+            }
+
+            new Chart(document.getElementById('scheduledJobsChart'), {
+                type: 'bar',
+                data: {
+                    labels: <?= json_encode($scheduledLabels) ?>,
+                    datasets: [{
+                        label: 'Scheduled value',
+                        data: <?= json_encode($scheduledValues) ?>,
+                        backgroundColor: greenSoft,
+                        borderColor: green,
+                        borderWidth: 1,
+                        borderRadius: 4,
+                        maxBarThickness: 90
+                    }]
+                },
+                options: baseOptions(true)
+            });
+
+            if (document.getElementById('jobMixChart')) {
+                var mixLabels = ['One-off', 'Recurring'];
+                var mixValues = [<?= json_encode((float)$jobMix['one_off']) ?>,
+                    <?= json_encode((float)$jobMix['recurring']) ?>
+                ];
+                var mixColors = [green, navy];
+                new Chart(document.getElementById('jobMixChart'), {
+                    type: 'doughnut',
+                    data: {
+                        labels: mixLabels,
+                        datasets: [{
+                            data: mixValues,
+                            backgroundColor: mixColors,
+                            borderWidth: 0,
+                            hoverOffset: 3
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        cutout: '67%',
+                        plugins: {
+                            legend: {
+                                display: false
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(c) {
+                                        return c.label + ': ' + money(c.parsed);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+                renderLegend('jobMixLegend', mixLabels, mixValues, mixColors, money);
+            }
+        }
+
+        /* Profit and loss Completed / Active toggle. */
+        var tabs = document.querySelectorAll('[data-profit-view]');
+        var rows = document.querySelectorAll('#profitTableBody tr[data-profit-group]');
+        var noRows = document.getElementById('profitNoRows');
+
+        function applyProfitView(view) {
+            var shown = 0;
+            rows.forEach(function(row) {
+                var show = row.getAttribute('data-profit-group') === view;
+                row.style.display = show ? '' : 'none';
+                if (show) shown++;
+            });
+            if (noRows) noRows.style.display = shown ? 'none' : '';
+            tabs.forEach(function(tab) {
+                tab.classList.toggle('active', tab.getAttribute('data-profit-view') === view);
+            });
+        }
+
+        tabs.forEach(function(tab) {
+            tab.addEventListener('click', function() {
+                applyProfitView(tab.getAttribute('data-profit-view'));
+            });
+        });
+        if (rows.length) applyProfitView('completed');
+    })();
+    </script>
 </body>
 
 </html>

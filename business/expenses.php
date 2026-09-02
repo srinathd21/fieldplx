@@ -1,168 +1,588 @@
 <?php
-/* FieldPlx Customers Page - Version 3.2.0 - 2026-09-02 - Clickable Customer Rows */
+/* FieldPlx Expenses - Customers-style Summary UI - 2026-09-02 */
 require_once __DIR__ . '/includes/auth.php';
+if (file_exists(__DIR__ . '/includes/audit.php')) {
+    require_once __DIR__ . '/includes/audit.php';
+}
 
-$pageTitle = 'Customers';
-$activePage = 'clients';
+$pageTitle = 'Expenses';
+$activePage = 'expenses';
 
 if (session_status() === PHP_SESSION_NONE) {
-  session_start();
+    session_start();
 }
 
-if (empty($_SESSION['clients_csrf_token'])) {
-  $_SESSION['clients_csrf_token'] = bin2hex(random_bytes(32));
+$expenseTenantId = isset($_SESSION['tenant_id']) ? (int)$_SESSION['tenant_id'] : 0;
+$expenseUserId = isset($_SESSION['tenant_user_id']) ? (int)$_SESSION['tenant_user_id'] : 0;
+$expenseBranchId = isset($_SESSION['branch_id']) ? (int)$_SESSION['branch_id'] : 0;
+$expenseCurrencySymbol = isset($_SESSION['tenant_currency_symbol']) && $_SESSION['tenant_currency_symbol'] !== ''
+    ? (string)$_SESSION['tenant_currency_symbol']
+    : '₹';
+$expenseCurrencyCode = isset($_SESSION['tenant_currency_code']) ? (string)$_SESSION['tenant_currency_code'] : '';
+
+if (empty($_SESSION['expenses_csrf_token'])) {
+    $_SESSION['expenses_csrf_token'] = bin2hex(random_bytes(32));
+}
+$expensesCsrfToken = (string)$_SESSION['expenses_csrf_token'];
+
+function ex_table_exists(PDO $pdo, $table)
+{
+    static $cache = array();
+    if (isset($cache[$table])) return $cache[$table];
+    $q = $pdo->prepare("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=:n");
+    $q->execute(array(':n' => $table));
+    $cache[$table] = ((int)$q->fetchColumn() > 0);
+    return $cache[$table];
 }
 
-$clientsCsrfToken = (string) $_SESSION['clients_csrf_token'];
-
-/*
- * Customer statistics are loaded directly on this page.
- * No separate customer-stats API request is used.
- *
- * CRM definition preserved from the existing FieldPlx logic:
- * - an explicit client record is already a customer;
- * - a lead becomes a customer on its first qualifying Job or Invoice;
- * - cancelled/archived operational records do not qualify.
- */
-$customerStats = array(
-  'total' => 0,
-  'lead_total' => 0,
-  'customer_total' => 0,
-  'active_total' => 0,
-  'inactive_total' => 0,
-  'new_leads_30' => 0,
-  'prior_leads_30' => 0,
-  'new_leads_change' => 0.0,
-  'new_customers_30' => 0,
-  'prior_customers_30' => 0,
-  'new_customers_change' => 0.0,
-  'current_period_label' => date('M j', strtotime('-29 days')) . ' - ' . date('M j'),
-  'prior_period_label' => date('M j', strtotime('-59 days')) . ' - ' . date('M j', strtotime('-30 days'))
-);
-
-$customerStatsTenantId = isset($_SESSION['tenant_id']) ? (int) $_SESSION['tenant_id'] : 0;
-$customerStatsPdo = null;
-if (isset($pdo) && $pdo instanceof PDO) {
-  $customerStatsPdo = $pdo;
-} elseif (isset($db) && $db instanceof PDO) {
-  $customerStatsPdo = $db;
+function ex_column_exists(PDO $pdo, $table, $column)
+{
+    static $cache = array();
+    $key = $table . '.' . $column;
+    if (isset($cache[$key])) return $cache[$key];
+    $q = $pdo->prepare("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=:t AND COLUMN_NAME=:c");
+    $q->execute(array(':t' => $table, ':c' => $column));
+    $cache[$key] = ((int)$q->fetchColumn() > 0);
+    return $cache[$key];
 }
 
-if ($customerStatsTenantId > 0 && $customerStatsPdo instanceof PDO) {
-  try {
-    $customerStatsStmt = $customerStatsPdo->prepare(
-      "SELECT
-          COUNT(*) AS total,
-          SUM(CASE WHEN effective_customer_at IS NULL AND original_type = 'lead' THEN 1 ELSE 0 END) AS lead_total,
-          SUM(CASE WHEN effective_customer_at IS NOT NULL OR original_type = 'client' THEN 1 ELSE 0 END) AS customer_total,
-          SUM(CASE WHEN crm_status = 'active' THEN 1 ELSE 0 END) AS active_total,
-          SUM(CASE WHEN crm_status = 'inactive' THEN 1 ELSE 0 END) AS inactive_total,
-          SUM(CASE
-                WHEN effective_customer_at IS NULL
-                 AND original_type = 'lead'
-                 AND client_created_at >= DATE_SUB(CURDATE(), INTERVAL 29 DAY)
-                 AND client_created_at < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
-                THEN 1 ELSE 0
-              END) AS new_leads_30,
-          SUM(CASE
-                WHEN effective_customer_at IS NULL
-                 AND original_type = 'lead'
-                 AND client_created_at >= DATE_SUB(CURDATE(), INTERVAL 59 DAY)
-                 AND client_created_at < DATE_SUB(CURDATE(), INTERVAL 29 DAY)
-                THEN 1 ELSE 0
-              END) AS prior_leads_30,
-          SUM(CASE
-                WHEN effective_customer_at >= DATE_SUB(CURDATE(), INTERVAL 29 DAY)
-                 AND effective_customer_at < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
-                THEN 1 ELSE 0
-              END) AS new_customers_30,
-          SUM(CASE
-                WHEN effective_customer_at >= DATE_SUB(CURDATE(), INTERVAL 59 DAY)
-                 AND effective_customer_at < DATE_SUB(CURDATE(), INTERVAL 29 DAY)
-                THEN 1 ELSE 0
-              END) AS prior_customers_30
-       FROM (
-          SELECT
-            c.id,
-            c.client_type AS original_type,
-            c.status AS crm_status,
-            c.created_at AS client_created_at,
-            CASE
-              WHEN c.client_type = 'client' THEN c.created_at
-              WHEN j.first_job_at IS NULL THEN i.first_invoice_at
-              WHEN i.first_invoice_at IS NULL THEN j.first_job_at
-              WHEN j.first_job_at <= i.first_invoice_at THEN j.first_job_at
-              ELSE i.first_invoice_at
-            END AS effective_customer_at
-          FROM clients c
-          LEFT JOIN (
-            SELECT tenant_id, client_id, MIN(created_at) AS first_job_at
-            FROM jobs
-            WHERE deleted_at IS NULL
-              AND status NOT IN ('draft', 'cancelled', 'archived')
-            GROUP BY tenant_id, client_id
-          ) j
-            ON j.tenant_id = c.tenant_id
-           AND j.client_id = c.id
-          LEFT JOIN (
-            SELECT tenant_id, client_id, MIN(created_at) AS first_invoice_at
-            FROM invoices
-            WHERE status NOT IN ('cancelled', 'archived', 'written_off')
-            GROUP BY tenant_id, client_id
-          ) i
-            ON i.tenant_id = c.tenant_id
-           AND i.client_id = c.id
-          WHERE c.tenant_id = :tenant_id
-            AND c.deleted_at IS NULL
-            AND c.client_type <> 'archived'
-       ) crm"
-    );
-    $customerStatsStmt->execute(array(':tenant_id' => $customerStatsTenantId));
-    $customerStatsRow = $customerStatsStmt->fetch(PDO::FETCH_ASSOC);
+function ex_json($status, $success, $message, $extra = array())
+{
+    while (ob_get_level() > 0) @ob_end_clean();
+    http_response_code((int)$status);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode(array_merge(array(
+        'success' => (bool)$success,
+        'message' => (string)$message
+    ), $extra), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
+}
 
-    if ($customerStatsRow) {
-      $currentLeads = isset($customerStatsRow['new_leads_30']) ? (int) $customerStatsRow['new_leads_30'] : 0;
-      $priorLeads = isset($customerStatsRow['prior_leads_30']) ? (int) $customerStatsRow['prior_leads_30'] : 0;
-      $currentCustomers = isset($customerStatsRow['new_customers_30']) ? (int) $customerStatsRow['new_customers_30'] : 0;
-      $priorCustomers = isset($customerStatsRow['prior_customers_30']) ? (int) $customerStatsRow['prior_customers_30'] : 0;
+function ex_post($key, $default = '')
+{
+    return isset($_POST[$key]) ? $_POST[$key] : $default;
+}
 
-      $customerStats['total'] = isset($customerStatsRow['total']) ? (int) $customerStatsRow['total'] : 0;
-      $customerStats['lead_total'] = isset($customerStatsRow['lead_total']) ? (int) $customerStatsRow['lead_total'] : 0;
-      $customerStats['customer_total'] = isset($customerStatsRow['customer_total']) ? (int) $customerStatsRow['customer_total'] : 0;
-      $customerStats['active_total'] = isset($customerStatsRow['active_total']) ? (int) $customerStatsRow['active_total'] : 0;
-      $customerStats['inactive_total'] = isset($customerStatsRow['inactive_total']) ? (int) $customerStatsRow['inactive_total'] : 0;
-      $customerStats['new_leads_30'] = $currentLeads;
-      $customerStats['prior_leads_30'] = $priorLeads;
-      $customerStats['new_leads_change'] = $priorLeads > 0
-        ? (($currentLeads - $priorLeads) / $priorLeads) * 100
-        : ($currentLeads > 0 ? 100.0 : 0.0);
-      $customerStats['new_customers_30'] = $currentCustomers;
-      $customerStats['prior_customers_30'] = $priorCustomers;
-      $customerStats['new_customers_change'] = $priorCustomers > 0
-        ? (($currentCustomers - $priorCustomers) / $priorCustomers) * 100
-        : ($currentCustomers > 0 ? 100.0 : 0.0);
+function ex_ensure_schema(PDO $pdo)
+{
+    if (!ex_table_exists($pdo, 'expenses')) {
+        $pdo->exec("CREATE TABLE expenses (
+            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+            tenant_id BIGINT UNSIGNED NOT NULL,
+            branch_id BIGINT UNSIGNED DEFAULT NULL,
+            expense_no VARCHAR(80) DEFAULT NULL,
+            category_id BIGINT UNSIGNED DEFAULT NULL,
+            job_id BIGINT UNSIGNED DEFAULT NULL,
+            visit_id BIGINT UNSIGNED DEFAULT NULL,
+            client_id BIGINT UNSIGNED DEFAULT NULL,
+            expense_date DATE NOT NULL,
+            vendor VARCHAR(190) DEFAULT NULL,
+            amount DECIMAL(12,2) NOT NULL,
+            tax_amount DECIMAL(12,2) NOT NULL DEFAULT 0.00,
+            notes TEXT DEFAULT NULL,
+            status ENUM('draft','submitted','approved','rejected') NOT NULL DEFAULT 'submitted',
+            created_by BIGINT UNSIGNED DEFAULT NULL,
+            approved_by BIGINT UNSIGNED DEFAULT NULL,
+            approved_at DATETIME DEFAULT NULL,
+            item_name VARCHAR(190) DEFAULT NULL,
+            accounting_code VARCHAR(120) DEFAULT NULL,
+            reimburse_user_id BIGINT UNSIGNED DEFAULT NULL,
+            receipt_name VARCHAR(255) DEFAULT NULL,
+            receipt_path VARCHAR(500) DEFAULT NULL,
+            receipt_mime VARCHAR(120) DEFAULT NULL,
+            receipt_size BIGINT UNSIGNED DEFAULT NULL,
+            deleted_at DATETIME DEFAULT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT NULL ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id),
+            KEY idx_expense_tenant_date (tenant_id, expense_date),
+            KEY idx_expense_job (job_id),
+            KEY idx_expense_reimburse_user (reimburse_user_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+        return;
     }
-  } catch (Throwable $customerStatsError) {
-    error_log('FieldPlx customers direct stats error: ' . $customerStatsError->getMessage());
-  }
+
+    $columns = array(
+        'item_name' => "ALTER TABLE expenses ADD COLUMN item_name VARCHAR(190) DEFAULT NULL AFTER expense_date",
+        'accounting_code' => "ALTER TABLE expenses ADD COLUMN accounting_code VARCHAR(120) DEFAULT NULL AFTER notes",
+        'reimburse_user_id' => "ALTER TABLE expenses ADD COLUMN reimburse_user_id BIGINT(20) UNSIGNED DEFAULT NULL AFTER accounting_code",
+        'receipt_name' => "ALTER TABLE expenses ADD COLUMN receipt_name VARCHAR(255) DEFAULT NULL AFTER reimburse_user_id",
+        'receipt_path' => "ALTER TABLE expenses ADD COLUMN receipt_path VARCHAR(500) DEFAULT NULL AFTER receipt_name",
+        'receipt_mime' => "ALTER TABLE expenses ADD COLUMN receipt_mime VARCHAR(120) DEFAULT NULL AFTER receipt_path",
+        'receipt_size' => "ALTER TABLE expenses ADD COLUMN receipt_size BIGINT(20) UNSIGNED DEFAULT NULL AFTER receipt_mime",
+        'deleted_at' => "ALTER TABLE expenses ADD COLUMN deleted_at DATETIME DEFAULT NULL AFTER updated_at"
+    );
+
+    foreach ($columns as $column => $sql) {
+        if (!ex_column_exists($pdo, 'expenses', $column)) {
+            $pdo->exec($sql);
+        }
+    }
 }
 
-$leadChangeValue = (float) $customerStats['new_leads_change'];
-$customerChangeValue = (float) $customerStats['new_customers_change'];
-$leadTrendClass = $leadChangeValue > 0 ? '' : ($leadChangeValue < 0 ? ' down' : ' neutral');
-$customerTrendClass = $customerChangeValue > 0 ? '' : ($customerChangeValue < 0 ? ' down' : ' neutral');
-$leadTrendArrow = $leadChangeValue > 0 ? '↑ ' : ($leadChangeValue < 0 ? '↓ ' : '');
-$customerTrendArrow = $customerChangeValue > 0 ? '↑ ' : ($customerChangeValue < 0 ? '↓ ' : '');
-?>
+function ex_valid_job(PDO $pdo, $tenantId, $jobId)
+{
+    if ($jobId <= 0 || !ex_table_exists($pdo, 'jobs')) return null;
+    $q = $pdo->prepare("SELECT id, branch_id, client_id, job_no, title FROM jobs WHERE id=:id AND tenant_id=:t AND deleted_at IS NULL LIMIT 1");
+    $q->execute(array(':id' => $jobId, ':t' => $tenantId));
+    $r = $q->fetch(PDO::FETCH_ASSOC);
+    return $r ? $r : null;
+}
 
+function ex_valid_user(PDO $pdo, $tenantId, $userId)
+{
+    if ($userId <= 0 || !ex_table_exists($pdo, 'users')) return null;
+    $q = $pdo->prepare("SELECT id, first_name, last_name, email FROM users WHERE id=:id AND tenant_id=:t AND status='active' AND deleted_at IS NULL LIMIT 1");
+    $q->execute(array(':id' => $userId, ':t' => $tenantId));
+    $r = $q->fetch(PDO::FETCH_ASSOC);
+    return $r ? $r : null;
+}
+
+function ex_get_expense(PDO $pdo, $tenantId, $id)
+{
+    $q = $pdo->prepare("SELECT e.* FROM expenses e WHERE e.id=:id AND e.tenant_id=:t AND e.deleted_at IS NULL LIMIT 1");
+    $q->execute(array(':id' => $id, ':t' => $tenantId));
+    $r = $q->fetch(PDO::FETCH_ASSOC);
+    if (!$r) ex_json(404, false, 'Expense not found.');
+    return $r;
+}
+
+function ex_meta(PDO $pdo, $tenantId)
+{
+    $jobs = array();
+    if (ex_table_exists($pdo, 'jobs')) {
+        $q = $pdo->prepare("SELECT id, job_no, title, status FROM jobs WHERE tenant_id=:t AND deleted_at IS NULL AND status NOT IN('cancelled','archived') ORDER BY id DESC LIMIT 1000");
+        $q->execute(array(':t' => $tenantId));
+        $jobs = $q->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    $users = array();
+    if (ex_table_exists($pdo, 'users')) {
+        $q = $pdo->prepare("SELECT id, first_name, last_name, email FROM users WHERE tenant_id=:t AND status='active' AND deleted_at IS NULL ORDER BY first_name,last_name");
+        $q->execute(array(':t' => $tenantId));
+        $users = $q->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    $codes = array();
+    $q = $pdo->prepare("SELECT DISTINCT accounting_code FROM expenses WHERE tenant_id=:t AND accounting_code IS NOT NULL AND TRIM(accounting_code)<>'' ORDER BY accounting_code");
+    $q->execute(array(':t' => $tenantId));
+    $codes = $q->fetchAll(PDO::FETCH_COLUMN);
+
+    return array('jobs' => $jobs, 'users' => $users, 'accounting_codes' => $codes);
+}
+
+function ex_stats(PDO $pdo, $tenantId)
+{
+    $stats = array(
+        'count_total' => 0,
+        'amount_total' => 0.00,
+        'month_total' => 0.00,
+        'prior_month_total' => 0.00,
+        'month_change' => 0.0,
+        'job_linked' => 0,
+        'reimbursable' => 0,
+        'with_receipt' => 0,
+        'draft_count' => 0,
+        'submitted_count' => 0,
+        'approved_count' => 0,
+        'rejected_count' => 0
+    );
+
+    $q = $pdo->prepare("SELECT
+            COUNT(*) AS count_total,
+            COALESCE(SUM(amount),0) AS amount_total,
+            COALESCE(SUM(CASE
+                WHEN expense_date >= DATE_FORMAT(CURDATE(),'%Y-%m-01')
+                 AND expense_date < DATE_ADD(DATE_FORMAT(CURDATE(),'%Y-%m-01'), INTERVAL 1 MONTH)
+                THEN amount ELSE 0 END),0) AS month_total,
+            COALESCE(SUM(CASE
+                WHEN expense_date >= DATE_SUB(DATE_FORMAT(CURDATE(),'%Y-%m-01'), INTERVAL 1 MONTH)
+                 AND expense_date < DATE_FORMAT(CURDATE(),'%Y-%m-01')
+                THEN amount ELSE 0 END),0) AS prior_month_total,
+            COALESCE(SUM(CASE WHEN job_id IS NOT NULL THEN 1 ELSE 0 END),0) AS job_linked,
+            COALESCE(SUM(CASE WHEN reimburse_user_id IS NOT NULL THEN 1 ELSE 0 END),0) AS reimbursable,
+            COALESCE(SUM(CASE WHEN receipt_path IS NOT NULL AND TRIM(receipt_path)<>'' THEN 1 ELSE 0 END),0) AS with_receipt,
+            COALESCE(SUM(CASE WHEN status='draft' THEN 1 ELSE 0 END),0) AS draft_count,
+            COALESCE(SUM(CASE WHEN status='submitted' THEN 1 ELSE 0 END),0) AS submitted_count,
+            COALESCE(SUM(CASE WHEN status='approved' THEN 1 ELSE 0 END),0) AS approved_count,
+            COALESCE(SUM(CASE WHEN status='rejected' THEN 1 ELSE 0 END),0) AS rejected_count
+        FROM expenses
+        WHERE tenant_id=:t
+          AND deleted_at IS NULL");
+    $q->execute(array(':t' => $tenantId));
+    $row = $q->fetch(PDO::FETCH_ASSOC);
+    if ($row) $stats = array_merge($stats, $row);
+
+    $current = (float)$stats['month_total'];
+    $prior = (float)$stats['prior_month_total'];
+    $stats['month_change'] = $prior > 0
+        ? (($current - $prior) / $prior) * 100
+        : ($current > 0 ? 100.0 : 0.0);
+
+    return $stats;
+}
+
+function ex_activity(PDO $pdo, $tenantId, $branchId, $userId, $eventType, $expenseId, $title, $details)
+{
+    if (!ex_table_exists($pdo, 'activity_events')) return;
+    try {
+        $q = $pdo->prepare("INSERT INTO activity_events(tenant_id,branch_id,actor_user_id,actor_type,event_type,related_type,related_id,title,details_json,visible_to_client) VALUES(:t,:b,:u,'user',:e,'expense',:r,:title,:d,0)");
+        $q->execute(array(
+            ':t' => $tenantId,
+            ':b' => $branchId > 0 ? $branchId : null,
+            ':u' => $userId > 0 ? $userId : null,
+            ':e' => $eventType,
+            ':r' => $expenseId,
+            ':title' => substr($title, 0, 255),
+            ':d' => json_encode($details, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+        ));
+    } catch (Throwable $e) {
+        error_log('FieldPlx expense activity error: ' . $e->getMessage());
+    }
+}
+
+function ex_audit(PDO $pdo, $tenantId, $branchId, $userId, $action, $expenseId, $old, $new)
+{
+    if (function_exists('tenantAuditLog')) {
+        try {
+            tenantAuditLog($pdo, $action, $tenantId, $branchId > 0 ? $branchId : null, $userId, 'expense', $expenseId, $old, $new);
+        } catch (Throwable $e) {
+            error_log('FieldPlx expense audit error: ' . $e->getMessage());
+        }
+    }
+}
+
+function ex_store_receipt($tenantId, $file)
+{
+    if (!isset($file['error']) || (int)$file['error'] === UPLOAD_ERR_NO_FILE) return null;
+    if ((int)$file['error'] !== UPLOAD_ERR_OK) throw new RuntimeException('Receipt upload failed. Please try again.');
+    if (!isset($file['tmp_name']) || !is_uploaded_file($file['tmp_name'])) throw new RuntimeException('Invalid receipt upload.');
+
+    $size = isset($file['size']) ? (int)$file['size'] : 0;
+    if ($size <= 0 || $size > 10 * 1024 * 1024) throw new RuntimeException('Receipt must be 10 MB or smaller.');
+
+    $original = isset($file['name']) ? (string)$file['name'] : 'receipt';
+    $ext = strtolower(pathinfo($original, PATHINFO_EXTENSION));
+    $allowedExt = array('pdf','jpg','jpeg','png','webp');
+    if (!in_array($ext, $allowedExt, true)) throw new RuntimeException('Receipt must be PDF, JPG, PNG or WEBP.');
+
+    $mime = isset($file['type']) ? (string)$file['type'] : '';
+    if (function_exists('finfo_open')) {
+        $fi = finfo_open(FILEINFO_MIME_TYPE);
+        if ($fi) {
+            $detected = finfo_file($fi, $file['tmp_name']);
+            finfo_close($fi);
+            if ($detected) $mime = (string)$detected;
+        }
+    }
+    $allowedMime = array('application/pdf','image/jpeg','image/png','image/webp');
+    if ($mime !== '' && !in_array($mime, $allowedMime, true)) throw new RuntimeException('The selected receipt file type is not allowed.');
+
+    $relativeDir = 'uploads/expenses/' . (int)$tenantId;
+    $absoluteDir = __DIR__ . '/' . $relativeDir;
+    if (!is_dir($absoluteDir) && !@mkdir($absoluteDir, 0775, true) && !is_dir($absoluteDir)) {
+        throw new RuntimeException('Unable to create the expense receipt upload folder.');
+    }
+
+    $safeExt = $ext === 'jpeg' ? 'jpg' : $ext;
+    $name = 'expense-' . date('YmdHis') . '-' . bin2hex(random_bytes(6)) . '.' . $safeExt;
+    $absolutePath = $absoluteDir . '/' . $name;
+    if (!move_uploaded_file($file['tmp_name'], $absolutePath)) throw new RuntimeException('Unable to save the receipt file.');
+
+    return array(
+        'receipt_name' => substr($original, 0, 255),
+        'receipt_path' => $relativeDir . '/' . $name,
+        'receipt_mime' => $mime !== '' ? $mime : null,
+        'receipt_size' => $size,
+        '_absolute_path' => $absolutePath
+    );
+}
+
+$expensePdo = null;
+if (isset($pdo) && $pdo instanceof PDO) {
+    $expensePdo = $pdo;
+} elseif (isset($db) && $db instanceof PDO) {
+    $expensePdo = $db;
+}
+
+$expenseSchemaError = '';
+if ($expensePdo instanceof PDO && $expenseTenantId > 0) {
+    try {
+        ex_ensure_schema($expensePdo);
+    } catch (Throwable $e) {
+        $expenseSchemaError = $e->getMessage();
+        error_log('FieldPlx expenses schema error: ' . $e->getMessage());
+    }
+}
+
+/* Single-file AJAX/API actions. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['expense_action'])) {
+    if (!($expensePdo instanceof PDO) || $expenseTenantId <= 0 || $expenseUserId <= 0) {
+        ex_json(401, false, 'Authentication required.');
+    }
+    if ($expenseSchemaError !== '') ex_json(500, false, 'Expense database setup failed: ' . $expenseSchemaError);
+
+    $postedCsrf = (string)ex_post('csrf_token', '');
+    if ($postedCsrf === '' || !hash_equals($expensesCsrfToken, $postedCsrf)) {
+        ex_json(419, false, 'Your form session expired. Refresh the page and try again.');
+    }
+
+    $action = trim((string)ex_post('expense_action', ''));
+
+    try {
+        if ($action === 'meta') {
+            ex_json(200, true, 'Expense form data loaded.', array('meta' => ex_meta($expensePdo, $expenseTenantId)));
+        }
+
+        if ($action === 'list') {
+            $page = max(1, (int)ex_post('page', 1));
+            $perPage = (int)ex_post('per_page', 10);
+            if (!in_array($perPage, array(10,25,50), true)) $perPage = 10;
+            $search = trim((string)ex_post('search', ''));
+            $status = trim((string)ex_post('status', ''));
+            $jobId = (int)ex_post('job_id', 0);
+            $dateFrom = trim((string)ex_post('date_from', ''));
+            $dateTo = trim((string)ex_post('date_to', ''));
+
+            $where = array('e.tenant_id=:t', 'e.deleted_at IS NULL');
+            $params = array(':t' => $expenseTenantId);
+
+            if ($search !== '') {
+                $like = '%' . $search . '%';
+                $where[] = '(e.expense_no LIKE :s1 OR e.item_name LIKE :s2 OR e.notes LIKE :s3 OR e.accounting_code LIKE :s4 OR j.job_no LIKE :s5 OR j.title LIKE :s6)';
+                for ($i=1; $i<=6; $i++) $params[':s'.$i] = $like;
+            }
+            if (in_array($status, array('draft','submitted','approved','rejected'), true)) {
+                $where[] = 'e.status=:status';
+                $params[':status'] = $status;
+            }
+            if ($jobId > 0) {
+                $where[] = 'e.job_id=:job_id';
+                $params[':job_id'] = $jobId;
+            }
+            if ($dateFrom !== '') {
+                $where[] = 'e.expense_date>=:date_from';
+                $params[':date_from'] = $dateFrom;
+            }
+            if ($dateTo !== '') {
+                $where[] = 'e.expense_date<=:date_to';
+                $params[':date_to'] = $dateTo;
+            }
+
+            $ws = implode(' AND ', $where);
+            $count = $expensePdo->prepare("SELECT COUNT(*) FROM expenses e LEFT JOIN jobs j ON j.id=e.job_id AND j.tenant_id=e.tenant_id WHERE $ws");
+            $count->execute($params);
+            $total = (int)$count->fetchColumn();
+            $pages = max(1, (int)ceil($total / $perPage));
+            if ($page > $pages) $page = $pages;
+            $offset = ($page - 1) * $perPage;
+
+            $sql = "SELECT e.id,e.expense_no,e.expense_date,e.item_name,e.notes,e.amount,e.tax_amount,e.accounting_code,e.reimburse_user_id,e.receipt_name,e.receipt_path,e.receipt_mime,e.receipt_size,e.status,e.job_id,e.created_at,e.updated_at,
+                           j.job_no,j.title AS job_title,
+                           CONCAT(COALESCE(ru.first_name,''),CASE WHEN ru.last_name IS NOT NULL AND ru.last_name<>'' THEN CONCAT(' ',ru.last_name) ELSE '' END) AS reimburse_user_name
+                    FROM expenses e
+                    LEFT JOIN jobs j ON j.id=e.job_id AND j.tenant_id=e.tenant_id
+                    LEFT JOIN users ru ON ru.id=e.reimburse_user_id AND ru.tenant_id=e.tenant_id
+                    WHERE $ws
+                    ORDER BY e.expense_date DESC,e.id DESC
+                    LIMIT " . (int)$perPage . " OFFSET " . (int)$offset;
+            $q = $expensePdo->prepare($sql);
+            $q->execute($params);
+            $rows = $q->fetchAll(PDO::FETCH_ASSOC);
+
+            ex_json(200, true, 'Expenses loaded.', array(
+                'expenses' => $rows,
+                'meta' => ex_meta($expensePdo, $expenseTenantId),
+                'stats' => ex_stats($expensePdo, $expenseTenantId),
+                'pagination' => array(
+                    'page' => $page,
+                    'per_page' => $perPage,
+                    'total' => $total,
+                    'pages' => $pages,
+                    'from' => $total > 0 ? $offset + 1 : 0,
+                    'to' => $total > 0 ? min($offset + count($rows), $total) : 0
+                )
+            ));
+        }
+
+        if ($action === 'get') {
+            $id = (int)ex_post('expense_id', 0);
+            if ($id <= 0) ex_json(422, false, 'Invalid expense.');
+            ex_json(200, true, 'Expense loaded.', array(
+                'expense' => ex_get_expense($expensePdo, $expenseTenantId, $id),
+                'meta' => ex_meta($expensePdo, $expenseTenantId)
+            ));
+        }
+
+        if ($action === 'save') {
+            $id = (int)ex_post('expense_id', 0);
+            $date = trim((string)ex_post('expense_date', ''));
+            $item = trim((string)ex_post('item_name', ''));
+            $description = trim((string)ex_post('description', ''));
+            $amountRaw = trim((string)ex_post('amount', ''));
+            $jobId = (int)ex_post('job_id', 0);
+            $accountingCode = trim((string)ex_post('accounting_code', ''));
+            $reimburseUserId = (int)ex_post('reimburse_user_id', 0);
+            $status = trim((string)ex_post('status', 'submitted'));
+
+            if ($date === '' || !preg_match('/^\\d{4}-\\d{2}-\\d{2}$/', $date)) ex_json(422, false, 'Enter a valid expense date.');
+            if ($item === '') ex_json(422, false, 'Item name is required.');
+            if ($amountRaw === '' || !is_numeric($amountRaw) || (float)$amountRaw <= 0) ex_json(422, false, 'Total amount must be greater than zero.');
+            $amount = round((float)$amountRaw, 2);
+            if (strlen($accountingCode) > 120) ex_json(422, false, 'Accounting code must be 120 characters or less.');
+            if (!in_array($status, array('draft','submitted','approved','rejected'), true)) $status = 'submitted';
+
+            $job = null;
+            if ($jobId > 0) {
+                $job = ex_valid_job($expensePdo, $expenseTenantId, $jobId);
+                if (!$job) ex_json(422, false, 'The selected job is not valid for this business.');
+            }
+
+            $reimburseUser = null;
+            if ($reimburseUserId > 0) {
+                $reimburseUser = ex_valid_user($expensePdo, $expenseTenantId, $reimburseUserId);
+                if (!$reimburseUser) ex_json(422, false, 'The selected reimbursement user is not valid.');
+            }
+
+            $old = $id > 0 ? ex_get_expense($expensePdo, $expenseTenantId, $id) : null;
+            $uploaded = null;
+            if (isset($_FILES['receipt'])) {
+                $uploaded = ex_store_receipt($expenseTenantId, $_FILES['receipt']);
+            }
+
+            $branchId = $job && !empty($job['branch_id']) ? (int)$job['branch_id'] : ($old && !empty($old['branch_id']) ? (int)$old['branch_id'] : $expenseBranchId);
+            $clientId = $job && !empty($job['client_id']) ? (int)$job['client_id'] : ($old && !empty($old['client_id']) ? (int)$old['client_id'] : null);
+
+            $expensePdo->beginTransaction();
+            try {
+                if ($id > 0) {
+                    $sql = "UPDATE expenses SET branch_id=:branch,job_id=:job,client_id=:client,expense_date=:expense_date,item_name=:item,amount=:amount,tax_amount=0,notes=:notes,accounting_code=:code,reimburse_user_id=:reimburse,status=:status";
+                    $params = array(
+                        ':branch' => $branchId > 0 ? $branchId : null,
+                        ':job' => $job ? (int)$job['id'] : null,
+                        ':client' => $clientId,
+                        ':expense_date' => $date,
+                        ':item' => $item,
+                        ':amount' => $amount,
+                        ':notes' => $description !== '' ? $description : null,
+                        ':code' => $accountingCode !== '' ? $accountingCode : null,
+                        ':reimburse' => $reimburseUser ? (int)$reimburseUser['id'] : null,
+                        ':status' => $status,
+                        ':id' => $id,
+                        ':t' => $expenseTenantId
+                    );
+                    if ($uploaded) {
+                        $sql .= ",receipt_name=:receipt_name,receipt_path=:receipt_path,receipt_mime=:receipt_mime,receipt_size=:receipt_size";
+                        $params[':receipt_name'] = $uploaded['receipt_name'];
+                        $params[':receipt_path'] = $uploaded['receipt_path'];
+                        $params[':receipt_mime'] = $uploaded['receipt_mime'];
+                        $params[':receipt_size'] = $uploaded['receipt_size'];
+                    }
+                    $sql .= " WHERE id=:id AND tenant_id=:t AND deleted_at IS NULL";
+                    $q = $expensePdo->prepare($sql);
+                    $q->execute($params);
+                } else {
+                    $q = $expensePdo->prepare("INSERT INTO expenses(tenant_id,branch_id,expense_no,category_id,job_id,visit_id,client_id,expense_date,item_name,vendor,amount,tax_amount,notes,accounting_code,reimburse_user_id,receipt_name,receipt_path,receipt_mime,receipt_size,status,created_by) VALUES(:t,:branch,NULL,NULL,:job,NULL,:client,:expense_date,:item,NULL,:amount,0,:notes,:code,:reimburse,:receipt_name,:receipt_path,:receipt_mime,:receipt_size,:status,:created_by)");
+                    $q->execute(array(
+                        ':t' => $expenseTenantId,
+                        ':branch' => $branchId > 0 ? $branchId : null,
+                        ':job' => $job ? (int)$job['id'] : null,
+                        ':client' => $clientId,
+                        ':expense_date' => $date,
+                        ':item' => $item,
+                        ':amount' => $amount,
+                        ':notes' => $description !== '' ? $description : null,
+                        ':code' => $accountingCode !== '' ? $accountingCode : null,
+                        ':reimburse' => $reimburseUser ? (int)$reimburseUser['id'] : null,
+                        ':receipt_name' => $uploaded ? $uploaded['receipt_name'] : null,
+                        ':receipt_path' => $uploaded ? $uploaded['receipt_path'] : null,
+                        ':receipt_mime' => $uploaded ? $uploaded['receipt_mime'] : null,
+                        ':receipt_size' => $uploaded ? $uploaded['receipt_size'] : null,
+                        ':status' => $status,
+                        ':created_by' => $expenseUserId
+                    ));
+                    $id = (int)$expensePdo->lastInsertId();
+                    $expenseNo = 'EXP-' . str_pad((string)$id, 6, '0', STR_PAD_LEFT);
+                    $u = $expensePdo->prepare("UPDATE expenses SET expense_no=:no WHERE id=:id AND tenant_id=:t");
+                    $u->execute(array(':no' => $expenseNo, ':id' => $id, ':t' => $expenseTenantId));
+                }
+                $expensePdo->commit();
+            } catch (Throwable $e) {
+                if ($expensePdo->inTransaction()) $expensePdo->rollBack();
+                if ($uploaded && isset($uploaded['_absolute_path']) && is_file($uploaded['_absolute_path'])) @unlink($uploaded['_absolute_path']);
+                throw $e;
+            }
+
+            if ($uploaded && $old && !empty($old['receipt_path'])) {
+                $oldAbs = __DIR__ . '/' . ltrim((string)$old['receipt_path'], '/');
+                if (is_file($oldAbs)) @unlink($oldAbs);
+            }
+
+            $new = ex_get_expense($expensePdo, $expenseTenantId, $id);
+            ex_activity($expensePdo, $expenseTenantId, $branchId, $expenseUserId, $old ? 'expense_updated' : 'expense_created', $id, ($old ? 'Expense updated: ' : 'Expense created: ') . $item, array('expense' => $new));
+            ex_audit($expensePdo, $expenseTenantId, $branchId, $expenseUserId, $old ? 'EXPENSE_UPDATED' : 'EXPENSE_CREATED', $id, $old, $new);
+
+            ex_json(200, true, $old ? 'Expense updated successfully.' : 'Expense created successfully.', array('expense_id' => $id));
+        }
+
+        if ($action === 'delete') {
+            $id = (int)ex_post('expense_id', 0);
+            if ($id <= 0) ex_json(422, false, 'Invalid expense.');
+            $old = ex_get_expense($expensePdo, $expenseTenantId, $id);
+            $q = $expensePdo->prepare("UPDATE expenses SET deleted_at=NOW() WHERE id=:id AND tenant_id=:t AND deleted_at IS NULL");
+            $q->execute(array(':id' => $id, ':t' => $expenseTenantId));
+            ex_activity($expensePdo, $expenseTenantId, !empty($old['branch_id']) ? (int)$old['branch_id'] : $expenseBranchId, $expenseUserId, 'expense_deleted', $id, 'Expense deleted: ' . (string)$old['item_name'], $old);
+            ex_audit($expensePdo, $expenseTenantId, !empty($old['branch_id']) ? (int)$old['branch_id'] : $expenseBranchId, $expenseUserId, 'EXPENSE_DELETED', $id, $old, array('deleted_at' => date('Y-m-d H:i:s')));
+            ex_json(200, true, 'Expense deleted successfully.');
+        }
+
+        ex_json(400, false, 'Unsupported expense action.');
+    } catch (PDOException $e) {
+        error_log('FieldPlx expenses PDO error: ' . $e->getMessage());
+        ex_json(500, false, 'Unable to process the expense request.');
+    } catch (Throwable $e) {
+        error_log('FieldPlx expenses error: ' . $e->getMessage());
+        ex_json(500, false, $e->getMessage());
+    }
+}
+
+$expenseStats = array(
+    'count_total'=>0,
+    'amount_total'=>0.00,
+    'month_total'=>0.00,
+    'prior_month_total'=>0.00,
+    'month_change'=>0.0,
+    'job_linked'=>0,
+    'reimbursable'=>0,
+    'with_receipt'=>0,
+    'draft_count'=>0,
+    'submitted_count'=>0,
+    'approved_count'=>0,
+    'rejected_count'=>0
+);
+if ($expensePdo instanceof PDO && $expenseTenantId > 0 && $expenseSchemaError === '') {
+    try {
+        $expenseStats = ex_stats($expensePdo, $expenseTenantId);
+    } catch (Throwable $e) {
+        error_log('FieldPlx expenses stats error: ' . $e->getMessage());
+    }
+}
+
+$expenseMonthChange = (float)$expenseStats['month_change'];
+$expenseMonthTrendClass = $expenseMonthChange > 0 ? '' : ($expenseMonthChange < 0 ? ' down' : ' neutral');
+$expenseMonthTrendArrow = $expenseMonthChange > 0 ? '↑ ' : ($expenseMonthChange < 0 ? '↓ ' : '');
+$expenseCurrentMonthLabel = date('M Y');
+$expensePriorMonthLabel = date('M Y', strtotime('first day of last month'));
+?>
 <!DOCTYPE html>
 <html lang="en">
 
 <head>
     <meta charset="utf-8" />
     <meta content="width=device-width, initial-scale=1" name="viewport" />
-    <title>Customers - FieldPlx</title>
+    <title>Expenses - FieldPlx</title>
     <?php require_once __DIR__ . '/includes/links.php'; ?>
+    <link href="https://cdn.jsdelivr.net/npm/select2@4.0.13/dist/css/select2.min.css" rel="stylesheet" />
     <style>
     :root {
         --fieldplx-primary: #6d28d9;
@@ -4732,6 +5152,697 @@ $customerTrendArrow = $customerChangeValue > 0 ? '↑ ' : ($customerChangeValue 
             min-width: 238px;
         }
     }
+
+
+
+    /* ==========================================================
+       FieldPlx Expenses - Jobber-inspired expense workspace
+       ========================================================== */
+    .fd-expense-header {
+        position: relative;
+        z-index: 20;
+        overflow: visible;
+    }
+
+    .fd-expense-summary {
+        margin-bottom: 16px;
+    }
+
+    /* Expenses uses the same summary-card language as Customers. */
+    .fd-expense-summary .fd-customer-overview-dot.draft {
+        background: #d6a825;
+    }
+
+    .fd-expense-summary .fd-customer-overview-dot.submitted {
+        background: #7f8da1;
+    }
+
+    .fd-expense-summary .fd-customer-overview-dot.approved {
+        background: #68aa1d;
+    }
+
+    .fd-expense-summary .fd-customer-overview-dot.rejected {
+        background: #e45b66;
+    }
+
+    .fd-expense-summary .fd-customer-summary-subvalue strong {
+        color: #17243a;
+        font-weight: 700;
+    }
+
+    .fd-expense-stat-card {
+        min-height: 108px;
+        padding: 17px 18px;
+        border: 1px solid #dfe6ef;
+        border-radius: 12px;
+        background: #fff;
+        box-shadow: 0 3px 12px rgba(24, 45, 76, .035);
+    }
+
+    .fd-expense-stat-label {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        color: #64748b;
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: .45px;
+    }
+
+    .fd-expense-stat-label i {
+        color: var(--fd-green-dark);
+        font-size: 17px;
+    }
+
+    .fd-expense-stat-value {
+        display: block;
+        margin-top: 18px;
+        color: #0f172a;
+        font-size: 25px;
+        line-height: 1;
+        font-weight: 800;
+    }
+
+    .fd-expense-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        padding: 14px;
+        border-bottom: 1px solid #edf1f5;
+    }
+
+    .fd-expense-search {
+        width: min(330px, 100%);
+        position: relative;
+    }
+
+    .fd-expense-search i {
+        position: absolute;
+        left: 12px;
+        top: 50%;
+        transform: translateY(-50%);
+        color: #91a0b4;
+        font-size: 13px;
+        pointer-events: none;
+    }
+
+    .fd-expense-search input,
+    .fd-expense-filter {
+        height: 39px;
+        border: 1px solid #dfe6ef;
+        border-radius: 8px;
+        outline: 0;
+        color: #27364f;
+        background: #fff;
+        font-size: 10px;
+    }
+
+    .fd-expense-search input {
+        width: 100%;
+        padding: 8px 12px 8px 34px;
+    }
+
+    .fd-expense-filter {
+        min-width: 145px;
+        padding: 0 30px 0 10px;
+    }
+
+    .fd-expense-search input:focus,
+    .fd-expense-filter:focus {
+        border-color: #b9d78e;
+        box-shadow: 0 0 0 3px rgba(116, 184, 36, .10);
+    }
+
+    .fd-expense-toolbar-spacer {
+        margin-left: auto;
+    }
+
+    .fd-expense-table td,
+    .fd-expense-table th {
+        vertical-align: middle;
+    }
+
+    .fd-expense-table th:last-child,
+    .fd-expense-table td:last-child {
+        min-width: 116px;
+        white-space: nowrap;
+    }
+
+    .fd-expense-item strong {
+        display: block;
+        color: #17243a;
+        font-size: 10.5px;
+        font-weight: 700;
+    }
+
+    .fd-expense-item small {
+        display: block;
+        max-width: 230px;
+        margin-top: 3px;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        color: #8390a4;
+        font-size: 9px;
+    }
+
+    .fd-expense-amount {
+        color: #17243a;
+        font-weight: 800;
+        white-space: nowrap;
+    }
+
+    .fd-expense-badge {
+        min-height: 23px;
+        padding: 4px 8px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 999px;
+        background: #f3f6f9;
+        color: #607087;
+        font-size: 8.5px;
+        font-weight: 700;
+        text-transform: capitalize;
+    }
+
+    .fd-expense-badge.submitted,
+    .fd-expense-badge.approved {
+        color: #4f7e18;
+        background: #eff8e4;
+    }
+
+    .fd-expense-badge.draft {
+        color: #8a6411;
+        background: #fff7dc;
+    }
+
+    .fd-expense-badge.rejected {
+        color: #b9444d;
+        background: #fff0f1;
+    }
+
+    .fd-expense-receipt {
+        min-height: 27px;
+        padding: 0 8px;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        border: 1px solid #dfe6ef;
+        border-radius: 7px;
+        color: #43546c;
+        background: #fff;
+        text-decoration: none;
+        font-size: 9px;
+        font-weight: 700;
+    }
+
+    .fd-expense-receipt:hover {
+        border-color: #cfe3ae;
+        color: var(--fd-green-dark);
+        background: #f9fcf4;
+    }
+
+    .fd-expense-action {
+        width: 29px;
+        height: 29px;
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid #dfe6ef;
+        border-radius: 7px;
+        color: #526279;
+        background: #fff;
+        cursor: pointer;
+        text-decoration: none;
+    }
+
+    .fd-expense-action:hover {
+        color: var(--fd-green-dark);
+        border-color: #cfe3ae;
+        background: #f9fcf4;
+    }
+
+    .fd-expense-action.danger:hover {
+        color: #b9444d;
+        border-color: #ffd5d9;
+        background: #fff7f7;
+    }
+
+    .fd-expense-empty {
+        padding: 42px 20px !important;
+        color: #8190a5;
+        text-align: center;
+        font-size: 10px;
+    }
+
+    .fd-expense-pagination {
+        min-height: 58px;
+        padding: 10px 14px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        border-top: 1px solid #edf1f5;
+        color: #738299;
+        font-size: 9px;
+    }
+
+    .fd-expense-pagination-actions {
+        display: flex;
+        gap: 6px;
+    }
+
+    .fd-expense-backdrop {
+        position: fixed;
+        inset: var(--fieldplx-topbar-height, 64px) 0 0 0;
+        z-index: 1040;
+        display: none;
+        background: rgba(1, 17, 49, .26);
+        backdrop-filter: blur(1px);
+    }
+
+    .fd-expense-backdrop.show {
+        display: block;
+    }
+
+    .fd-expense-drawer {
+        width: min(470px, 100vw);
+        position: fixed;
+        top: var(--fieldplx-topbar-height, 64px);
+        right: 0;
+        bottom: 0;
+        z-index: 1050;
+        display: flex;
+        flex-direction: column;
+        transform: translateX(104%);
+        background: #fff;
+        box-shadow: -20px 0 50px rgba(0, 17, 49, .18);
+        transition: transform .22s ease;
+    }
+
+    .fd-expense-drawer.show {
+        transform: translateX(0);
+    }
+
+    .fd-expense-drawer-header {
+        min-height: 67px;
+        padding: 14px 18px;
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex: 0 0 auto;
+        border-bottom: 1px solid #e8edf3;
+        background: #fff;
+    }
+
+    /*
+     * The form is the flex child of the drawer. Without this wrapper being
+     * constrained, the form grows to the full height of all fields and the
+     * inner body never receives a scrollable height.
+     */
+    .fd-expense-drawer>form {
+        min-height: 0;
+        flex: 1 1 auto;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+
+    .fd-expense-drawer-title {
+        margin: 0;
+        color: #001131;
+        font-size: 20px;
+        font-weight: 800;
+    }
+
+    .fd-expense-drawer-subtitle {
+        margin-top: 3px;
+        color: #7b8799;
+        font-size: 9.5px;
+    }
+
+    .fd-expense-drawer-close {
+        width: 35px;
+        height: 35px;
+        margin-left: auto;
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 0;
+        border-radius: 8px;
+        color: #3d4d64;
+        background: transparent;
+        cursor: pointer;
+        font-size: 20px;
+    }
+
+    .fd-expense-drawer-close:hover {
+        background: #f3f6f9;
+        color: #001131;
+    }
+
+    .fd-expense-drawer-body {
+        min-height: 0;
+        flex: 1 1 auto;
+        overflow-x: hidden;
+        overflow-y: auto;
+        padding: 18px;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-gutter: stable;
+    }
+
+    .fd-expense-drawer-body::-webkit-scrollbar {
+        width: 8px;
+    }
+
+    .fd-expense-drawer-body::-webkit-scrollbar-track {
+        background: transparent;
+    }
+
+    .fd-expense-drawer-body::-webkit-scrollbar-thumb {
+        border: 2px solid transparent;
+        border-radius: 999px;
+        background: #cbd5e1;
+        background-clip: padding-box;
+    }
+
+    .fd-expense-drawer-body::-webkit-scrollbar-thumb:hover {
+        background: #94a3b8;
+        background-clip: padding-box;
+    }
+
+    .fd-expense-form-grid {
+        display: grid;
+        gap: 14px;
+    }
+
+    .fd-expense-field label {
+        margin-bottom: 6px;
+        display: block;
+        color: #4c5c72;
+        font-size: 9.5px;
+        font-weight: 700;
+    }
+
+    .fd-expense-field input,
+    .fd-expense-field textarea,
+    .fd-expense-field select {
+        width: 100%;
+        min-height: 44px;
+        padding: 10px 12px;
+        border: 1px solid #dfe6ef;
+        border-radius: 8px;
+        outline: 0;
+        color: #203047;
+        background: #fff;
+        font: inherit;
+        font-size: 11px;
+    }
+
+    .fd-expense-field textarea {
+        min-height: 90px;
+        resize: vertical;
+    }
+
+    .fd-expense-field input:focus,
+    .fd-expense-field textarea:focus,
+    .fd-expense-field select:focus {
+        border-color: #b9d78e;
+        box-shadow: 0 0 0 3px rgba(116, 184, 36, .10);
+    }
+
+    .fd-expense-money-wrap {
+        position: relative;
+    }
+
+    .fd-expense-money-symbol {
+        position: absolute;
+        left: 12px;
+        top: 50%;
+        transform: translateY(-50%);
+        color: #5f6f84;
+        font-size: 12px;
+        font-weight: 700;
+        pointer-events: none;
+    }
+
+    .fd-expense-money-wrap input {
+        padding-left: 30px;
+        font-weight: 700;
+    }
+
+    .fd-expense-help {
+        margin-top: 5px;
+        color: #8b97a8;
+        font-size: 8.5px;
+        line-height: 1.45;
+    }
+
+    .fd-expense-receipt-box {
+        min-height: 92px;
+        padding: 13px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px dashed #cfd8e4;
+        border-radius: 9px;
+        background: #fbfcfd;
+        text-align: center;
+    }
+
+    .fd-expense-receipt-input {
+        display: none;
+    }
+
+    .fd-expense-receipt-name {
+        margin-top: 7px;
+        color: #6f7f93;
+        font-size: 9px;
+        word-break: break-word;
+    }
+
+    .fd-expense-drawer-footer {
+        min-height: 70px;
+        padding: 12px 18px;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+        flex: 0 0 auto;
+        border-top: 1px solid #e8edf3;
+        background: #fff;
+        box-shadow: 0 -6px 18px rgba(15, 23, 42, .035);
+    }
+
+    .fd-expense-delete-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 1080;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+        background: rgba(0, 17, 49, .34);
+    }
+
+    .fd-expense-delete-backdrop.show {
+        display: flex;
+    }
+
+    .fd-expense-confirm {
+        width: min(410px, 100%);
+        padding: 20px;
+        border-radius: 13px;
+        background: #fff;
+        box-shadow: 0 24px 65px rgba(0, 17, 49, .22);
+    }
+
+    .fd-expense-confirm h3 {
+        margin: 0 0 8px;
+        color: #17243a;
+        font-size: 16px;
+    }
+
+    .fd-expense-confirm p {
+        margin: 0;
+        color: #718096;
+        font-size: 10px;
+        line-height: 1.55;
+    }
+
+    .fd-expense-confirm-actions {
+        margin-top: 18px;
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+    }
+
+    /* Select2 styled to match the Customers page form controls. */
+    .fd-expense-field .select2-container {
+        width: 100% !important;
+    }
+
+    .fd-expense-field .select2-container .select2-selection--single {
+        height: 44px;
+        border: 1px solid #dfe6ef;
+        border-radius: 8px;
+        background: #fff;
+        outline: 0;
+    }
+
+    .fd-expense-field .select2-container--default.select2-container--focus .select2-selection--single,
+    .fd-expense-field .select2-container--default.select2-container--open .select2-selection--single {
+        border-color: #b9d78e;
+        box-shadow: 0 0 0 3px rgba(116, 184, 36, .10);
+    }
+
+    .fd-expense-field .select2-container--default .select2-selection--single .select2-selection__rendered {
+        height: 42px;
+        padding-left: 12px;
+        padding-right: 44px;
+        line-height: 42px;
+        color: #203047;
+        font-size: 11px;
+    }
+
+    .fd-expense-field .select2-container--default .select2-selection--single .select2-selection__arrow {
+        height: 42px;
+        right: 6px;
+    }
+
+    .fd-expense-field .select2-container--default .select2-selection--single .select2-selection__clear {
+        width: 22px;
+        height: 22px;
+        position: absolute;
+        right: 28px;
+        top: 10px;
+        z-index: 3;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        color: #718096;
+        background: #eef2f6;
+        font-size: 15px;
+        line-height: 1;
+        cursor: pointer;
+    }
+
+    .select2-dropdown {
+        z-index: 1100 !important;
+        border-color: #dfe6ef !important;
+        border-radius: 8px !important;
+        overflow: hidden;
+        box-shadow: 0 12px 30px rgba(0, 17, 49, .12);
+    }
+
+    .select2-search--dropdown {
+        padding: 8px;
+    }
+
+    .select2-search--dropdown .select2-search__field {
+        height: 36px;
+        border: 1px solid #dfe6ef !important;
+        border-radius: 7px;
+        outline: 0;
+        font-size: 11px;
+    }
+
+    .select2-results__option {
+        padding: 9px 11px;
+        font-size: 10.5px;
+    }
+
+    .select2-container--default .select2-results__option--highlighted[aria-selected] {
+        background: #68aa1d !important;
+    }
+
+    .fd-expense-toast {
+        min-width: 270px;
+        max-width: min(390px, calc(100vw - 28px));
+        min-height: 44px;
+        padding: 10px 12px;
+        position: fixed;
+        right: 18px;
+        bottom: 18px;
+        z-index: 1200;
+        display: none;
+        align-items: center;
+        gap: 9px;
+        border: 1px solid #dfe6ef;
+        border-radius: 9px;
+        background: #fff;
+        box-shadow: 0 16px 40px rgba(0, 17, 49, .16);
+        color: #34445b;
+        font-size: 10px;
+    }
+
+    .fd-expense-toast.show {
+        display: flex;
+    }
+
+    .fd-expense-toast.success {
+        border-left: 4px solid #68aa1d;
+    }
+
+    .fd-expense-toast.error {
+        border-left: 4px solid #dc2626;
+    }
+
+    .fd-expense-toast.warning {
+        border-left: 4px solid #f59e0b;
+    }
+
+    .fd-expense-toast i {
+        font-size: 15px;
+    }
+
+    .fd-expense-toast.success i {
+        color: #68aa1d;
+    }
+
+    .fd-expense-toast.error i {
+        color: #dc2626;
+    }
+
+    .fd-expense-toast.warning i {
+        color: #f59e0b;
+    }
+
+    @media(max-width:767.98px) {
+        .fd-expense-header {
+            flex-direction: column;
+        }
+
+        .fd-expense-header .fd-teams-actions {
+            width: 100%;
+            justify-content: flex-start;
+            margin-left: 0;
+        }
+
+        .fd-expense-search {
+            width: 100%;
+        }
+
+        .fd-expense-filter {
+            flex: 1 1 145px;
+        }
+
+        .fd-expense-toolbar-spacer {
+            display: none;
+        }
+
+        .fd-expense-drawer {
+            width: 100%;
+        }
+    }
     </style>
 </head>
 
@@ -4742,44 +5853,44 @@ $customerTrendArrow = $customerChangeValue > 0 ? '↑ ' : ($customerChangeValue 
         <main class="fieldplx-main-content">
             <div class="fieldplx-content-wrapper">
                 <div class="fd-dashboard">
-                    <section class="fd-teams-header">
+
+                    <section class="fd-teams-header fd-expense-header">
                         <div>
-                            <h1 class="fd-teams-title">Customers</h1>
-                            <p class="fd-teams-subtitle">Manage CRM leads and customers, contact preferences, branch
-                                ownership, tax
-                                details and account manager assignments.</p>
+                            <h1 class="fd-teams-title">Expenses</h1>
+                            <p class="fd-teams-subtitle">Track business expenses, attach receipts, link costs to jobs,
+                                assign accounting codes and manage reimbursements.</p>
                         </div>
-                        <div class="fd-teams-actions"><a class="fd-team-button primary" href="client-form.php"><i
-                                    class="bi bi-person-plus"></i> Add Customer</a>
-                            <div class="fd-customer-more" id="customerMoreActions">
-                                <button type="button" class="fd-team-button" id="customerMoreActionsButton"
-                                    aria-expanded="false"><i class="bi bi-three-dots"></i> More Actions <i
-                                        class="bi bi-chevron-down"></i></button>
-                                <div class="fd-customer-more-menu" role="menu" aria-label="Customer actions">
-                                    <a class="fd-customer-more-item" href="customer-import.php" role="menuitem"><i
-                                            class="bi bi-upload"></i> Import Customers</a>
-                                    <button class="fd-customer-more-item" type="button" id="exportCustomersButton"
-                                        role="menuitem"><i class="bi bi-download"></i> Export Customers</button>
-                                </div>
-                            </div>
+                        <div class="fd-teams-actions">
+                            <button type="button" class="fd-team-button primary" id="addExpenseButton"><i
+                                    class="bi bi-plus-circle"></i> Add Expense</button>
                         </div>
                     </section>
-                    <section class="row g-3 fd-customer-summary">
+
+                    <?php if ($expenseSchemaError !== ''): ?>
+                    <div class="alert alert-danger py-2 px-3" style="font-size:11px;">Expense database setup error:
+                        <?= htmlspecialchars($expenseSchemaError, ENT_QUOTES, 'UTF-8') ?></div>
+                    <?php endif; ?>
+
+                    <section class="row g-3 fd-customer-summary fd-expense-summary">
                         <div class="col-xl-3 col-md-6">
                             <article class="fd-customer-summary-card">
                                 <h2 class="fd-customer-summary-title">Overview</h2>
                                 <div class="fd-customer-overview-list">
                                     <div class="fd-customer-overview-row"><span
-                                            class="fd-customer-overview-dot lead"></span><span>Leads</span><strong><?= (int) $customerStats['lead_total'] ?></strong>
+                                            class="fd-customer-overview-dot draft"></span><span>Draft</span><strong
+                                            id="expenseStatDraft"><?= (int)$expenseStats['draft_count'] ?></strong>
                                     </div>
                                     <div class="fd-customer-overview-row"><span
-                                            class="fd-customer-overview-dot customer"></span><span>Customers</span><strong><?= (int) $customerStats['customer_total'] ?></strong>
+                                            class="fd-customer-overview-dot submitted"></span><span>Submitted</span><strong
+                                            id="expenseStatSubmitted"><?= (int)$expenseStats['submitted_count'] ?></strong>
                                     </div>
                                     <div class="fd-customer-overview-row"><span
-                                            class="fd-customer-overview-dot active"></span><span>Active</span><strong><?= (int) $customerStats['active_total'] ?></strong>
+                                            class="fd-customer-overview-dot approved"></span><span>Approved</span><strong
+                                            id="expenseStatApproved"><?= (int)$expenseStats['approved_count'] ?></strong>
                                     </div>
                                     <div class="fd-customer-overview-row"><span
-                                            class="fd-customer-overview-dot inactive"></span><span>Inactive</span><strong><?= (int) $customerStats['inactive_total'] ?></strong>
+                                            class="fd-customer-overview-dot rejected"></span><span>Rejected</span><strong
+                                            id="expenseStatRejected"><?= (int)$expenseStats['rejected_count'] ?></strong>
                                     </div>
                                 </div>
                             </article>
@@ -4788,33 +5899,40 @@ $customerTrendArrow = $customerChangeValue > 0 ? '↑ ' : ($customerChangeValue 
                         <div class="col-xl-3 col-md-6">
                             <article class="fd-customer-summary-card">
                                 <span class="fd-customer-summary-arrow"><i class="bi bi-arrow-up-right"></i></span>
-                                <h2 class="fd-customer-summary-title">Total CRM</h2>
-                                <span class="fd-customer-summary-period">All customers and leads</span>
+                                <h2 class="fd-customer-summary-title">Total Expenses</h2>
+                                <span class="fd-customer-summary-period">All recorded expenses</span>
                                 <div class="fd-customer-summary-number-row">
                                     <strong class="fd-customer-summary-value"
-                                        id="statTotal"><?= (int) $customerStats['total'] ?></strong>
+                                        id="expenseStatTotalAmount"><?= htmlspecialchars($expenseCurrencySymbol, ENT_QUOTES, 'UTF-8') ?><?= number_format((float)$expenseStats['amount_total'], 2) ?></strong>
                                 </div>
+                                <span class="fd-customer-summary-subvalue"
+                                    id="expenseStatTotalCount"><?= (int)$expenseStats['count_total'] ?>
+                                    expense<?= (int)$expenseStats['count_total'] === 1 ? '' : 's' ?></span>
                             </article>
                         </div>
 
                         <div class="col-xl-3 col-md-6">
                             <article class="fd-customer-summary-card">
                                 <span class="fd-customer-summary-arrow"><i class="bi bi-arrow-up-right"></i></span>
-                                <h2 class="fd-customer-summary-title">New Leads</h2>
-                                <span class="fd-customer-summary-period">Past 30 days</span>
+                                <h2 class="fd-customer-summary-title">This Month</h2>
+                                <span
+                                    class="fd-customer-summary-period"><?= htmlspecialchars($expenseCurrentMonthLabel, ENT_QUOTES, 'UTF-8') ?></span>
                                 <div class="fd-customer-summary-number-row">
                                     <strong class="fd-customer-summary-value"
-                                        id="statNewLeads"><?= (int) $customerStats['new_leads_30'] ?></strong>
+                                        id="expenseStatMonthAmount"><?= htmlspecialchars($expenseCurrencySymbol, ENT_QUOTES, 'UTF-8') ?><?= number_format((float)$expenseStats['month_total'], 2) ?></strong>
                                     <span
-                                        class="fd-customer-trend-change<?= htmlspecialchars($leadTrendClass, ENT_QUOTES, 'UTF-8') ?>"
-                                        id="statNewLeadsChange" tabindex="0">
-                                        <?= htmlspecialchars($leadTrendArrow . rtrim(rtrim(number_format(abs($leadChangeValue), 1, '.', ''), '0'), '.') . '%', ENT_QUOTES, 'UTF-8') ?>
+                                        class="fd-customer-trend-change<?= htmlspecialchars($expenseMonthTrendClass, ENT_QUOTES, 'UTF-8') ?>"
+                                        id="expenseMonthTrend" tabindex="0">
+                                        <span
+                                            id="expenseMonthChangeText"><?= htmlspecialchars($expenseMonthTrendArrow . rtrim(rtrim(number_format(abs($expenseMonthChange), 1, '.', ''), '0'), '.') . '%', ENT_QUOTES, 'UTF-8') ?></span>
                                         <span class="fd-customer-trend-tooltip">
-                                            <span class="fd-customer-tooltip-title">New leads</span>
+                                            <span class="fd-customer-tooltip-title">Expense total</span>
                                             <span
-                                                class="fd-customer-tooltip-row"><span><?= htmlspecialchars($customerStats['prior_period_label'], ENT_QUOTES, 'UTF-8') ?></span><strong><?= (int) $customerStats['prior_leads_30'] ?></strong></span>
+                                                class="fd-customer-tooltip-row"><span><?= htmlspecialchars($expensePriorMonthLabel, ENT_QUOTES, 'UTF-8') ?></span><strong
+                                                    id="expenseStatPriorMonth"><?= htmlspecialchars($expenseCurrencySymbol, ENT_QUOTES, 'UTF-8') ?><?= number_format((float)$expenseStats['prior_month_total'], 2) ?></strong></span>
                                             <span
-                                                class="fd-customer-tooltip-row"><span><?= htmlspecialchars($customerStats['current_period_label'], ENT_QUOTES, 'UTF-8') ?></span><strong><?= (int) $customerStats['new_leads_30'] ?></strong></span>
+                                                class="fd-customer-tooltip-row"><span><?= htmlspecialchars($expenseCurrentMonthLabel, ENT_QUOTES, 'UTF-8') ?></span><strong
+                                                    id="expenseStatCurrentMonth"><?= htmlspecialchars($expenseCurrencySymbol, ENT_QUOTES, 'UTF-8') ?><?= number_format((float)$expenseStats['month_total'], 2) ?></strong></span>
                                         </span>
                                     </span>
                                 </div>
@@ -4824,763 +5942,665 @@ $customerTrendArrow = $customerChangeValue > 0 ? '↑ ' : ($customerChangeValue 
                         <div class="col-xl-3 col-md-6">
                             <article class="fd-customer-summary-card">
                                 <span class="fd-customer-summary-arrow"><i class="bi bi-arrow-up-right"></i></span>
-                                <h2 class="fd-customer-summary-title">New Customers</h2>
-                                <span class="fd-customer-summary-period">Past 30 days</span>
+                                <h2 class="fd-customer-summary-title">Job Linked</h2>
+                                <span class="fd-customer-summary-period">Expenses connected to jobs</span>
                                 <div class="fd-customer-summary-number-row">
                                     <strong class="fd-customer-summary-value"
-                                        id="statNewCustomers"><?= (int) $customerStats['new_customers_30'] ?></strong>
-                                    <span
-                                        class="fd-customer-trend-change<?= htmlspecialchars($customerTrendClass, ENT_QUOTES, 'UTF-8') ?>"
-                                        id="statNewCustomersChange" tabindex="0">
-                                        <?= htmlspecialchars($customerTrendArrow . rtrim(rtrim(number_format(abs($customerChangeValue), 1, '.', ''), '0'), '.') . '%', ENT_QUOTES, 'UTF-8') ?>
-                                        <span class="fd-customer-trend-tooltip">
-                                            <span class="fd-customer-tooltip-title">New customers</span>
-                                            <span
-                                                class="fd-customer-tooltip-row"><span><?= htmlspecialchars($customerStats['prior_period_label'], ENT_QUOTES, 'UTF-8') ?></span><strong><?= (int) $customerStats['prior_customers_30'] ?></strong></span>
-                                            <span
-                                                class="fd-customer-tooltip-row"><span><?= htmlspecialchars($customerStats['current_period_label'], ENT_QUOTES, 'UTF-8') ?></span><strong><?= (int) $customerStats['new_customers_30'] ?></strong></span>
-                                        </span>
-                                    </span>
+                                        id="expenseStatJobLinked"><?= (int)$expenseStats['job_linked'] ?></strong>
                                 </div>
+                                <span class="fd-customer-summary-subvalue"><strong
+                                        id="expenseStatReimbursable"><?= (int)$expenseStats['reimbursable'] ?></strong>
+                                    reimbursable · <strong
+                                        id="expenseStatReceipts"><?= (int)$expenseStats['with_receipt'] ?></strong> with
+                                    receipt</span>
                             </article>
                         </div>
                     </section>
 
                     <section class="fd-card fd-teams-card">
-                        <div class="fd-teams-toolbar">
-                            <div class="fd-team-search"><i class="bi bi-search"></i><input type="search"
-                                    id="clientsSearch" placeholder="Search name, company, email or phone"
-                                    autocomplete="off"></div><select class="fd-team-filter" id="typeFilter">
-                                <option value="">All Types</option>
-                                <option value="lead">Lead</option>
-                                <option value="client">Customer</option>
-                                <option value="archived">Archived</option>
-                            </select><select class="fd-team-filter" id="statusFilter">
+                        <div class="fd-expense-toolbar">
+                            <div class="fd-expense-search"><i class="bi bi-search"></i><input type="search"
+                                    id="expenseSearch" placeholder="Search expense, item, job or accounting code"
+                                    autocomplete="off"></div>
+                            <select class="fd-expense-filter" id="expenseStatusFilter">
                                 <option value="">All Status</option>
-                                <option value="new">New</option>
-                                <option value="active">Active</option>
-                                <option value="inactive">Inactive</option>
-                                <option value="archived">Archived</option>
-                            </select><select class="fd-team-filter" id="branchFilter">
-                                <option value="">All Branches</option>
+                                <option value="draft">Draft</option>
+                                <option value="submitted">Submitted</option>
+                                <option value="approved">Approved</option>
+                                <option value="rejected">Rejected</option>
                             </select>
-                            <div class="fd-team-toolbar-spacer"></div><button type="button" class="fd-team-button"
-                                id="clearFiltersButton"><i class="bi bi-x-circle"></i> Clear</button>
+                            <select class="fd-expense-filter" id="expenseJobFilter">
+                                <option value="">All Jobs</option>
+                            </select>
+                            <input class="fd-expense-filter" type="date" id="expenseDateFrom" title="From date">
+                            <input class="fd-expense-filter" type="date" id="expenseDateTo" title="To date">
+                            <div class="fd-expense-toolbar-spacer"></div>
+                            <button type="button" class="fd-team-button" id="clearExpenseFilters"><i
+                                    class="bi bi-x-circle"></i> Clear</button>
                         </div>
                         <div class="fd-team-table-wrap">
-                            <table class="fd-team-table fd-client-table">
+                            <table class="fd-team-table fd-expense-table">
                                 <thead>
                                     <tr>
                                         <th>S/No</th>
-                                        <th>Customer</th>
-                                        <th>Type</th>
-                                        <th>Contact</th>
-                                        <th>Branch</th>
-                                        <th>Source</th>
-                                        <th>Preferred Contact</th>
-                                        <th>Account Manager</th>
-                                        <th>Locations</th>
+                                        <th>Expense</th>
+                                        <th>Date</th>
+                                        <th>Job</th>
+                                        <th>Accounting Code</th>
+                                        <th>Reimburse To</th>
+                                        <th>Total</th>
+                                        <th>Receipt</th>
                                         <th>Status</th>
-                                        <th>Last Activity</th>
                                         <th>Actions</th>
                                     </tr>
                                 </thead>
-                                <tbody id="clientsTableBody">
+                                <tbody id="expensesTableBody">
                                     <tr>
-                                        <td colspan="12" class="fd-team-empty">Loading customers...</td>
+                                        <td colspan="10" class="fd-expense-empty">Loading expenses...</td>
                                     </tr>
                                 </tbody>
                             </table>
                         </div>
-                        <div class="fd-team-pagination"><span id="clientsCountText">Showing 0 customers</span>
-                            <div class="fd-team-pagination-actions"><button type="button" class="fd-team-button"
-                                    id="prevPageButton"><i class="bi bi-chevron-left"></i></button><button type="button"
-                                    class="fd-team-button" id="nextPageButton"><i
-                                        class="bi bi-chevron-right"></i></button></div>
-                        </div>
-                    </section>
-
-                    <div class="fd-client-row-more-menu" id="clientRowMoreMenu" role="menu" aria-hidden="true">
-                        <a class="fd-customer-more-item" id="clientRowAddQuotation" href="#" role="menuitem"><i
-                                class="bi bi-file-earmark-text"></i> Add Quotation</a>
-                        <a class="fd-customer-more-item" id="clientRowCreateJob" href="#" role="menuitem"><i
-                                class="bi bi-hammer"></i> Create Job</a>
-                        <a class="fd-customer-more-item" id="clientRowAddInvoice" href="#" role="menuitem"><i
-                                class="bi bi-receipt"></i> Add Invoice</a>
-                        <a class="fd-customer-more-item" id="clientRowPayment" href="#" role="menuitem"><i
-                                class="bi bi-cash-coin"></i> Payment</a>
-                    </div>
-                </div>
-                <div class="fd-team-modal-backdrop" id="clientModalBackdrop" aria-hidden="true">
-                    <section class="fd-team-modal" role="dialog" aria-modal="true">
-                        <div class="fd-team-modal-header"><span class="fd-team-modal-icon"><i
-                                    class="bi bi-person-vcard"></i></span>
-                            <div class="fd-team-modal-heading">
-                                <h3 id="clientModalTitle">Add Customer</h3>
-                                <p id="clientModalSubtitle">Create a lead or active customer record.</p>
-                            </div><button type="button" class="fd-team-modal-close" id="clientModalClose"><i
-                                    class="bi bi-x-lg"></i></button>
-                        </div>
-                        <form id="clientForm">
-                            <div class="fd-team-modal-body"><input type="hidden" id="clientId" name="client_id"
-                                    value="0">
-                                <div class="fd-team-form-grid">
-                                    <div class="fd-team-section-title">Customer Identity</div>
-                                    <div class="fd-team-field"><label>Customer Type</label><select id="clientType"
-                                            name="client_type">
-                                            <option value="lead">Lead</option>
-                                            <option value="client">Customer</option>
-                                            <option value="archived">Archived</option>
-                                        </select></div>
-                                    <div class="fd-team-field"><label>Status</label><select id="clientStatus"
-                                            name="status">
-                                            <option value="new">New</option>
-                                            <option value="active">Active</option>
-                                            <option value="inactive">Inactive</option>
-                                            <option value="archived">Archived</option>
-                                        </select></div>
-                                    <div class="fd-team-field"><label>Display Name</label><input type="text"
-                                            id="displayName" name="display_name" maxlength="190" required></div>
-                                    <div class="fd-team-field"><label>Company Name</label><input type="text"
-                                            id="companyName" name="company_name" maxlength="190"></div>
-                                    <div class="fd-team-field"><label>First Name</label><input type="text"
-                                            id="firstName" name="first_name" maxlength="120"></div>
-                                    <div class="fd-team-field"><label>Last Name</label><input type="text" id="lastName"
-                                            name="last_name" maxlength="120"></div>
-                                    <div class="fd-team-section-title">Contact & Ownership</div>
-                                    <div class="fd-team-field"><label>Email</label><input type="email" id="email"
-                                            name="email" maxlength="190"></div>
-                                    <div class="fd-team-field"><label>Phone</label><input type="text" id="phone"
-                                            name="phone" maxlength="50"></div>
-                                    <div class="fd-team-field"><label>Alternate Phone</label><input type="text"
-                                            id="alternatePhone" name="alternate_phone" maxlength="50"></div>
-                                    <div class="fd-team-field"><label>Source</label><input type="text" id="source"
-                                            name="source" maxlength="120" placeholder="Website / Referral / Walk-in">
-                                    </div>
-                                    <div class="fd-team-field"><label>Branch</label><select id="branchId"
-                                            name="branch_id">
-                                            <option value="">No Branch</option>
-                                        </select></div>
-                                    <div class="fd-team-field"><label>Account Manager</label><select
-                                            id="accountManagerId" name="account_manager_id">
-                                            <option value="">No Account Manager</option>
-                                        </select></div>
-                                    <div class="fd-team-field"><label>Preferred Contact</label><select
-                                            id="preferredContactMethod" name="preferred_contact_method">
-                                            <option value="email">Email</option>
-                                            <option value="sms">SMS</option>
-                                            <option value="phone">Phone</option>
-                                            <option value="whatsapp">WhatsApp</option>
-                                            <option value="none">None</option>
-                                        </select></div>
-                                    <div class="fd-team-field"><label>Tax Number</label><input type="text"
-                                            id="taxNumber" name="tax_number" maxlength="100"></div>
-                                    <div class="fd-client-checks"><label class="fd-client-check"><input type="checkbox"
-                                                id="allowEmail" name="allow_email" value="1" checked> Allow
-                                            Email</label><label class="fd-client-check"><input type="checkbox"
-                                                id="allowSms" name="allow_sms" value="1" checked> Allow SMS</label>
-                                    </div>
-                                    <div class="fd-team-section-title">Internal Notes</div>
-                                    <div class="fd-team-field full"><label>Notes</label><textarea id="notes"
-                                            name="notes" maxlength="5000"></textarea></div>
-                                </div>
+                        <div class="fd-expense-pagination">
+                            <span id="expensesCountText">Showing 0 expenses</span>
+                            <div class="fd-expense-pagination-actions">
+                                <button type="button" class="fd-team-button" id="expensePrevPage"><i
+                                        class="bi bi-chevron-left"></i></button>
+                                <button type="button" class="fd-team-button" id="expenseNextPage"><i
+                                        class="bi bi-chevron-right"></i></button>
                             </div>
-                            <div class="fd-team-modal-footer"><button type="button" class="fd-team-button"
-                                    id="cancelClientButton">Cancel</button><button type="submit"
-                                    class="fd-team-button primary" id="saveClientButton"><span
-                                        class="fd-team-loader"></span><i class="bi bi-check-lg"></i><span
-                                        id="saveClientText">Save Customer</span></button></div>
-                        </form>
-                    </section>
-                </div>
-                <div class="fd-team-modal-backdrop" id="archiveModalBackdrop" aria-hidden="true">
-                    <section class="fd-team-modal fd-team-confirm">
-                        <div class="fd-team-modal-header"><span class="fd-team-modal-icon"><i
-                                    class="bi bi-archive"></i></span>
-                            <div class="fd-team-modal-heading">
-                                <h3>Delete Customer</h3>
-                                <p>Historical CRM and operational references will be preserved.</p>
-                            </div><button type="button" class="fd-team-modal-close" id="archiveModalClose"><i
-                                    class="bi bi-x-lg"></i></button>
                         </div>
-                        <div class="fd-team-modal-body" id="archiveClientMessage">Delete this customer?</div>
-                        <div class="fd-team-modal-footer"><button type="button" class="fd-team-button"
-                                id="cancelArchiveButton">Cancel</button><button type="button"
-                                class="fd-team-button danger" id="confirmArchiveButton"><span
-                                    class="fd-team-loader"></span><i class="bi bi-trash"></i>
-                                Delete</button></div>
                     </section>
                 </div>
-                <div class="fd-team-toast info" id="clientsToast"><span class="fd-team-toast-message"
-                        id="clientsToastMessage">Notification</span><button type="button" class="fd-team-toast-close"
-                        id="clientsToastClose"><i class="bi bi-x"></i></button></div>
-                <script>
-                (function() {
-                    'use strict';
-                    var csrfToken = <?= json_encode($clientsCsrfToken) ?>;
-                    var state = {
-                        page: 1,
-                        perPage: 10,
-                        search: '',
-                        type: '',
-                        status: '',
-                        branchId: '',
-                        archiveId: 0,
-                        meta: {
-                            branches: [],
-                            users: []
-                        }
-                    };
-                    var tableBody = document.getElementById('clientsTableBody'),
-                        clientModal = document.getElementById('clientModalBackdrop'),
-                        archiveModal = document.getElementById('archiveModalBackdrop'),
-                        clientForm = document.getElementById('clientForm'),
-                        saveButton = document.getElementById('saveClientButton'),
-                        toast = document.getElementById('clientsToast'),
-                        toastMessage = document.getElementById('clientsToastMessage'),
-                        toastTimer = null,
-                        searchTimer = null;
-
-                    function esc(v) {
-                        return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g,
-                            '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;')
-                    }
-
-                    function initials(v) {
-                        var p = String(v || '').trim().split(/\s+/),
-                            x = '';
-                        if (p.length) x += p[0].charAt(0);
-                        if (p.length > 1) x += p[p.length - 1].charAt(0);
-                        return x.toUpperCase() || 'C'
-                    }
-
-                    function toastShow(t, m) {
-                        if (toastTimer) clearTimeout(toastTimer);
-                        toast.className = 'fd-team-toast ' + (t || 'info') + ' show';
-                        toastMessage.textContent = m || 'Notification';
-                        toastTimer = setTimeout(function() {
-                            toast.classList.remove('show')
-                        }, 3000)
-                    }
-
-                    function loading(b, on) {
-                        if (!b) return;
-                        b.disabled = !!on;
-                        b.classList.toggle('loading', !!on)
-                    }
-
-                    function parseResponse(r) {
-                        return r.text().then(function(raw) {
-                            var t = (raw || '').trim(),
-                                d;
-                            try {
-                                d = t ? JSON.parse(t) : {}
-                            } catch (e) {
-                                var c = t.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]*>/g, ' ').replace(
-                                    /\s+/g, ' ').trim();
-                                throw new Error(c ? 'Server error: ' + c :
-                                    'Server returned an invalid response.')
-                            }
-                            if (!r.ok || !d.success) throw new Error(d.message || 'Request failed.');
-                            return d
-                        })
-                    }
-
-                    function request(fd) {
-                        fd.append('csrf_token', csrfToken);
-                        return fetch('api/clients.php', {
-                            method: 'POST',
-                            body: fd,
-                            credentials: 'same-origin',
-                            headers: {
-                                'X-Requested-With': 'XMLHttpRequest',
-                                'Accept': 'application/json'
-                            }
-                        }).then(parseResponse)
-                    }
-
-                    function fmtDate(v) {
-                        if (!v) return '-';
-                        var d = new Date(String(v).replace(' ', 'T'));
-                        return isNaN(d.getTime()) ? esc(v) : d.toLocaleDateString(undefined, {
-                            day: '2-digit',
-                            month: 'short',
-                            year: 'numeric'
-                        })
-                    }
-
-                    function applyMeta(meta) {
-                        state.meta = meta || state.meta;
-                        var bh = '<option value="">No Branch</option>',
-                            bf = '<option value="">All Branches</option>';
-                        state.meta.branches.forEach(function(x) {
-                            bh += '<option value="' + Number(x.id) + '">' + esc(x.name) + '</option>';
-                            bf += '<option value="' + Number(x.id) + '">' + esc(x.name) + '</option>'
-                        });
-                        document.getElementById('branchId').innerHTML = bh;
-                        document.getElementById('branchFilter').innerHTML = bf;
-                        var mh = '<option value="">No Account Manager</option>';
-                        state.meta.users.forEach(function(x) {
-                            mh += '<option value="' + Number(x.id) + '">' + esc(x.name) + '</option>'
-                        });
-                        document.getElementById('accountManagerId').innerHTML = mh
-                    }
-
-                    function render(rows) {
-                        if (!rows.length) {
-                            tableBody.innerHTML =
-                                '<tr><td colspan="12" class="fd-team-empty">No customers found.</td></tr>';
-                            return;
-                        }
-
-                        var h = '';
-                        rows.forEach(function(r, i) {
-                            var clientId = Number(r.id || 0);
-                            var serial = ((state.page - 1) * state.perPage + i + 1);
-
-                            h += '<tr class="fd-client-click-row" data-client-id="' + clientId + '">' +
-                                '<td>' + serial + '</td>' +
-                                '<td><div class="fd-team-name"><span class="fd-team-name-icon">' + esc(
-                                    initials(r.display_name)) + '</span><span><strong>' + esc(r
-                                    .display_name) + '</strong><small>' + esc(r.company_name || ((r
-                                    .first_name || '') + (r.last_name ? ' ' + r.last_name : '')) || '-') +
-                                '</small></span></div></td>' +
-                                '<td><span class="fd-client-type ' + esc(r.client_type) + '">' + esc(r
-                                    .client_type) + '</span></td>' +
-                                '<td>' + esc(r.email || '-') + '<br><small>' + esc(r.phone || '-') +
-                                '</small></td>' +
-                                '<td>' + esc(r.branch_name || '-') + '</td>' +
-                                '<td>' + esc(r.source || '-') + '</td>' +
-                                '<td>' + esc(r.preferred_contact_method || '-') + '</td>' +
-                                '<td>' + esc(r.account_manager_name || '-') + '</td>' +
-                                '<td><a class="fd-client-location-link" href="client-locations.php?client_id=' +
-                                clientId +
-                                '" title="Manage Locations"><i class="bi bi-geo-alt"></i><span>' + Number(r
-                                    .location_count || 0) + '</span></a></td>' +
-                                '<td><span class="fd-client-type ' + esc(r.status) + '">' + esc(r.status) +
-                                '</span></td>' +
-                                '<td>' + fmtDate(r.last_activity_at || r.updated_at || r.created_at) +
-                                '</td>' +
-                                '<td><div class="fd-team-actions-cell fd-client-actions-cell">' +
-                                '<a class="fd-team-icon-button" href="client-locations.php?client_id=' +
-                                clientId +
-                                '" title="Locations" aria-label="Locations"><i class="bi bi-geo-alt"></i></a>' +
-                                '<a class="fd-team-icon-button" href="client-form.php?client_id=' +
-                                clientId +
-                                '" title="Edit Customer" aria-label="Edit Customer"><i class="bi bi-pencil"></i></a>' +
-                                '<button type="button" class="fd-team-icon-button danger" data-action="delete" data-id="' +
-                                clientId +
-                                '" title="Delete Customer" aria-label="Delete Customer"><i class="bi bi-trash"></i></button>' +
-                                '<span class="fd-client-action-divider" aria-hidden="true"></span>' +
-                                '<button type="button" class="fd-client-row-more-button" data-action="row-more" data-id="' +
-                                clientId +
-                                '" aria-expanded="false"><i class="bi bi-three-dots"></i> More</button>' +
-                                '</div></td>' +
-                                '</tr>';
-                        });
-
-                        tableBody.innerHTML = h;
-                    }
-
-                    function load() {
-                        var fd = new FormData();
-                        fd.append('action', 'list');
-                        fd.append('page', state.page);
-                        fd.append('per_page', state.perPage);
-                        fd.append('search', state.search);
-                        fd.append('client_type', state.type);
-                        fd.append('status', state.status);
-                        fd.append('branch_id', state.branchId);
-                        tableBody.innerHTML =
-                            '<tr><td colspan="12" class="fd-team-empty">Loading customers...</td></tr>';
-                        request(fd).then(function(d) {
-                            render(d.clients || []);
-                            applyMeta(d.meta || {});
-                            var p = d.pagination || {};
-                            document.getElementById('clientsCountText').textContent = 'Showing ' + Number(p
-                                    .from || 0) + '-' + Number(p.to || 0) + ' of ' + Number(p.total || 0) +
-                                ' customers';
-                            document.getElementById('prevPageButton').disabled = state.page <= 1;
-                            document.getElementById('nextPageButton').disabled = state.page >= Number(p
-                                .pages || 1);
-                        }).catch(function(e) {
-                            tableBody.innerHTML = '<tr><td colspan="12" class="fd-team-empty">' + esc(e
-                                .message) + '</td></tr>';
-                            toastShow('error', e.message)
-                        })
-                    }
-
-                    function resetForm() {
-                        clientForm.reset();
-                        document.getElementById('clientId').value = 0;
-                        document.getElementById('clientType').value = 'lead';
-                        document.getElementById('clientStatus').value = 'new';
-                        document.getElementById('preferredContactMethod').value = 'email';
-                        document.getElementById('allowEmail').checked = true;
-                        document.getElementById('allowSms').checked = true
-                    }
-
-                    function openClient(id) {
-                        resetForm();
-                        clientModal.classList.add('show');
-                        if (id <= 0) {
-                            document.getElementById('clientModalTitle').textContent = 'Add Customer';
-                            document.getElementById('saveClientText').textContent = 'Save Customer';
-                            return
-                        }
-                        var fd = new FormData();
-                        fd.append('action', 'get');
-                        fd.append('client_id', id);
-                        request(fd).then(function(d) {
-                            applyMeta(d.meta || {});
-                            var r = d.client || {};
-                            document.getElementById('clientModalTitle').textContent = 'Edit Customer';
-                            document.getElementById('saveClientText').textContent = 'Update Customer';
-                            ['clientId', 'displayName', 'companyName', 'firstName', 'lastName', 'email',
-                                'phone', 'alternatePhone', 'source', 'taxNumber', 'notes'
-                            ].forEach(function(k) {
-                                var map = {
-                                    clientId: 'id',
-                                    displayName: 'display_name',
-                                    companyName: 'company_name',
-                                    firstName: 'first_name',
-                                    lastName: 'last_name',
-                                    alternatePhone: 'alternate_phone',
-                                    taxNumber: 'tax_number'
-                                };
-                                document.getElementById(k).value = r[map[k] || k] || ''
-                            });
-                            document.getElementById('clientType').value = r.client_type || 'lead';
-                            document.getElementById('clientStatus').value = r.status || 'new';
-                            document.getElementById('branchId').value = r.branch_id || '';
-                            document.getElementById('accountManagerId').value = r.account_manager_id || '';
-                            document.getElementById('preferredContactMethod').value = r
-                                .preferred_contact_method || 'email';
-                            document.getElementById('allowEmail').checked = Number(r.allow_email) === 1;
-                            document.getElementById('allowSms').checked = Number(r.allow_sms) === 1
-                        }).catch(function(e) {
-                            closeClient();
-                            toastShow('error', e.message)
-                        })
-                    }
-
-                    function closeClient() {
-                        clientModal.classList.remove('show')
-                    }
-                    clientForm.onsubmit = function(e) {
-                        e.preventDefault();
-                        if (!clientForm.reportValidity()) {
-                            toastShow('warning', 'Complete the required customer fields.');
-                            return
-                        }
-                        var fd = new FormData(clientForm);
-                        fd.append('action', 'save');
-                        loading(saveButton, true);
-                        request(fd).then(function(d) {
-                            closeClient();
-                            toastShow('success', d.message);
-                            load()
-                        }).catch(function(e) {
-                            toastShow('error', e.message)
-                        }).finally(function() {
-                            loading(saveButton, false)
-                        })
-                    };
-
-                    function toggle(id, current) {
-                        var fd = new FormData();
-                        fd.append('action', 'change_status');
-                        fd.append('client_id', id);
-                        fd.append('status', current === 'active' ? 'inactive' : 'active');
-                        request(fd).then(function(d) {
-                            toastShow('success', d.message);
-                            load()
-                        }).catch(function(e) {
-                            toastShow('error', e.message)
-                        })
-                    }
-
-                    function archiveOpen(id, name) {
-                        state.archiveId = Number(id);
-                        document.getElementById('archiveClientMessage').textContent = 'Delete customer "' + (name ||
-                                'this customer') +
-                            '"? The customer will be soft-deleted so existing operational history remains preserved.';
-                        archiveModal.classList.add('show')
-                    }
-
-                    function archiveClose() {
-                        state.archiveId = 0;
-                        archiveModal.classList.remove('show')
-                    }
-                    document.getElementById('confirmArchiveButton').onclick = function() {
-                        if (state.archiveId <= 0) return;
-                        var b = this,
-                            fd = new FormData();
-                        fd.append('action', 'delete');
-                        fd.append('client_id', state.archiveId);
-                        loading(b, true);
-                        request(fd).then(function(d) {
-                            archiveClose();
-                            toastShow('success', d.message);
-                            window.setTimeout(function() {
-                                window.location.reload();
-                            }, 350)
-                        }).catch(function(e) {
-                            toastShow('error', e.message)
-                        }).finally(function() {
-                            loading(b, false)
-                        })
-                    };
-                    tableBody.onclick = function(e) {
-                        var b = e.target.closest('[data-action]');
-                        if (b && tableBody.contains(b)) {
-                            var a = b.dataset.action,
-                                id = Number(b.dataset.id);
-                            if (a === 'edit') openClient(id);
-                            else if (a === 'toggle') toggle(id, b.dataset.status);
-                            else if (a === 'delete') {
-                                closeClientRowMore();
-                                var actionRow = b.closest('tr');
-                                archiveOpen(id, actionRow ? actionRow.querySelector('.fd-team-name strong')
-                                    .textContent : '');
-                            } else if (a === 'row-more') {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                toggleClientRowMore(b, id);
-                            }
-                            return;
-                        }
-
-                        /* Keep links/buttons inside the row independent from the row navigation. */
-                        if (e.target.closest('a, button, input, select, textarea, label')) return;
-
-                        var row = e.target.closest('tr[data-client-id]');
-                        if (!row || !tableBody.contains(row)) return;
-                        var clientId = Number(row.dataset.clientId || 0);
-                        if (clientId <= 0) return;
-
-                        closeClientRowMore();
-                        window.location.href = 'client-view.php?client_id=' + encodeURIComponent(clientId);
-                    };
-                    var clientRowMoreMenu = document.getElementById('clientRowMoreMenu');
-                    var activeClientRowMoreButton = null;
-
-                    function closeClientRowMore() {
-                        if (!clientRowMoreMenu) return;
-                        clientRowMoreMenu.classList.remove('show');
-                        clientRowMoreMenu.setAttribute('aria-hidden', 'true');
-                        if (activeClientRowMoreButton) {
-                            activeClientRowMoreButton.classList.remove('active');
-                            activeClientRowMoreButton.setAttribute('aria-expanded', 'false');
-                        }
-                        activeClientRowMoreButton = null;
-                    }
-
-                    function positionClientRowMore(button) {
-                        if (!clientRowMoreMenu || !button) return;
-                        var rect = button.getBoundingClientRect();
-                        var menuWidth = 190;
-                        var menuHeight = clientRowMoreMenu.offsetHeight || 164;
-                        var left = Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 10);
-                        left = Math.max(10, left);
-                        var top = rect.bottom + 6;
-                        if (top + menuHeight > window.innerHeight - 10) top = Math.max(10, rect.top - menuHeight -
-                            6);
-                        clientRowMoreMenu.style.left = Math.round(left) + 'px';
-                        clientRowMoreMenu.style.top = Math.round(top) + 'px';
-                    }
-
-                    function toggleClientRowMore(button, clientId) {
-                        if (!clientRowMoreMenu || !button || clientId <= 0) return;
-                        var isSameOpen = activeClientRowMoreButton === button && clientRowMoreMenu.classList
-                            .contains('show');
-                        closeClientRowMore();
-                        if (isSameOpen) return;
-                        document.getElementById('clientRowAddQuotation').href = 'add-quotation.php?client_id=' +
-                            clientId;
-                        document.getElementById('clientRowCreateJob').href = 'job-form.php?client_id=' + clientId;
-                        document.getElementById('clientRowAddInvoice').href = 'add-invoice.php?client_id=' +
-                            clientId;
-                        document.getElementById('clientRowPayment').href = 'payment.php?client_id=' + clientId;
-                        activeClientRowMoreButton = button;
-                        button.classList.add('active');
-                        button.setAttribute('aria-expanded', 'true');
-                        clientRowMoreMenu.classList.add('show');
-                        clientRowMoreMenu.setAttribute('aria-hidden', 'false');
-                        positionClientRowMore(button);
-                    }
-                    if (clientRowMoreMenu) {
-                        clientRowMoreMenu.addEventListener('click', function(e) {
-                            e.stopPropagation();
-                        });
-                    }
-                    window.addEventListener('resize', closeClientRowMore);
-                    window.addEventListener('scroll', closeClientRowMore, true);
-
-                    var moreActions = document.getElementById('customerMoreActions'),
-                        moreActionsButton = document.getElementById('customerMoreActionsButton'),
-                        moreActionsMenu = moreActions ? moreActions.querySelector('.fd-customer-more-menu') : null;
-
-                    function setMoreActions(open) {
-                        if (!moreActions || !moreActionsButton || !moreActionsMenu) return;
-                        moreActions.classList.toggle('open', !!open);
-                        moreActionsButton.setAttribute('aria-expanded', open ? 'true' : 'false');
-                        moreActionsMenu.setAttribute('aria-hidden', open ? 'false' : 'true');
-                    }
-                    if (moreActionsButton) {
-                        moreActionsButton.addEventListener('click', function(e) {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setMoreActions(!moreActions.classList.contains('open'));
-                        });
-                    }
-                    document.addEventListener('click', function(e) {
-                        if (moreActions && !moreActions.contains(e.target)) setMoreActions(false);
-                        if (clientRowMoreMenu && !clientRowMoreMenu.contains(e.target) && !(
-                                activeClientRowMoreButton && activeClientRowMoreButton.contains(e.target)))
-                            closeClientRowMore();
-                    });
-                    document.addEventListener('keydown', function(e) {
-                        if (e.key === 'Escape') {
-                            setMoreActions(false);
-                            closeClientRowMore();
-                            if (moreActionsButton) moreActionsButton.focus();
-                        }
-                    });
-                    document.getElementById('exportCustomersButton').onclick = function() {
-                        var button = this,
-                            fd = new FormData();
-                        fd.append('action', 'export');
-                        fd.append('search', state.search);
-                        fd.append('client_type', state.type);
-                        fd.append('status', state.status);
-                        fd.append('branch_id', state.branchId);
-                        loading(button, true);
-                        request(fd).then(function(d) {
-                            var rows = d.customers || [];
-                            var columns = [
-                                'Customer ID', 'Customer Type', 'Display Name', 'Company Name',
-                                'First Name', 'Last Name', 'Email', 'Phone', 'Alternate Phone',
-                                'Source', 'Preferred Contact', 'Allow Email', 'Allow SMS', 'Status',
-                                'Tax Number', 'Notes', 'Branch', 'Account Manager', 'Portal Status',
-                                'Last Activity', 'Created At', 'Updated At',
-                                'Location Count', 'Location ID', 'Location Type', 'Location Name',
-                                'Address Line 1', 'Address Line 2', 'City', 'State', 'Postal Code',
-                                'Country', 'Latitude', 'Longitude', 'Location Contact Name',
-                                'Location Contact Phone', 'Gate Code', 'Access Notes',
-                                'Service Instructions', 'Primary Location', 'Location Status'
-                            ];
-                            var keys = [
-                                'customer_id', 'client_type', 'display_name', 'company_name',
-                                'first_name', 'last_name', 'email', 'phone', 'alternate_phone',
-                                'source', 'preferred_contact_method', 'allow_email_label',
-                                'allow_sms_label', 'status', 'tax_number', 'notes', 'branch_name',
-                                'account_manager_name', 'portal_status', 'last_activity_at',
-                                'created_at', 'updated_at',
-                                'location_count', 'location_id', 'location_type', 'location_name',
-                                'address_line1', 'address_line2', 'city', 'state', 'postal_code',
-                                'country_name', 'latitude', 'longitude', 'location_contact_name',
-                                'location_contact_phone', 'gate_code', 'access_notes',
-                                'service_instructions', 'is_primary_label', 'location_status'
-                            ];
-                            var quote = function(v) {
-                                return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
-                            };
-                            var csv = '\ufeff' + columns.map(quote).join(',') + '\r\n' + rows.map(
-                                function(row) {
-                                    return keys.map(function(key) {
-                                        return quote(row[key]);
-                                    }).join(',');
-                                }).join('\r\n');
-                            var blob = new Blob([csv], {
-                                type: 'text/csv;charset=utf-8'
-                            });
-                            var url = URL.createObjectURL(blob),
-                                link = document.createElement('a');
-                            link.href = url;
-                            link.download = 'customers-with-locations-' + new Date().toISOString()
-                                .slice(0, 10) + '.csv';
-                            document.body.appendChild(link);
-                            link.click();
-                            link.remove();
-                            URL.revokeObjectURL(url);
-                            toastShow('success', d.message);
-                            setMoreActions(false);
-                        }).catch(function(e) {
-                            toastShow('error', e.message);
-                        }).finally(function() {
-                            loading(button, false);
-                        });
-                    };
-                    document.getElementById('clientModalClose').onclick = closeClient;
-                    document.getElementById('cancelClientButton').onclick = closeClient;
-                    document.getElementById('archiveModalClose').onclick = archiveClose;
-                    document.getElementById('cancelArchiveButton').onclick = archiveClose;
-                    document.getElementById('clientsToastClose').onclick = function() {
-                        toast.classList.remove('show')
-                    };
-                    document.getElementById('clearFiltersButton').onclick = function() {
-                        document.getElementById('clientsSearch').value = '';
-                        document.getElementById('typeFilter').value = '';
-                        document.getElementById('statusFilter').value = '';
-                        document.getElementById('branchFilter').value = '';
-                        state.search = '';
-                        state.type = '';
-                        state.status = '';
-                        state.branchId = '';
-                        state.page = 1;
-                        load()
-                    };
-                    document.getElementById('clientsSearch').oninput = function(e) {
-                        if (searchTimer) clearTimeout(searchTimer);
-                        searchTimer = setTimeout(function() {
-                            state.search = e.target.value.trim();
-                            state.page = 1;
-                            load()
-                        }, 250)
-                    };
-                    document.getElementById('typeFilter').onchange = function(e) {
-                        state.type = e.target.value;
-                        state.page = 1;
-                        load()
-                    };
-                    document.getElementById('statusFilter').onchange = function(e) {
-                        state.status = e.target.value;
-                        state.page = 1;
-                        load()
-                    };
-                    document.getElementById('branchFilter').onchange = function(e) {
-                        state.branchId = e.target.value;
-                        state.page = 1;
-                        load()
-                    };
-                    document.getElementById('prevPageButton').onclick = function() {
-                        if (state.page > 1) {
-                            state.page--;
-                            load()
-                        }
-                    };
-                    document.getElementById('nextPageButton').onclick = function() {
-                        state.page++;
-                        load()
-                    };
-                    clientModal.onclick = function(e) {
-                        if (e.target === clientModal) closeClient()
-                    };
-                    archiveModal.onclick = function(e) {
-                        if (e.target === archiveModal) archiveClose()
-                    };
-                    load();
-                })();
-                </script>
             </div>
         </main>
     </div>
+
+    <div class="fd-expense-backdrop" id="expenseBackdrop"></div>
+    <aside class="fd-expense-drawer" id="expenseDrawer" aria-hidden="true">
+        <div class="fd-expense-drawer-header">
+            <div>
+                <h2 class="fd-expense-drawer-title" id="expenseDrawerTitle">New expense</h2>
+                <div class="fd-expense-drawer-subtitle">Record a business expense and optionally connect it to a job.
+                </div>
+            </div>
+            <button type="button" class="fd-expense-drawer-close" id="expenseDrawerClose"
+                aria-label="Cancel and close"><i class="bi bi-x-lg"></i></button>
+        </div>
+
+        <form id="expenseForm" enctype="multipart/form-data">
+            <div class="fd-expense-drawer-body">
+                <input type="hidden" name="expense_id" id="expenseId" value="0">
+                <div class="fd-expense-form-grid">
+                    <div class="fd-expense-field">
+                        <label for="expenseDate">Date</label>
+                        <input type="date" id="expenseDate" name="expense_date" required>
+                    </div>
+                    <div class="fd-expense-field">
+                        <label for="expenseItemName">Item name</label>
+                        <input type="text" id="expenseItemName" name="item_name" maxlength="190" placeholder="Item name"
+                            required>
+                    </div>
+                    <div class="fd-expense-field">
+                        <label for="expenseDescription">Description</label>
+                        <textarea id="expenseDescription" name="description" maxlength="5000"
+                            placeholder="Description"></textarea>
+                    </div>
+                    <div class="fd-expense-field">
+                        <label for="expenseAmount">Total</label>
+                        <div class="fd-expense-money-wrap"><span
+                                class="fd-expense-money-symbol"><?= htmlspecialchars($expenseCurrencySymbol, ENT_QUOTES, 'UTF-8') ?></span><input
+                                type="number" min="0.01" step="0.01" id="expenseAmount" name="amount" placeholder="0.00"
+                                required></div>
+                    </div>
+                    <div class="fd-expense-field">
+                        <label for="expenseJob">Job</label>
+                        <select id="expenseJob" name="job_id">
+                            <option value=""></option>
+                        </select>
+                        <div class="fd-expense-help">Search and select a FieldPlx job. Leave blank for a general
+                            business expense.</div>
+                    </div>
+                    <div class="fd-expense-field">
+                        <label for="expenseAccountingCode">Accounting code</label>
+                        <select id="expenseAccountingCode" name="accounting_code">
+                            <option value=""></option>
+                        </select>
+                        <div class="fd-expense-help">Select an existing accounting code, or type a new code and press
+                            Enter. Use the × clear symbol to cancel the selected code.</div>
+                    </div>
+                    <div class="fd-expense-field">
+                        <label for="expenseReimburseUser">Reimburse to</label>
+                        <select id="expenseReimburseUser" name="reimburse_user_id">
+                            <option value="">Not reimbursable</option>
+                        </select>
+                    </div>
+                    <div class="fd-expense-field">
+                        <label for="expenseStatus">Status</label>
+                        <select id="expenseStatus" name="status">
+                            <option value="submitted">Submitted</option>
+                            <option value="draft">Draft</option>
+                            <option value="approved">Approved</option>
+                            <option value="rejected">Rejected</option>
+                        </select>
+                    </div>
+                    <div class="fd-expense-field">
+                        <label>Receipt</label>
+                        <div class="fd-expense-receipt-box">
+                            <div>
+                                <label class="fd-team-button" for="expenseReceipt" style="margin:0;cursor:pointer;"><i
+                                        class="bi bi-paperclip"></i> Add receipt</label>
+                                <input class="fd-expense-receipt-input" type="file" id="expenseReceipt" name="receipt"
+                                    accept=".pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/jpeg,image/png,image/webp">
+                                <div class="fd-expense-receipt-name" id="expenseReceiptName">PDF, JPG, PNG or WEBP · Max
+                                    10 MB</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="fd-expense-drawer-footer">
+                <button type="button" class="fd-team-button" id="expenseCancelButton"><i class="bi bi-x-lg"></i>
+                    Cancel</button>
+                <button type="submit" class="fd-team-button primary" id="expenseSaveButton"><span
+                        class="fd-team-loader"></span><i class="bi bi-check-lg"></i><span id="expenseSaveText">Save
+                        Expense</span></button>
+            </div>
+        </form>
+    </aside>
+
+    <div class="fd-expense-delete-backdrop" id="expenseDeleteBackdrop">
+        <div class="fd-expense-confirm">
+            <h3>Delete Expense</h3>
+            <p id="expenseDeleteMessage">Delete this expense? The record will be soft-deleted so audit history remains
+                available.</p>
+            <div class="fd-expense-confirm-actions">
+                <button type="button" class="fd-team-button" id="expenseDeleteCancel">Cancel</button>
+                <button type="button" class="fd-team-button danger" id="expenseDeleteConfirm"><span
+                        class="fd-team-loader"></span><i class="bi bi-trash"></i> Delete</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="fd-expense-toast" id="expenseToast"><i class="bi bi-info-circle"></i><span
+            id="expenseToastMessage">Notification</span></div>
+
     <?php require_once __DIR__ . '/includes/footer.php'; ?>
-
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/select2@4.0.13/dist/js/select2.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    (function() {
+        'use strict';
+        var csrfToken = <?= json_encode($expensesCsrfToken) ?>;
+        var currencySymbol = <?= json_encode($expenseCurrencySymbol) ?>;
+        var state = {
+            page: 1,
+            perPage: 10,
+            search: '',
+            status: '',
+            jobId: '',
+            dateFrom: '',
+            dateTo: '',
+            deleteId: 0,
+            meta: {
+                jobs: [],
+                users: [],
+                accounting_codes: []
+            }
+        };
+        var body = document.getElementById('expensesTableBody');
+        var drawer = document.getElementById('expenseDrawer');
+        var backdrop = document.getElementById('expenseBackdrop');
+        var form = document.getElementById('expenseForm');
+        var saveButton = document.getElementById('expenseSaveButton');
+        var deleteBackdrop = document.getElementById('expenseDeleteBackdrop');
+        var toast = document.getElementById('expenseToast');
+        var toastTimer = null,
+            searchTimer = null;
 
+        function esc(v) {
+            return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+        }
 
+        function money(v) {
+            var n = Number(v || 0);
+            return esc(currencySymbol) + n.toLocaleString(undefined, {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            });
+        }
+
+        function fmtDate(v) {
+            if (!v) return '-';
+            var d = new Date(String(v) + 'T00:00:00');
+            return isNaN(d.getTime()) ? esc(v) : d.toLocaleDateString(undefined, {
+                day: '2-digit',
+                month: 'short',
+                year: 'numeric'
+            });
+        }
+
+        function toastShow(type, msg) {
+            if (toastTimer) clearTimeout(toastTimer);
+            toast.className = 'fd-expense-toast ' + (type || '') + ' show';
+            var icon = toast.querySelector('i');
+            icon.className = 'bi ' + (type === 'success' ? 'bi-check-circle' : type === 'error' ?
+                'bi-exclamation-circle' : type === 'warning' ? 'bi-exclamation-triangle' : 'bi-info-circle');
+            document.getElementById('expenseToastMessage').textContent = msg || 'Notification';
+            toastTimer = setTimeout(function() {
+                toast.classList.remove('show');
+            }, 3200);
+        }
+
+        function loading(button, on) {
+            if (!button) return;
+            button.disabled = !!on;
+            button.classList.toggle('loading', !!on);
+        }
+
+        function parseResponse(r) {
+            return r.text().then(function(raw) {
+                var d, t = (raw || '').trim();
+                try {
+                    d = t ? JSON.parse(t) : {};
+                } catch (e) {
+                    var clean = t.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ')
+                        .trim();
+                    throw new Error(clean ? 'Server error: ' + clean :
+                        'Server returned an invalid response.');
+                }
+                if (!r.ok || !d.success) throw new Error(d.message || 'Request failed.');
+                return d;
+            });
+        }
+
+        function request(fd) {
+            fd.append('csrf_token', csrfToken);
+            return fetch('expenses.php', {
+                method: 'POST',
+                body: fd,
+                credentials: 'same-origin',
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest',
+                    'Accept': 'application/json'
+                }
+            }).then(parseResponse);
+        }
+
+        function userName(u) {
+            return ((u.first_name || '') + (u.last_name ? ' ' + u.last_name : '')).trim() || u.email || ('User #' +
+                u.id);
+        }
+
+        function jobName(j) {
+            return (j.job_no ? j.job_no + ' · ' : '') + (j.title || 'Job');
+        }
+
+        function initSelect2() {
+            if (!window.jQuery || !jQuery.fn || !jQuery.fn.select2) return;
+            var $job = jQuery('#expenseJob');
+            var $code = jQuery('#expenseAccountingCode');
+            if ($job.hasClass('select2-hidden-accessible')) $job.select2('destroy');
+            if ($code.hasClass('select2-hidden-accessible')) $code.select2('destroy');
+            $job.select2({
+                width: '100%',
+                placeholder: 'Search jobs',
+                allowClear: true,
+                dropdownParent: jQuery('#expenseDrawer')
+            });
+            $code.select2({
+                width: '100%',
+                placeholder: 'Accounting code',
+                allowClear: true,
+                tags: true,
+                dropdownParent: jQuery('#expenseDrawer'),
+                createTag: function(params) {
+                    var term = jQuery.trim(params.term);
+                    if (term === '') return null;
+                    return {
+                        id: term,
+                        text: term,
+                        newTag: true
+                    };
+                }
+            });
+        }
+
+        function applyMeta(meta) {
+            state.meta = meta || state.meta;
+            var jobs = state.meta.jobs || [],
+                users = state.meta.users || [],
+                codes = state.meta.accounting_codes || [];
+            var jobOptions = '<option value=""></option>',
+                filterOptions = '<option value="">All Jobs</option>';
+            jobs.forEach(function(j) {
+                jobOptions += '<option value="' + Number(j.id) + '">' + esc(jobName(j)) + '</option>';
+                filterOptions += '<option value="' + Number(j.id) + '">' + esc(jobName(j)) + '</option>';
+            });
+            document.getElementById('expenseJob').innerHTML = jobOptions;
+            document.getElementById('expenseJobFilter').innerHTML = filterOptions;
+            var userOptions = '<option value="">Not reimbursable</option>';
+            users.forEach(function(u) {
+                userOptions += '<option value="' + Number(u.id) + '">' + esc(userName(u)) + '</option>';
+            });
+            document.getElementById('expenseReimburseUser').innerHTML = userOptions;
+            var codeOptions = '<option value=""></option>';
+            codes.forEach(function(c) {
+                codeOptions += '<option value="' + esc(c) + '">' + esc(c) + '</option>';
+            });
+            document.getElementById('expenseAccountingCode').innerHTML = codeOptions;
+            initSelect2();
+        }
+
+        function applyStats(stats) {
+            stats = stats || {};
+
+            function text(id, value) {
+                var el = document.getElementById(id);
+                if (el) el.textContent = value;
+            }
+
+            function html(id, value) {
+                var el = document.getElementById(id);
+                if (el) el.innerHTML = value;
+            }
+            text('expenseStatDraft', Number(stats.draft_count || 0));
+            text('expenseStatSubmitted', Number(stats.submitted_count || 0));
+            text('expenseStatApproved', Number(stats.approved_count || 0));
+            text('expenseStatRejected', Number(stats.rejected_count || 0));
+            html('expenseStatTotalAmount', money(stats.amount_total));
+            var totalCount = Number(stats.count_total || 0);
+            text('expenseStatTotalCount', totalCount + ' expense' + (totalCount === 1 ? '' : 's'));
+            html('expenseStatMonthAmount', money(stats.month_total));
+            html('expenseStatPriorMonth', money(stats.prior_month_total));
+            html('expenseStatCurrentMonth', money(stats.month_total));
+            text('expenseStatJobLinked', Number(stats.job_linked || 0));
+            text('expenseStatReimbursable', Number(stats.reimbursable || 0));
+            text('expenseStatReceipts', Number(stats.with_receipt || 0));
+
+            var change = Number(stats.month_change || 0),
+                trend = document.getElementById('expenseMonthTrend');
+            if (trend) {
+                trend.className = 'fd-customer-trend-change' + (change > 0 ? '' : change < 0 ? ' down' :
+                ' neutral');
+            }
+            var arrow = change > 0 ? '↑ ' : change < 0 ? '↓ ' : '';
+            var rounded = Math.round(Math.abs(change) * 10) / 10;
+            text('expenseMonthChangeText', arrow + String(rounded).replace(/\.0$/, '') + '%');
+        }
+
+        function render(rows) {
+            if (!rows.length) {
+                body.innerHTML =
+                    '<tr><td colspan="10" class="fd-expense-empty"><i class="bi bi-receipt" style="display:block;font-size:26px;margin-bottom:8px;color:#b9c4d1"></i>No expenses found.</td></tr>';
+                return;
+            }
+            var h = '';
+            rows.forEach(function(r, i) {
+                var id = Number(r.id || 0),
+                    serial = ((state.page - 1) * state.perPage + i + 1);
+                var receipt = r.receipt_path ? '<a class="fd-expense-receipt" href="' + esc(r
+                    .receipt_path) +
+                    '" target="_blank" rel="noopener"><i class="bi bi-paperclip"></i> View</a>' : '-';
+                h += '<tr>' +
+                    '<td>' + serial + '</td>' +
+                    '<td><div class="fd-expense-item"><strong>' + esc(r.expense_no || ('EXP-' + id)) +
+                    ' · ' + esc(r.item_name || '-') + '</strong><small>' + esc(r.notes ||
+                    'No description') + '</small></div></td>' +
+                    '<td>' + fmtDate(r.expense_date) + '</td>' +
+                    '<td>' + esc(r.job_no ? ((r.job_no || '') + (r.job_title ? ' · ' + r.job_title : '')) :
+                        'General expense') + '</td>' +
+                    '<td>' + esc(r.accounting_code || '-') + '</td>' +
+                    '<td>' + esc(r.reimburse_user_name || 'Not reimbursable') + '</td>' +
+                    '<td class="fd-expense-amount">' + money(r.amount) + '</td>' +
+                    '<td>' + receipt + '</td>' +
+                    '<td><span class="fd-expense-badge ' + esc(r.status || 'submitted') + '">' + esc(r
+                        .status || 'submitted') + '</span></td>' +
+                    '<td><div style="display:flex;gap:5px;"><button type="button" class="fd-expense-action" data-action="edit" data-id="' +
+                    id +
+                    '" title="Edit"><i class="bi bi-pencil"></i></button><button type="button" class="fd-expense-action danger" data-action="delete" data-id="' +
+                    id + '" title="Delete"><i class="bi bi-trash"></i></button></div></td>' +
+                    '</tr>';
+            });
+            body.innerHTML = h;
+        }
+
+        function load() {
+            var fd = new FormData();
+            fd.append('expense_action', 'list');
+            fd.append('page', state.page);
+            fd.append('per_page', state.perPage);
+            fd.append('search', state.search);
+            fd.append('status', state.status);
+            fd.append('job_id', state.jobId);
+            fd.append('date_from', state.dateFrom);
+            fd.append('date_to', state.dateTo);
+            body.innerHTML = '<tr><td colspan="10" class="fd-expense-empty">Loading expenses...</td></tr>';
+            request(fd).then(function(d) {
+                render(d.expenses || []);
+                applyMeta(d.meta || {});
+                applyStats(d.stats || {});
+                var p = d.pagination || {};
+                document.getElementById('expensesCountText').textContent = 'Showing ' + Number(p.from ||
+                    0) + '-' + Number(p.to || 0) + ' of ' + Number(p.total || 0) + ' expenses';
+                document.getElementById('expensePrevPage').disabled = state.page <= 1;
+                document.getElementById('expenseNextPage').disabled = state.page >= Number(p.pages || 1);
+            }).catch(function(e) {
+                body.innerHTML = '<tr><td colspan="10" class="fd-expense-empty">' + esc(e.message) +
+                    '</td></tr>';
+                toastShow('error', e.message);
+            });
+        }
+
+        function resetForm() {
+            form.reset();
+            document.getElementById('expenseId').value = '0';
+            document.getElementById('expenseDate').value = new Date().toISOString().slice(0, 10);
+            document.getElementById('expenseStatus').value = 'submitted';
+            document.getElementById('expenseReceiptName').textContent = 'PDF, JPG, PNG or WEBP · Max 10 MB';
+            if (window.jQuery && jQuery.fn && jQuery.fn.select2) {
+                jQuery('#expenseJob').val(null).trigger('change');
+                jQuery('#expenseAccountingCode').val(null).trigger('change');
+            }
+        }
+
+        function openDrawer() {
+            backdrop.classList.add('show');
+            drawer.classList.add('show');
+            drawer.setAttribute('aria-hidden', 'false');
+            document.body.style.overflow = 'hidden';
+            var drawerBody = drawer.querySelector('.fd-expense-drawer-body');
+            if (drawerBody) drawerBody.scrollTop = 0;
+        }
+
+        function closeDrawer() {
+            drawer.classList.remove('show');
+            backdrop.classList.remove('show');
+            drawer.setAttribute('aria-hidden', 'true');
+            document.body.style.overflow = '';
+        }
+
+        function newExpense() {
+            resetForm();
+            document.getElementById('expenseDrawerTitle').textContent = 'New expense';
+            document.getElementById('expenseSaveText').textContent = 'Save Expense';
+            openDrawer();
+        }
+
+        function editExpense(id) {
+            resetForm();
+            openDrawer();
+            document.getElementById('expenseDrawerTitle').textContent = 'Edit expense';
+            document.getElementById('expenseSaveText').textContent = 'Update Expense';
+            var fd = new FormData();
+            fd.append('expense_action', 'get');
+            fd.append('expense_id', id);
+            request(fd).then(function(d) {
+                applyMeta(d.meta || {});
+                var r = d.expense || {};
+                document.getElementById('expenseId').value = r.id || 0;
+                document.getElementById('expenseDate').value = r.expense_date || '';
+                document.getElementById('expenseItemName').value = r.item_name || '';
+                document.getElementById('expenseDescription').value = r.notes || '';
+                document.getElementById('expenseAmount').value = r.amount || '';
+                document.getElementById('expenseReimburseUser').value = r.reimburse_user_id || '';
+                document.getElementById('expenseStatus').value = r.status || 'submitted';
+                document.getElementById('expenseReceiptName').textContent = r.receipt_name ? ('Current: ' +
+                    r.receipt_name) : 'PDF, JPG, PNG or WEBP · Max 10 MB';
+                if (window.jQuery && jQuery.fn && jQuery.fn.select2) {
+                    jQuery('#expenseJob').val(r.job_id ? String(r.job_id) : null).trigger('change');
+                    var code = r.accounting_code || '';
+                    if (code && jQuery('#expenseAccountingCode option[value="' + CSS.escape(code) + '"]')
+                        .length === 0) {
+                        var opt = new Option(code, code, true, true);
+                        jQuery('#expenseAccountingCode').append(opt);
+                    }
+                    jQuery('#expenseAccountingCode').val(code || null).trigger('change');
+                }
+            }).catch(function(e) {
+                closeDrawer();
+                toastShow('error', e.message);
+            });
+        }
+
+        document.getElementById('addExpenseButton').onclick = newExpense;
+        document.getElementById('expenseDrawerClose').onclick = closeDrawer;
+        document.getElementById('expenseCancelButton').onclick = closeDrawer;
+        backdrop.onclick = closeDrawer;
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') {
+                if (deleteBackdrop.classList.contains('show')) deleteBackdrop.classList.remove('show');
+                else if (drawer.classList.contains('show')) closeDrawer();
+            }
+        });
+
+        document.getElementById('expenseReceipt').onchange = function() {
+            var f = this.files && this.files[0] ? this.files[0] : null;
+            document.getElementById('expenseReceiptName').textContent = f ? f.name :
+                'PDF, JPG, PNG or WEBP · Max 10 MB';
+        };
+
+        form.onsubmit = function(e) {
+            e.preventDefault();
+            if (!form.reportValidity()) {
+                toastShow('warning', 'Complete the required expense fields.');
+                return;
+            }
+            var fd = new FormData(form);
+            fd.append('expense_action', 'save');
+            loading(saveButton, true);
+            request(fd).then(function(d) {
+                closeDrawer();
+                toastShow('success', d.message);
+                setTimeout(function() {
+                    window.location.reload();
+                }, 350);
+            }).catch(function(err) {
+                toastShow('error', err.message);
+            }).finally(function() {
+                loading(saveButton, false);
+            });
+        };
+
+        body.onclick = function(e) {
+            var b = e.target.closest('[data-action]');
+            if (!b || !body.contains(b)) return;
+            var id = Number(b.dataset.id || 0),
+                a = b.dataset.action;
+            if (a === 'edit') editExpense(id);
+            if (a === 'delete') {
+                state.deleteId = id;
+                var row = b.closest('tr');
+                var label = row ? row.querySelector('.fd-expense-item strong') : null;
+                document.getElementById('expenseDeleteMessage').textContent = 'Delete ' + (label ? ('"' + label
+                        .textContent + '"') : 'this expense') +
+                    '? The expense will be soft-deleted and audit history will remain preserved.';
+                deleteBackdrop.classList.add('show');
+            }
+        };
+        document.getElementById('expenseDeleteCancel').onclick = function() {
+            state.deleteId = 0;
+            deleteBackdrop.classList.remove('show');
+        };
+        document.getElementById('expenseDeleteConfirm').onclick = function() {
+            if (state.deleteId <= 0) return;
+            var button = this,
+                fd = new FormData();
+            fd.append('expense_action', 'delete');
+            fd.append('expense_id', state.deleteId);
+            loading(button, true);
+            request(fd).then(function(d) {
+                state.deleteId = 0;
+                deleteBackdrop.classList.remove('show');
+                toastShow('success', d.message);
+                setTimeout(function() {
+                    window.location.reload();
+                }, 300);
+            }).catch(function(e) {
+                toastShow('error', e.message);
+            }).finally(function() {
+                loading(button, false);
+            });
+        };
+
+        document.getElementById('expenseSearch').oninput = function(e) {
+            if (searchTimer) clearTimeout(searchTimer);
+            searchTimer = setTimeout(function() {
+                state.search = e.target.value.trim();
+                state.page = 1;
+                load();
+            }, 250);
+        };
+        document.getElementById('expenseStatusFilter').onchange = function(e) {
+            state.status = e.target.value;
+            state.page = 1;
+            load();
+        };
+        document.getElementById('expenseJobFilter').onchange = function(e) {
+            state.jobId = e.target.value;
+            state.page = 1;
+            load();
+        };
+        document.getElementById('expenseDateFrom').onchange = function(e) {
+            state.dateFrom = e.target.value;
+            state.page = 1;
+            load();
+        };
+        document.getElementById('expenseDateTo').onchange = function(e) {
+            state.dateTo = e.target.value;
+            state.page = 1;
+            load();
+        };
+        document.getElementById('clearExpenseFilters').onclick = function() {
+            document.getElementById('expenseSearch').value = '';
+            document.getElementById('expenseStatusFilter').value = '';
+            document.getElementById('expenseJobFilter').value = '';
+            document.getElementById('expenseDateFrom').value = '';
+            document.getElementById('expenseDateTo').value = '';
+            state.search = '';
+            state.status = '';
+            state.jobId = '';
+            state.dateFrom = '';
+            state.dateTo = '';
+            state.page = 1;
+            load();
+        };
+        document.getElementById('expensePrevPage').onclick = function() {
+            if (state.page > 1) {
+                state.page--;
+                load();
+            }
+        };
+        document.getElementById('expenseNextPage').onclick = function() {
+            state.page++;
+            load();
+        };
+
+        load();
+    })();
+    </script>
 </body>
 
 </html>
