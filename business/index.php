@@ -1,8 +1,175 @@
 <?php
+/* FieldPlx Tenant Dashboard - Version 2.0.0 - 2026-08-28 */
 require_once __DIR__ . '/includes/auth.php';
 
 $pageTitle = 'Dashboard';
 $activePage = 'dashboard';
+
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
+function fd_h($value)
+{
+    return htmlspecialchars((string)($value === null ? '' : $value), ENT_QUOTES, 'UTF-8');
+}
+
+function fd_db()
+{
+    global $pdo, $db;
+    if (isset($pdo) && $pdo instanceof PDO) return $pdo;
+    if (isset($db) && $db instanceof PDO) return $db;
+    throw new RuntimeException('Database connection is not available.');
+}
+
+function fd_scalar(PDO $pdo, $sql, $params = array(), $default = 0)
+{
+    try {
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+        $value = $stmt->fetchColumn();
+        return $value === false || $value === null ? $default : $value;
+    } catch (Throwable $e) {
+        error_log('FieldPlx dashboard scalar query failed: ' . $e->getMessage());
+        return $default;
+    }
+}
+
+function fd_rows(PDO $pdo, $sql, $params = array())
+{
+    try {
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        error_log('FieldPlx dashboard rows query failed: ' . $e->getMessage());
+        return array();
+    }
+}
+
+function fd_table_exists(PDO $pdo, $table)
+{
+    static $cache = array();
+    if (isset($cache[$table])) return $cache[$table];
+    try {
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :t");
+        $stmt->execute(array(':t' => $table));
+        $cache[$table] = ((int)$stmt->fetchColumn() > 0);
+    } catch (Throwable $e) {
+        $cache[$table] = false;
+    }
+    return $cache[$table];
+}
+
+function fd_money($value, $currency)
+{
+    $places = isset($currency['decimal_places']) ? (int)$currency['decimal_places'] : 2;
+    $number = number_format((float)$value, $places, '.', ',');
+    $symbol = isset($currency['symbol']) ? (string)$currency['symbol'] : '';
+    $position = isset($currency['symbol_position']) ? (string)$currency['symbol_position'] : 'before';
+    return $position === 'after' ? $number . ($symbol !== '' ? ' ' . $symbol : '') : $symbol . $number;
+}
+
+function fd_status_label($status)
+{
+    $status = trim((string)$status);
+    if ($status === '') return '-';
+    return ucwords(str_replace('_', ' ', $status));
+}
+
+function fd_status_class($status)
+{
+    $status = strtolower(trim((string)$status));
+    if (in_array($status, array('completed','invoiced','closed','ready_to_invoice'), true)) return 'completed';
+    if (in_array($status, array('in_progress','active','today'), true)) return 'progress';
+    if (in_array($status, array('cancelled','archived'), true)) return 'cancelled';
+    return 'pending';
+}
+
+function fd_relative_time($dateTime)
+{
+    if (!$dateTime) return '';
+    $ts = strtotime((string)$dateTime);
+    if (!$ts) return '';
+    $diff = time() - $ts;
+    if ($diff < 60) return 'just now';
+    if ($diff < 3600) return floor($diff / 60) . ' min ago';
+    if ($diff < 86400) return floor($diff / 3600) . ' hr ago';
+    if ($diff < 172800) return 'yesterday';
+    return date('d M Y', $ts);
+}
+
+$pdo = fd_db();
+$tenantId = isset($_SESSION['tenant_id']) ? (int)$_SESSION['tenant_id'] : 0;
+$userId = isset($_SESSION['tenant_user_id']) ? (int)$_SESSION['tenant_user_id'] : (isset($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : 0);
+
+if ($tenantId <= 0) {
+    header('Location: login.php');
+    exit;
+}
+
+$currentUserName = trim((string)(isset($_SESSION['tenant_user_name']) ? $_SESSION['tenant_user_name'] : (isset($_SESSION['user_name']) ? $_SESSION['user_name'] : 'User')));
+if ($currentUserName === '') $currentUserName = 'User';
+
+$today = date('Y-m-d');
+$weekStart = date('Y-m-d', strtotime('monday this week'));
+$weekEnd = date('Y-m-d', strtotime('sunday this week'));
+$weekStartDisplay = date('d M', strtotime($weekStart));
+$weekEndDisplay = date('d M Y', strtotime($weekEnd));
+
+$currency = array('symbol' => '', 'symbol_position' => 'before', 'decimal_places' => 2);
+try {
+    $stmt = $pdo->prepare("SELECT c.symbol,c.symbol_position,c.decimal_places,c.currency_code FROM tenants t LEFT JOIN currencies c ON c.id=t.currency_id WHERE t.id=:t LIMIT 1");
+    $stmt->execute(array(':t' => $tenantId));
+    $c = $stmt->fetch(PDO::FETCH_ASSOC);
+    if ($c) $currency = array_merge($currency, $c);
+} catch (Throwable $e) {
+    error_log('FieldPlx dashboard currency query failed: ' . $e->getMessage());
+}
+
+$params = array(':t' => $tenantId);
+$totalJobs = (int)fd_scalar($pdo, "SELECT COUNT(*) FROM jobs WHERE tenant_id=:t AND deleted_at IS NULL", $params, 0);
+$completedJobs = (int)fd_scalar($pdo, "SELECT COUNT(*) FROM jobs WHERE tenant_id=:t AND deleted_at IS NULL AND status IN ('completed','ready_to_invoice','invoiced','closed')", $params, 0);
+$inProgressJobs = (int)fd_scalar($pdo, "SELECT COUNT(*) FROM jobs WHERE tenant_id=:t AND deleted_at IS NULL AND status IN ('active','today','in_progress')", $params, 0);
+$upcomingJobs = (int)fd_scalar($pdo, "SELECT COUNT(*) FROM jobs WHERE tenant_id=:t AND deleted_at IS NULL AND start_date>:today AND status NOT IN ('completed','ready_to_invoice','invoiced','closed','cancelled','archived')", array(':t'=>$tenantId, ':today'=>$today), 0);
+
+$totalClients = (int)fd_scalar($pdo, "SELECT COUNT(*) FROM clients WHERE tenant_id=:t AND client_type='client' AND status<>'archived' AND deleted_at IS NULL", $params, 0);
+$totalWorkers = (int)fd_scalar($pdo, "SELECT COUNT(*) FROM users WHERE tenant_id=:t AND status='active' AND is_field_worker=1 AND deleted_at IS NULL", $params, 0);
+$activeWorkersToday = fd_table_exists($pdo, 'job_assignments') ? (int)fd_scalar($pdo, "SELECT COUNT(DISTINCT ja.user_id) FROM job_assignments ja INNER JOIN jobs j ON j.id=ja.job_id WHERE ja.tenant_id=:t AND ja.user_id IS NOT NULL AND ja.status<>'removed' AND j.deleted_at IS NULL AND (j.start_date=:today OR (j.start_date<=:today2 AND (j.end_date IS NULL OR j.end_date>=:today3)))", array(':t'=>$tenantId, ':today'=>$today, ':today2'=>$today, ':today3'=>$today), 0) : 0;
+
+$pendingInvoiceCount = fd_table_exists($pdo, 'invoices') ? (int)fd_scalar($pdo, "SELECT COUNT(*) FROM invoices WHERE tenant_id=:t AND balance_due>0.005 AND status NOT IN ('cancelled','archived','written_off')", $params, 0) : 0;
+$pendingInvoiceAmount = fd_table_exists($pdo, 'invoices') ? (float)fd_scalar($pdo, "SELECT COALESCE(SUM(balance_due),0) FROM invoices WHERE tenant_id=:t AND balance_due>0.005 AND status NOT IN ('cancelled','archived','written_off')", $params, 0) : 0;
+$pendingPaymentCount = fd_table_exists($pdo, 'payments') ? (int)fd_scalar($pdo, "SELECT COUNT(*) FROM payments WHERE tenant_id=:t AND status IN ('pending','authorized')", $params, 0) : 0;
+$pendingPaymentAmount = fd_table_exists($pdo, 'payments') ? (float)fd_scalar($pdo, "SELECT COALESCE(SUM(amount),0) FROM payments WHERE tenant_id=:t AND status IN ('pending','authorized')", $params, 0) : 0;
+
+$jobStatusRows = fd_rows($pdo, "SELECT status,COUNT(*) total FROM jobs WHERE tenant_id=:t AND deleted_at IS NULL GROUP BY status ORDER BY total DESC", $params);
+$statusBuckets = array('pending'=>0,'progress'=>0,'completed'=>0,'cancelled'=>0);
+foreach ($jobStatusRows as $row) {
+    $class = fd_status_class($row['status']);
+    if (!isset($statusBuckets[$class])) $class = 'pending';
+    $statusBuckets[$class] += (int)$row['total'];
+}
+
+$chartLabels = array();
+$chartJobs = array();
+$chartCompleted = array();
+for ($i=0; $i<7; $i++) {
+    $date = date('Y-m-d', strtotime($weekStart . ' +' . $i . ' day'));
+    $chartLabels[] = date('D', strtotime($date));
+    $chartJobs[] = (int)fd_scalar($pdo, "SELECT COUNT(*) FROM jobs WHERE tenant_id=:t AND deleted_at IS NULL AND DATE(created_at)=:d", array(':t'=>$tenantId, ':d'=>$date), 0);
+    $chartCompleted[] = (int)fd_scalar($pdo, "SELECT COUNT(*) FROM jobs WHERE tenant_id=:t AND deleted_at IS NULL AND completed_at IS NOT NULL AND DATE(completed_at)=:d", array(':t'=>$tenantId, ':d'=>$date), 0);
+}
+
+$recentJobs = fd_rows($pdo, "SELECT j.id,j.job_no,j.title,j.status,j.start_date,j.end_date,c.display_name client_name,ps.name service_name,(SELECT CONCAT(u.first_name,CASE WHEN u.last_name IS NOT NULL AND u.last_name<>'' THEN CONCAT(' ',u.last_name) ELSE '' END) FROM job_assignments ja INNER JOIN users u ON u.id=ja.user_id AND u.tenant_id=j.tenant_id WHERE ja.job_id=j.id AND ja.tenant_id=j.tenant_id AND ja.status<>'removed' ORDER BY ja.is_primary_responsible DESC,ja.id ASC LIMIT 1) worker_name FROM jobs j INNER JOIN clients c ON c.id=j.client_id AND c.tenant_id=j.tenant_id LEFT JOIN product_services ps ON ps.id=j.product_service_id AND ps.tenant_id=j.tenant_id WHERE j.tenant_id=:t AND j.deleted_at IS NULL ORDER BY COALESCE(j.updated_at,j.created_at) DESC,j.id DESC LIMIT 5", $params);
+
+$todaySchedule = fd_rows($pdo, "SELECT j.id,j.job_no,j.title,j.start_time,j.status,c.display_name client_name FROM jobs j INNER JOIN clients c ON c.id=j.client_id AND c.tenant_id=j.tenant_id WHERE j.tenant_id=:t AND j.deleted_at IS NULL AND j.start_date=:today AND j.status NOT IN ('cancelled','archived') ORDER BY COALESCE(j.start_time,'23:59:59'),j.id LIMIT 4", array(':t'=>$tenantId, ':today'=>$today));
+
+$todayTasks = array();
+if (fd_table_exists($pdo, 'tasks')) {
+    $todayTasks = fd_rows($pdo, "SELECT id,title,status,due_at,job_id,priority FROM tasks WHERE tenant_id=:t AND (DATE(due_at)=:today OR (due_at IS NULL AND status IN ('open','in_progress','waiting'))) AND status<>'cancelled' ORDER BY CASE WHEN status='completed' THEN 1 ELSE 0 END, COALESCE(due_at,'9999-12-31 23:59:59'), id DESC LIMIT 4", array(':t'=>$tenantId, ':today'=>$today));
+}
+
+$recentActivity = fd_table_exists($pdo, 'activity_events') ? fd_rows($pdo, "SELECT event_type,related_type,related_id,title,created_at FROM activity_events WHERE tenant_id=:t ORDER BY id DESC LIMIT 4", $params) : array();
 ?>
 
 <!DOCTYPE html>
@@ -2579,16 +2746,16 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer {
                 <div class="fd-dashboard">
                     <section class="fd-welcome">
                         <div>
-                            <h1>Welcome back, Demo User!</h1>
-                            <p>Here is what is happening with FieldPlx today.</p>
+                            <h1>Welcome back, <?= fd_h($currentUserName) ?>!</h1>
+                            <p>Here is what is happening with your FieldPlx business today.</p>
                         </div>
                         <div class="fd-date-actions">
                             <div class="fd-date-button" title="Current week">
                                 <i class="bi bi-calendar3"></i>
-                                <span>This Week</span>
+                                <span><?= fd_h($weekStartDisplay . ' - ' . $weekEndDisplay) ?></span>
                                 <i class="bi bi-chevron-down"></i>
                             </div>
-                            <a class="fd-filter-button" href="#" title="Open reports"><i class="bi bi-sliders"></i></a>
+                            <a class="fd-filter-button" href="reports.php" title="Open reports"><i class="bi bi-sliders"></i></a>
                         </div>
                     </section>
 
@@ -2596,53 +2763,25 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer {
                         <div class="col-xl-3 col-md-6">
                             <article class="fd-card fd-stat-card">
                                 <span class="fd-stat-more"><i class="bi bi-three-dots-vertical"></i></span>
-                                <div class="fd-stat-row">
-                                    <span class="fd-stat-icon blue"><i class="bi bi-briefcase"></i></span>
-                                    <div><span class="fd-stat-label">Total Jobs</span><strong
-                                            class="fd-stat-value">48</strong><small class="fd-growth">12.5% vs last
-                                            week</small></div>
-                                </div>
-                                <div class="fd-sparkline"><canvas class="fd-spark" data-color="#123d70"
-                                        data-values="[4,6,8,5,9,7,9]"></canvas></div>
+                                <div class="fd-stat-row"><span class="fd-stat-icon blue"><i class="bi bi-briefcase"></i></span><div><span class="fd-stat-label">Total Jobs</span><strong class="fd-stat-value"><?= number_format($totalJobs) ?></strong></div></div>
                             </article>
                         </div>
                         <div class="col-xl-3 col-md-6">
                             <article class="fd-card fd-stat-card">
                                 <span class="fd-stat-more"><i class="bi bi-three-dots-vertical"></i></span>
-                                <div class="fd-stat-row">
-                                    <span class="fd-stat-icon green"><i class="bi bi-check-lg"></i></span>
-                                    <div><span class="fd-stat-label">Completed Jobs</span><strong
-                                            class="fd-stat-value">31</strong><small class="fd-growth">8.2% vs last
-                                            week</small></div>
-                                </div>
-                                <div class="fd-sparkline"><canvas class="fd-spark" data-color="#74b824"
-                                        data-values="[2,4,5,3,6,5,6]"></canvas></div>
+                                <div class="fd-stat-row"><span class="fd-stat-icon green"><i class="bi bi-check-lg"></i></span><div><span class="fd-stat-label">Completed Jobs</span><strong class="fd-stat-value"><?= number_format($completedJobs) ?></strong></div></div>
                             </article>
                         </div>
                         <div class="col-xl-3 col-md-6">
                             <article class="fd-card fd-stat-card">
                                 <span class="fd-stat-more"><i class="bi bi-three-dots-vertical"></i></span>
-                                <div class="fd-stat-row">
-                                    <span class="fd-stat-icon lime"><i class="bi bi-clock"></i></span>
-                                    <div><span class="fd-stat-label">In Progress</span><strong
-                                            class="fd-stat-value">12</strong><small class="fd-growth">3 new this
-                                            week</small></div>
-                                </div>
-                                <div class="fd-sparkline"><canvas class="fd-spark" data-color="#5d971b"
-                                        data-values="[8,9,9,10,11,10,12]"></canvas></div>
+                                <div class="fd-stat-row"><span class="fd-stat-icon lime"><i class="bi bi-clock"></i></span><div><span class="fd-stat-label">In Progress</span><strong class="fd-stat-value"><?= number_format($inProgressJobs) ?></strong></div></div>
                             </article>
                         </div>
                         <div class="col-xl-3 col-md-6">
                             <article class="fd-card fd-stat-card">
                                 <span class="fd-stat-more"><i class="bi bi-three-dots-vertical"></i></span>
-                                <div class="fd-stat-row">
-                                    <span class="fd-stat-icon orange"><i class="bi bi-cash-coin"></i></span>
-                                    <div><span class="fd-stat-label">Total Revenue</span><strong
-                                            class="fd-stat-value">₹4.86L</strong><small class="fd-growth">18.4% vs last
-                                            week</small></div>
-                                </div>
-                                <div class="fd-sparkline"><canvas class="fd-spark" data-color="#96c945"
-                                        data-values="[42000,68000,57000,81000,72000,76000,89750]"></canvas></div>
+                                <div class="fd-stat-row"><span class="fd-stat-icon orange"><i class="bi bi-calendar-event"></i></span><div><span class="fd-stat-label">Upcoming Jobs</span><strong class="fd-stat-value"><?= number_format($upcomingJobs) ?></strong></div></div>
                             </article>
                         </div>
                     </section>
@@ -2650,72 +2789,44 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer {
                     <section class="row g-3 mb-3">
                         <div class="col-xl-6">
                             <article class="fd-card fd-panel fd-chart-card">
-                                <div class="fd-panel-title">
-                                    <h2>Jobs Overview</h2>
-                                    <div class="fd-chart-legend">
-                                        <span class="me-3"><i class="bi bi-square-fill me-1"
-                                                style="color:#123d70"></i>Total Jobs</span>
-                                        <span><i class="bi bi-square-fill me-1" style="color:#74b824"></i>Completed
-                                            Jobs</span>
-                                    </div>
-                                </div>
+                                <div class="fd-panel-title"><h2>Jobs Overview</h2><div class="fd-chart-legend"><span class="me-3"><i class="bi bi-square-fill me-1" style="color:#123d70"></i>Total Jobs</span><span><i class="bi bi-square-fill me-1" style="color:#74b824"></i>Completed Jobs</span></div></div>
                                 <div class="fd-chart-area"><canvas id="fdJobsChart"></canvas></div>
                             </article>
                         </div>
-
                         <div class="col-xl-3 col-md-6">
                             <article class="fd-card fd-panel fd-chart-card">
-                                <div class="fd-panel-title">
-                                    <h2>Jobs by Status</h2>
-                                </div>
+                                <div class="fd-panel-title"><h2>Jobs by Status</h2></div>
+                                <?php
+                                $statusTotal = max(1, array_sum($statusBuckets));
+                                $p1 = ($statusBuckets['pending'] / $statusTotal) * 100;
+                                $p2 = $p1 + ($statusBuckets['progress'] / $statusTotal) * 100;
+                                $p3 = $p2 + ($statusBuckets['completed'] / $statusTotal) * 100;
+                                ?>
                                 <div class="fd-status-wrapper">
-                                    <div class="fd-donut"
-                                        style="background:conic-gradient(#a7cf5b 0 8.33%,#123d70 8.33% 33.33%,#74b824 33.33% 97.92%,#e45b66 97.92% 100%);">
-                                        <div class="fd-donut-center"><strong>48</strong><small>Total</small></div>
-                                    </div>
+                                    <div class="fd-donut" style="background:conic-gradient(#a7cf5b 0 <?= round($p1,2) ?>%,#123d70 <?= round($p1,2) ?>% <?= round($p2,2) ?>%,#74b824 <?= round($p2,2) ?>% <?= round($p3,2) ?>%,#e45b66 <?= round($p3,2) ?>% 100%);"><div class="fd-donut-center"><strong><?= number_format($totalJobs) ?></strong><small>Total</small></div></div>
                                     <div class="fd-status-legend">
-                                        <div class="fd-legend-row"><span class="fd-legend-dot"
-                                                style="background:#a7cf5b"></span><span>Pending<br /><strong>4</strong>
-                                                (8.3%)</span></div>
-                                        <div class="fd-legend-row"><span class="fd-legend-dot"
-                                                style="background:#123d70"></span><span>In
-                                                Progress<br /><strong>12</strong> (25.0%)</span></div>
-                                        <div class="fd-legend-row"><span class="fd-legend-dot"
-                                                style="background:#74b824"></span><span>Completed<br /><strong>31</strong>
-                                                (64.6%)</span></div>
-                                        <div class="fd-legend-row"><span class="fd-legend-dot"
-                                                style="background:#e45b66"></span><span>Cancelled<br /><strong>1</strong>
-                                                (2.1%)</span></div>
+                                        <div class="fd-legend-row"><span class="fd-legend-dot" style="background:#a7cf5b"></span><span>Pending<br><strong><?= number_format($statusBuckets['pending']) ?></strong></span></div>
+                                        <div class="fd-legend-row"><span class="fd-legend-dot" style="background:#123d70"></span><span>In Progress<br><strong><?= number_format($statusBuckets['progress']) ?></strong></span></div>
+                                        <div class="fd-legend-row"><span class="fd-legend-dot" style="background:#74b824"></span><span>Completed<br><strong><?= number_format($statusBuckets['completed']) ?></strong></span></div>
+                                        <div class="fd-legend-row"><span class="fd-legend-dot" style="background:#e45b66"></span><span>Cancelled<br><strong><?= number_format($statusBuckets['cancelled']) ?></strong></span></div>
                                     </div>
                                 </div>
                             </article>
                         </div>
-
                         <div class="col-xl-3 col-md-6">
                             <article class="fd-card fd-panel fd-chart-card">
-                                <div class="fd-panel-title">
-                                    <h2>Today's Tasks</h2><span class="fd-tasks-count">4 Tasks</span>
-                                </div>
+                                <div class="fd-panel-title"><h2>Today's Tasks</h2><span class="fd-tasks-count"><?= number_format(count($todayTasks)) ?> Tasks</span></div>
                                 <div class="fd-task-list">
-                                    <a class="fd-task-item complete" href="#"><span class="fd-task-check"><i
-                                                class="bi bi-check"></i></span><span
-                                            class="fd-task-content"><strong>Confirm material
-                                                delivery</strong><small>Orion Tech Park</small></span><span
-                                            class="fd-task-time">9:30 AM</span></a>
-                                    <a class="fd-task-item" href="#"><span class="fd-task-check"></span><span
-                                            class="fd-task-content"><strong>Site measurement
-                                                visit</strong><small>GreenLeaf Retail</small></span><span
-                                            class="fd-task-time">11:00 AM</span></a>
-                                    <a class="fd-task-item" href="#"><span class="fd-task-check"></span><span
-                                            class="fd-task-content"><strong>Approve technician
-                                                timesheet</strong><small>Weekly review</small></span><span
-                                            class="fd-task-time">2:00 PM</span></a>
-                                    <a class="fd-task-item" href="#"><span class="fd-task-check"></span><span
-                                            class="fd-task-content"><strong>Send service completion
-                                                report</strong><small>Apex Business Centre</small></span><span
-                                            class="fd-task-time">4:30 PM</span></a>
+                                    <?php if (empty($todayTasks)): ?>
+                                        <div class="fd-empty">No tasks scheduled for today.</div>
+                                    <?php else: foreach ($todayTasks as $task): ?>
+                                        <a class="fd-task-item <?= $task['status']==='completed' ? 'complete' : '' ?>" href="<?= !empty($task['job_id']) ? 'job-view?job_id='.(int)$task['job_id'] : '#' ?>">
+                                            <span class="fd-task-check"><?= $task['status']==='completed' ? '<i class="bi bi-check"></i>' : '' ?></span>
+                                            <span class="fd-task-content"><strong><?= fd_h($task['title']) ?></strong><small><?= fd_h(fd_status_label($task['status'])) ?> · <?= fd_h(fd_status_label($task['priority'])) ?></small></span>
+                                            <span class="fd-task-time"><?= !empty($task['due_at']) ? fd_h(date('g:i A',strtotime($task['due_at']))) : 'Any time' ?></span>
+                                        </a>
+                                    <?php endforeach; endif; ?>
                                 </div>
-                                <div class="fd-task-footer"><a class="fd-link" href="#">View all tasks →</a></div>
                             </article>
                         </div>
                     </section>
@@ -2723,85 +2834,29 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer {
                     <section class="row g-3 mb-3">
                         <div class="col-xl-9">
                             <article class="fd-card fd-panel fd-recent-jobs-card">
-                                <div class="fd-panel-title">
-                                    <h2>Recent Jobs</h2><a class="fd-view-button" href="#">View All Jobs</a>
-                                </div>
+                                <div class="fd-panel-title"><h2>Recent Jobs</h2><a class="fd-view-button" href="jobs.php">View All Jobs</a></div>
                                 <div class="table-responsive">
                                     <table class="table fd-jobs-table">
-                                        <thead>
-                                            <tr>
-                                                <th>Job ID</th>
-                                                <th>Job Name</th>
-                                                <th>Client</th>
-                                                <th>Service</th>
-                                                <th>Worker</th>
-                                                <th>Status</th>
-                                                <th>Due Date</th>
-                                                <th>Actions</th>
-                                            </tr>
-                                        </thead>
+                                        <thead><tr><th>Job ID</th><th>Job Name</th><th>Client</th><th>Service</th><th>Worker</th><th>Status</th><th>Due Date</th><th>Actions</th></tr></thead>
                                         <tbody>
+                                        <?php if (empty($recentJobs)): ?>
+                                            <tr><td colspan="8" class="text-center py-4" style="color:#9aa4b3">No jobs found.</td></tr>
+                                        <?php else: foreach ($recentJobs as $job): ?>
                                             <tr>
-                                                <td>JOB-1048</td>
-                                                <td><span class="fd-job-name">Office Electrical Fit-out</span></td>
-                                                <td>Orion Tech Park</td>
-                                                <td>Electrical</td>
-                                                <td>Arun Kumar</td>
-                                                <td><span class="fd-status progress">In Progress</span></td>
-                                                <td>26 Aug 2026</td>
-                                                <td><a class="fd-action-link" href="#"><i class="bi bi-eye"></i></a>
-                                                </td>
+                                                <td><?= fd_h($job['job_no']) ?></td>
+                                                <td><span class="fd-job-name"><?= fd_h($job['title']) ?></span></td>
+                                                <td><?= fd_h($job['client_name']) ?></td>
+                                                <td><?= fd_h($job['service_name'] ?: '-') ?></td>
+                                                <td><?= fd_h($job['worker_name'] ?: 'Unassigned') ?></td>
+                                                <td><span class="fd-status <?= fd_h(fd_status_class($job['status'])) ?>"><?= fd_h(fd_status_label($job['status'])) ?></span></td>
+                                                <td><?= !empty($job['end_date']) ? fd_h(date('d M Y',strtotime($job['end_date']))) : (!empty($job['start_date']) ? fd_h(date('d M Y',strtotime($job['start_date']))) : '-') ?></td>
+                                                <td><a class="fd-action-link" href="job-view?job_id=<?= (int)$job['id'] ?>"><i class="bi bi-eye"></i></a></td>
                                             </tr>
-                                            <tr>
-                                                <td>JOB-1047</td>
-                                                <td><span class="fd-job-name">AC Preventive Maintenance</span></td>
-                                                <td>GreenLeaf Retail</td>
-                                                <td>HVAC Service</td>
-                                                <td>Ravi S</td>
-                                                <td><span class="fd-status completed">Completed</span></td>
-                                                <td>24 Aug 2026</td>
-                                                <td><a class="fd-action-link" href="#"><i class="bi bi-eye"></i></a>
-                                                </td>
-                                            </tr>
-                                            <tr>
-                                                <td>JOB-1046</td>
-                                                <td><span class="fd-job-name">CCTV Camera Installation</span></td>
-                                                <td>Sunrise Apartments</td>
-                                                <td>Security Systems</td>
-                                                <td>Manoj P</td>
-                                                <td><span class="fd-status pending">Pending</span></td>
-                                                <td>28 Aug 2026</td>
-                                                <td><a class="fd-action-link" href="#"><i class="bi bi-eye"></i></a>
-                                                </td>
-                                            </tr>
-                                            <tr>
-                                                <td>JOB-1045</td>
-                                                <td><span class="fd-job-name">Washroom Plumbing Repair</span></td>
-                                                <td>Apex Business Centre</td>
-                                                <td>Plumbing</td>
-                                                <td>Selvam R</td>
-                                                <td><span class="fd-status completed">Completed</span></td>
-                                                <td>23 Aug 2026</td>
-                                                <td><a class="fd-action-link" href="#"><i class="bi bi-eye"></i></a>
-                                                </td>
-                                            </tr>
-                                            <tr>
-                                                <td>JOB-1044</td>
-                                                <td><span class="fd-job-name">Exterior Painting Works</span></td>
-                                                <td>Lakeview Residency</td>
-                                                <td>Painting</td>
-                                                <td>Karthik M</td>
-                                                <td><span class="fd-status progress">In Progress</span></td>
-                                                <td>30 Aug 2026</td>
-                                                <td><a class="fd-action-link" href="#"><i class="bi bi-eye"></i></a>
-                                                </td>
-                                            </tr>
+                                        <?php endforeach; endif; ?>
                                         </tbody>
                                     </table>
                                 </div>
-                                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 pt-3"
-                                    style="color:#6f7b90;font-size:9px;"><span>Showing the 5 most recent jobs</span><a
-                                        class="fd-link" href="#">Open jobs list →</a></div>
+                                <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 pt-3" style="color:#6f7b90;font-size:9px"><span>Showing the 5 most recent jobs</span><a class="fd-link" href="jobs.php">Open jobs list →</a></div>
                             </article>
                         </div>
 
@@ -2809,50 +2864,26 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer {
                             <div class="row g-3">
                                 <div class="col-xl-12 col-md-6">
                                     <article class="fd-card fd-panel">
-                                        <div class="fd-panel-title">
-                                            <h2>Today's Schedule</h2><a class="fd-link" href="#">View Calendar</a>
-                                        </div>
-                                        <a class="fd-schedule-event" href="#"><span class="fd-schedule-dot"
-                                                style="background:#123d70"></span><span class="fd-schedule-time">10:30
-                                                AM</span><span class="fd-schedule-info"><strong>Site
-                                                    Inspection</strong><small>Orion Tech Park</small></span></a>
-                                        <a class="fd-schedule-event" href="#"><span class="fd-schedule-dot"
-                                                style="background:#74b824"></span><span class="fd-schedule-time">2:30
-                                                PM</span><span class="fd-schedule-info"><strong>Client Review
-                                                    Meeting</strong><small>GreenLeaf Retail</small></span></a>
-                                        <a class="fd-schedule-event" href="#"><span class="fd-schedule-dot"
-                                                style="background:#96c945"></span><span class="fd-schedule-time">5:00
-                                                PM</span><span class="fd-schedule-info"><strong>Technician
-                                                    Briefing</strong><small>FieldPlx Office</small></span></a>
-                                        <a class="fd-link" href="#">View full schedule →</a>
+                                        <div class="fd-panel-title"><h2>Today's Schedule</h2><a class="fd-link" href="jobs.php">View Jobs</a></div>
+                                        <?php if (empty($todaySchedule)): ?>
+                                            <div class="fd-empty">No jobs scheduled for today.</div>
+                                        <?php else: foreach ($todaySchedule as $event): ?>
+                                            <a class="fd-schedule-event" href="job-view?job_id=<?= (int)$event['id'] ?>"><span class="fd-schedule-dot" style="background:<?= fd_status_class($event['status'])==='completed' ? '#74b824' : '#123d70' ?>"></span><span class="fd-schedule-time"><?= !empty($event['start_time']) ? fd_h(date('g:i A',strtotime($event['start_time']))) : 'Any time' ?></span><span class="fd-schedule-info"><strong><?= fd_h($event['title']) ?></strong><small><?= fd_h($event['client_name']) ?></small></span></a>
+                                        <?php endforeach; endif; ?>
                                     </article>
                                 </div>
-
                                 <div class="col-xl-12 col-md-6">
                                     <article class="fd-card fd-panel">
-                                        <div class="fd-panel-title">
-                                            <h2>Recent Activity</h2>
-                                        </div>
-                                        <div class="fd-activity-item"><span class="fd-activity-icon green"><i
-                                                    class="bi bi-check2-circle"></i></span><span
-                                                class="fd-activity-content"><strong>Job JOB-1047
-                                                    completed</strong><small>AC preventive maintenance · 18 min
-                                                    ago</small></span></div>
-                                        <div class="fd-activity-item"><span class="fd-activity-icon orange"><i
-                                                    class="bi bi-credit-card"></i></span><span
-                                                class="fd-activity-content"><strong>Payment of ₹24,500
-                                                    received</strong><small>GreenLeaf Retail · 28 min ago</small></span>
-                                        </div>
-                                        <div class="fd-activity-item"><span class="fd-activity-icon blue"><i
-                                                    class="bi bi-person-plus"></i></span><span
-                                                class="fd-activity-content"><strong>New client
-                                                    added</strong><small>Metro Foods Pvt Ltd · 1 hr ago</small></span>
-                                        </div>
-                                        <div class="fd-activity-item"><span class="fd-activity-icon lime"><i
-                                                    class="bi bi-briefcase"></i></span><span
-                                                class="fd-activity-content"><strong>JOB-1048
-                                                    created</strong><small>Office Electrical Fit-out · 2 hrs
-                                                    ago</small></span></div>
+                                        <div class="fd-panel-title"><h2>Recent Activity</h2></div>
+                                        <?php if (empty($recentActivity)): ?>
+                                            <div class="fd-empty">No recent activity.</div>
+                                        <?php else: foreach ($recentActivity as $activity):
+                                            $event = strtolower((string)$activity['event_type']);
+                                            $icon = strpos($event,'payment')!==false ? 'bi-credit-card' : (strpos($event,'client')!==false ? 'bi-person-plus' : (strpos($event,'quote')!==false ? 'bi-file-earmark-text' : 'bi-briefcase'));
+                                            $tone = strpos($event,'payment')!==false ? 'orange' : (strpos($event,'completed')!==false ? 'green' : 'blue');
+                                        ?>
+                                            <div class="fd-activity-item"><span class="fd-activity-icon <?= fd_h($tone) ?>"><i class="bi <?= fd_h($icon) ?>"></i></span><span class="fd-activity-content"><strong><?= fd_h($activity['title']) ?></strong><small><?= fd_h(fd_relative_time($activity['created_at'])) ?></small></span></div>
+                                        <?php endforeach; endif; ?>
                                     </article>
                                 </div>
                             </div>
@@ -2860,34 +2891,10 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer {
                     </section>
 
                     <section class="row g-3">
-                        <div class="col-xl-3 col-md-6">
-                            <article class="fd-card fd-bottom-card"><span class="fd-bottom-icon"
-                                    style="color:#123d70;background:#edf2f7"><i class="bi bi-people"></i></span>
-                                <div class="fd-bottom-content"><small>Total Clients</small><strong>26</strong><span
-                                        class="growth">+3 this month</span></div>
-                            </article>
-                        </div>
-                        <div class="col-xl-3 col-md-6">
-                            <article class="fd-card fd-bottom-card"><span class="fd-bottom-icon"
-                                    style="color:#74b824;background:#f0f8e5"><i class="bi bi-person-badge"></i></span>
-                                <div class="fd-bottom-content"><small>Total Workers</small><strong>14</strong><span
-                                        class="growth">12 active today</span></div>
-                            </article>
-                        </div>
-                        <div class="col-xl-3 col-md-6">
-                            <article class="fd-card fd-bottom-card"><span class="fd-bottom-icon"
-                                    style="color:#5d971b;background:#eef7df"><i class="bi bi-receipt"></i></span>
-                                <div class="fd-bottom-content"><small>Pending
-                                        Invoices</small><strong>7</strong><span>₹86,500 outstanding</span></div>
-                            </article>
-                        </div>
-                        <div class="col-xl-3 col-md-6">
-                            <article class="fd-card fd-bottom-card"><span class="fd-bottom-icon"
-                                    style="color:#96c945;background:#f4f9ea"><i class="bi bi-credit-card"></i></span>
-                                <div class="fd-bottom-content"><small>Pending
-                                        Payments</small><strong>3</strong><span>₹42,300 pending</span></div>
-                            </article>
-                        </div>
+                        <div class="col-xl-3 col-md-6"><article class="fd-card fd-bottom-card"><span class="fd-bottom-icon" style="color:#123d70;background:#edf2f7"><i class="bi bi-people"></i></span><div class="fd-bottom-content"><small>Total Clients</small><strong><?= number_format($totalClients) ?></strong><span>Active customer accounts</span></div></article></div>
+                        <div class="col-xl-3 col-md-6"><article class="fd-card fd-bottom-card"><span class="fd-bottom-icon" style="color:#74b824;background:#f0f8e5"><i class="bi bi-person-badge"></i></span><div class="fd-bottom-content"><small>Total Workers</small><strong><?= number_format($totalWorkers) ?></strong><span class="growth"><?= number_format($activeWorkersToday) ?> assigned today</span></div></article></div>
+                        <div class="col-xl-3 col-md-6"><article class="fd-card fd-bottom-card"><span class="fd-bottom-icon" style="color:#5d971b;background:#eef7df"><i class="bi bi-receipt"></i></span><div class="fd-bottom-content"><small>Pending Invoices</small><strong><?= number_format($pendingInvoiceCount) ?></strong><span><?= fd_h(fd_money($pendingInvoiceAmount,$currency)) ?> outstanding</span></div></article></div>
+                        <div class="col-xl-3 col-md-6"><article class="fd-card fd-bottom-card"><span class="fd-bottom-icon" style="color:#96c945;background:#f4f9ea"><i class="bi bi-credit-card"></i></span><div class="fd-bottom-content"><small>Pending Payments</small><strong><?= number_format($pendingPaymentCount) ?></strong><span><?= fd_h(fd_money($pendingPaymentAmount,$currency)) ?> pending</span></div></article></div>
                     </section>
                 </div>
                 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"></script>
@@ -2899,9 +2906,9 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer {
                             return;
                         }
 
-                        var chartLabels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-                        var jobsValues = [4, 6, 8, 5, 9, 7, 9];
-                        var completedValues = [2, 4, 5, 3, 6, 5, 6];
+                        var chartLabels = <?= json_encode($chartLabels) ?>;
+                        var jobsValues = <?= json_encode($chartJobs) ?>;
+                        var completedValues = <?= json_encode($chartCompleted) ?>;
 
                         var jobsCanvas = document.getElementById('fdJobsChart');
                         if (jobsCanvas) {

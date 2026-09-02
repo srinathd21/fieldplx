@@ -1,7 +1,7 @@
 <?php
 /*
 |--------------------------------------------------------------------------
-| FieldPlx Tenant Sidebar - Database Only
+| FieldPlx Tenant Sidebar - Database Only - Version 1.1.0
 |--------------------------------------------------------------------------
 |
 | IMPORTANT:
@@ -68,6 +68,60 @@ function ts_safe_menu_url($url)
     return $url;
 }
 
+
+/*
+|--------------------------------------------------------------------------
+| Active sidebar item by current URL
+|--------------------------------------------------------------------------
+*/
+function ts_normalize_path($value)
+{
+    $value = trim((string)$value);
+    if ($value === '' || $value === '#') {
+        return '';
+    }
+
+    $path = parse_url($value, PHP_URL_PATH);
+    if ($path === null || $path === false) {
+        $path = $value;
+    }
+
+    $path = trim((string)$path);
+    $path = preg_replace('#/+#', '/', $path);
+    $path = rtrim($path, '/');
+
+    if ($path === '') {
+        return '/';
+    }
+
+    return $path;
+}
+
+function ts_url_is_active($menuUrl, $currentPath)
+{
+    $menuPath = ts_normalize_path($menuUrl);
+    if ($menuPath === '') {
+        return false;
+    }
+
+    $currentPath = ts_normalize_path($currentPath);
+
+    $menuBase = basename($menuPath);
+    $currentBase = basename($currentPath);
+
+    $menuBase = preg_replace('/\.php$/i', '', $menuBase);
+    $currentBase = preg_replace('/\.php$/i', '', $currentBase);
+
+    if ($menuBase !== '' && $menuBase === $currentBase) {
+        return true;
+    }
+
+    return $menuPath === $currentPath;
+}
+
+$currentRequestPath = isset($_SERVER['REQUEST_URI'])
+    ? (string)parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH)
+    : '';
 function ts_icon_class($icon)
 {
     $icon = trim((string) $icon);
@@ -507,7 +561,258 @@ $topLevelIds =
             $topLevelIds
         )
     );
+
+/*
+|--------------------------------------------------------------------------
+| Dynamic quick-create actions
+|--------------------------------------------------------------------------
+|
+| The Create flyout follows the same effective plan/tenant module result as
+| the main sidebar. An action is therefore shown only when its module is
+| enabled for the current tenant. Module aliases support the existing legacy
+| Quotation and Job Cards module codes without rendering duplicate actions.
+|
+*/
+$quickCreateDefinitions = array(
+    'client' => array(
+        'module_codes' => array('clients'),
+        'label' => 'Client',
+        'url' => 'client-form.php',
+        'icon' => 'bi bi-person',
+        'tone' => 'client'
+    ),
+    'request' => array(
+        'module_codes' => array('requests'),
+        'label' => 'Request',
+        'url' => 'add-request.php',
+        'icon' => 'bi bi-inbox',
+        'tone' => 'request'
+    ),
+    'quote' => array(
+        'module_codes' => array('quotes', 'quotation'),
+        'label' => 'Quote',
+        'url' => 'add-quotation.php',
+        'icon' => 'bi bi-file-earmark-text',
+        'tone' => 'quote'
+    ),
+    'job' => array(
+        'module_codes' => array('jobs', 'job-cards'),
+        'label' => 'Job',
+        'url' => 'job-form.php',
+        'icon' => 'bi bi-hammer',
+        'tone' => 'job'
+    ),
+    'invoice' => array(
+        'module_codes' => array('invoices'),
+        'label' => 'Invoice',
+        'url' => 'invoice-form.php',
+        'icon' => 'bi bi-receipt',
+        'tone' => 'invoice'
+    )
+);
+
+$quickCreateActions = array();
+$effectiveModulesByCode = array();
+
+foreach ($moduleById as $effectiveModule) {
+    $effectiveModuleCode = strtolower(
+        trim((string)($effectiveModule['module_code'] ?? ''))
+    );
+
+    if (
+        $effectiveModuleCode !== '' &&
+        ($effectiveModule['tenant_access_type'] ?? '') !== 'group_only'
+    ) {
+        $effectiveModulesByCode[$effectiveModuleCode] = $effectiveModule;
+    }
+}
+
+foreach ($quickCreateDefinitions as $quickCreateKey => $definition) {
+    $matchedModule = null;
+
+    foreach ($definition['module_codes'] as $candidateCode) {
+        if (isset($effectiveModulesByCode[$candidateCode])) {
+            $matchedModule = $effectiveModulesByCode[$candidateCode];
+            break;
+        }
+    }
+
+    if ($matchedModule === null) {
+        continue;
+    }
+
+    $definition['key'] = $quickCreateKey;
+    $definition['module_id'] = (int)$matchedModule['id'];
+    $definition['module_code'] = (string)$matchedModule['module_code'];
+    $quickCreateActions[] = $definition;
+}
 ?>
+
+<style>
+    .fieldplx-quick-create {
+        position: relative;
+        margin: 0 10px 12px;
+    }
+
+    .fieldplx-quick-create-button {
+        width: 100%;
+        min-height: 42px;
+        padding: 8px 12px;
+        display: flex;
+        align-items: center;
+        gap: 11px;
+        border: 1px solid rgba(255, 255, 255, .12);
+        border-radius: 10px;
+        background: rgba(255, 255, 255, .08);
+        color: #ffffff;
+        font: inherit;
+        cursor: pointer;
+        transition: background .18s ease, border-color .18s ease;
+    }
+
+    .fieldplx-quick-create-button:hover,
+    .fieldplx-quick-create.open .fieldplx-quick-create-button {
+        border-color: rgba(255, 255, 255, .22);
+        background: rgba(255, 255, 255, .14);
+    }
+
+    .fieldplx-quick-create-symbol {
+        width: 24px;
+        height: 24px;
+        flex: 0 0 24px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+        background: #ffffff;
+        color: #6d28d9;
+        font-size: 16px;
+        font-weight: 700;
+        transition: transform .18s ease;
+    }
+
+    .fieldplx-quick-create.open .fieldplx-quick-create-symbol {
+        transform: rotate(45deg);
+    }
+
+    .fieldplx-quick-create-label {
+        min-width: 0;
+        flex: 1;
+        text-align: left;
+        font-size: 13px;
+        font-weight: 600;
+    }
+
+    .fieldplx-quick-create-chevron {
+        color: rgba(255, 255, 255, .65);
+        font-size: 12px;
+        transition: transform .18s ease;
+    }
+
+    .fieldplx-quick-create.open .fieldplx-quick-create-chevron {
+        transform: rotate(180deg);
+    }
+
+    .fieldplx-quick-create-menu {
+        position: fixed;
+        z-index: 1080;
+        min-width: 410px;
+        padding: 8px;
+        display: grid;
+        grid-template-columns: repeat(5, minmax(68px, 1fr));
+        gap: 4px;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        background: #ffffff;
+        box-shadow: 0 18px 45px rgba(15, 23, 42, .18);
+        opacity: 0;
+        visibility: hidden;
+        transform: translateY(-4px);
+        transition: opacity .16s ease, transform .16s ease, visibility .16s ease;
+    }
+
+    .fieldplx-quick-create.open .fieldplx-quick-create-menu {
+        opacity: 1;
+        visibility: visible;
+        transform: translateY(0);
+    }
+
+    .fieldplx-quick-create-action {
+        min-width: 0;
+        padding: 10px 6px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 7px;
+        border-radius: 9px;
+        color: #334155;
+        text-align: center;
+        text-decoration: none;
+        font-size: 12px;
+        font-weight: 600;
+        transition: background .16s ease, color .16s ease;
+    }
+
+    .fieldplx-quick-create-action:hover {
+        background: #f7f5ff;
+        color: #5b21b6;
+    }
+
+    .fieldplx-quick-create-action i {
+        font-size: 20px;
+    }
+
+    .fieldplx-quick-create-action.client i { color: #64748b; }
+    .fieldplx-quick-create-action.request i { color: #d97706; }
+    .fieldplx-quick-create-action.quote i { color: #be185d; }
+    .fieldplx-quick-create-action.job i { color: #26832b; }
+    .fieldplx-quick-create-action.invoice i { color: #2563eb; }
+
+    body.fieldplx-sidebar-collapsed .fieldplx-quick-create {
+        margin-left: 9px;
+        margin-right: 9px;
+    }
+
+    body.fieldplx-sidebar-collapsed .fieldplx-quick-create-button {
+        justify-content: center;
+        padding-left: 7px;
+        padding-right: 7px;
+    }
+
+    body.fieldplx-sidebar-collapsed .fieldplx-quick-create-label,
+    body.fieldplx-sidebar-collapsed .fieldplx-quick-create-chevron {
+        display: none;
+    }
+
+    @media (max-width: 991.98px) {
+        .fieldplx-quick-create-menu {
+            position: static;
+            width: 100%;
+            min-width: 0;
+            max-height: 0;
+            margin-top: 0;
+            padding-top: 0;
+            padding-bottom: 0;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            overflow: hidden;
+            border-width: 0;
+            box-shadow: none;
+        }
+
+        .fieldplx-quick-create.open .fieldplx-quick-create-menu {
+            max-height: 110px;
+            margin-top: 7px;
+            padding: 8px 4px;
+            border-width: 1px;
+        }
+
+        .fieldplx-quick-create-action {
+            padding-left: 2px;
+            padding-right: 2px;
+            font-size: 10px;
+        }
+    }
+</style>
 
 <aside class="fieldplx-sidebar" id="fieldplxSidebar">
 
@@ -565,6 +870,50 @@ $topLevelIds =
     </div>
 
     <div class="fieldplx-sidebar-body">
+
+        <?php if (!empty($quickCreateActions)): ?>
+
+            <div class="fieldplx-quick-create" id="fieldplxQuickCreate">
+
+                <button
+                    class="fieldplx-quick-create-button"
+                    id="fieldplxQuickCreateButton"
+                    type="button"
+                    aria-expanded="false"
+                    aria-controls="fieldplxQuickCreateMenu"
+                >
+                    <span class="fieldplx-quick-create-symbol">
+                        <i class="bi bi-plus"></i>
+                    </span>
+                    <span class="fieldplx-quick-create-label">Create</span>
+                    <span class="fieldplx-quick-create-chevron">
+                        <i class="bi bi-chevron-down"></i>
+                    </span>
+                </button>
+
+                <div
+                    class="fieldplx-quick-create-menu"
+                    id="fieldplxQuickCreateMenu"
+                    role="menu"
+                    aria-label="Create new"
+                >
+                    <?php foreach ($quickCreateActions as $quickAction): ?>
+                        <a
+                            class="fieldplx-quick-create-action <?= ts_h($quickAction['tone']) ?>"
+                            href="<?= ts_h(ts_safe_menu_url($quickAction['url'])) ?>"
+                            role="menuitem"
+                            data-module-id="<?= (int)$quickAction['module_id'] ?>"
+                            data-module-code="<?= ts_h($quickAction['module_code']) ?>"
+                        >
+                            <i class="<?= ts_h($quickAction['icon']) ?>"></i>
+                            <span><?= ts_h($quickAction['label']) ?></span>
+                        </a>
+                    <?php endforeach; ?>
+                </div>
+
+            </div>
+
+        <?php endif; ?>
 
         <nav class="fieldplx-sidebar-nav">
 
@@ -635,11 +984,36 @@ $topLevelIds =
                             $parent['icon_name']
                             ?? ''
                         );
+
+                    $parentIsActive =
+                        $parentAccessible &&
+                        ts_url_is_active(
+                            $parentUrl,
+                            $currentRequestPath
+                        );
+
+                    $childActive = false;
+                    foreach ($children as $childCheck) {
+                        if (
+                            ts_url_is_active(
+                                ts_safe_menu_url(
+                                    $childCheck['menu_url'] ?? ''
+                                ),
+                                $currentRequestPath
+                            )
+                        ) {
+                            $childActive = true;
+                            break;
+                        }
+                    }
+
+                    $menuShouldOpen =
+                        $parentIsActive || $childActive;
                     ?>
 
                     <?php if (!empty($children)): ?>
 
-                        <div class="fieldplx-sidebar-menu" data-module-id="<?= (int) $parent['id'] ?>" data-module-code="<?= ts_h(
+                        <div class="fieldplx-sidebar-menu<?= $menuShouldOpen ? ' menu-open' : '' ?>" data-module-id="<?= (int) $parent['id'] ?>" data-module-code="<?= ts_h(
                               $parent['module_code']
                           ) ?>">
 
@@ -677,7 +1051,7 @@ $topLevelIds =
                                 ):
                                     ?>
 
-                                    <a class="fieldplx-sidebar-sublink" href="<?= ts_h($parentUrl) ?>"
+                                    <a class="fieldplx-sidebar-sublink<?= $parentIsActive ? ' active' : '' ?>" href="<?= ts_h($parentUrl) ?>"
                                         data-module-id="<?= (int) $parent['id'] ?>" data-module-code="<?= ts_h(
                                               $parent['module_code']
                                           ) ?>">
@@ -689,12 +1063,18 @@ $topLevelIds =
                                 <?php endif; ?>
 
                                 <?php foreach ($children as $child): ?>
+                                    <?php
+                                    $childUrl = ts_safe_menu_url(
+                                        $child['menu_url'] ?? ''
+                                    );
+                                    $childIsActive = ts_url_is_active(
+                                        $childUrl,
+                                        $currentRequestPath
+                                    );
+                                    ?>
 
-                                    <a class="fieldplx-sidebar-sublink" href="<?= ts_h(
-                                        ts_safe_menu_url(
-                                            $child['menu_url']
-                                            ?? ''
-                                        )
+                                    <a class="fieldplx-sidebar-sublink<?= $childIsActive ? ' active' : '' ?>" href="<?= ts_h(
+                                        $childUrl
                                     ) ?>" data-module-id="<?= (int) $child['id'] ?>" data-module-code="<?= ts_h(
                                            $child['module_code']
                                        ) ?>">
@@ -720,7 +1100,7 @@ $topLevelIds =
                         }
                         ?>
 
-                        <a class="fieldplx-sidebar-link" href="<?= ts_h($parentUrl) ?>" data-module-id="<?= (int) $parent['id'] ?>"
+                        <a class="fieldplx-sidebar-link<?= $parentIsActive ? ' active' : '' ?>" href="<?= ts_h($parentUrl) ?>" data-module-id="<?= (int) $parent['id'] ?>"
                             data-module-code="<?= ts_h(
                                 $parent['module_code']
                             ) ?>">
@@ -824,6 +1204,67 @@ $topLevelIds =
                 window.matchMedia(
                     '(max-width: 991.98px)'
                 );
+            const quickCreate =
+                document.getElementById(
+                    'fieldplxQuickCreate'
+                );
+            const quickCreateButton =
+                document.getElementById(
+                    'fieldplxQuickCreateButton'
+                );
+            const quickCreateMenu =
+                document.getElementById(
+                    'fieldplxQuickCreateMenu'
+                );
+
+            function positionQuickCreateMenu() {
+                if (
+                    !quickCreateButton ||
+                    !quickCreateMenu ||
+                    isMobileSidebar()
+                ) {
+                    return;
+                }
+
+                const rect =
+                    quickCreateButton.getBoundingClientRect();
+
+                quickCreateMenu.style.top =
+                    Math.max(8, rect.top) + 'px';
+                quickCreateMenu.style.left =
+                    (rect.right + 10) + 'px';
+            }
+
+            function closeQuickCreate() {
+                if (!quickCreate || !quickCreateButton) {
+                    return;
+                }
+
+                quickCreate.classList.remove('open');
+                quickCreateButton.setAttribute(
+                    'aria-expanded',
+                    'false'
+                );
+            }
+
+            function toggleQuickCreate() {
+                if (!quickCreate || !quickCreateButton) {
+                    return;
+                }
+
+                const willOpen =
+                    !quickCreate.classList.contains('open');
+
+                quickCreate.classList.toggle('open', willOpen);
+                quickCreateButton.setAttribute(
+                    'aria-expanded',
+                    willOpen ? 'true' : 'false'
+                );
+
+                if (willOpen) {
+                    positionQuickCreateMenu();
+                }
+            }
 
             function isMobileSidebar() {
                 return mobileMedia.matches;
@@ -1006,6 +1447,37 @@ $topLevelIds =
                 );
             }
 
+            if (quickCreateButton) {
+                quickCreateButton.addEventListener(
+                    'click',
+                    function (event) {
+                        event.stopPropagation();
+                        toggleQuickCreate();
+                    }
+                );
+            }
+
+            if (quickCreateMenu) {
+                quickCreateMenu.addEventListener(
+                    'click',
+                    function (event) {
+                        event.stopPropagation();
+                    }
+                );
+            }
+
+            document.addEventListener(
+                'click',
+                function (event) {
+                    if (
+                        quickCreate &&
+                        !quickCreate.contains(event.target)
+                    ) {
+                        closeQuickCreate();
+                    }
+                }
+            );
+
             menuToggles.forEach(
                 function (menuToggle) {
 
@@ -1128,12 +1600,17 @@ $topLevelIds =
 
                     if (
                         event.key ===
-                        'Escape' &&
-                        body.classList.contains(
-                            'fieldplx-sidebar-mobile-open'
-                        )
+                        'Escape'
                     ) {
-                        closeMobileSidebar();
+                        closeQuickCreate();
+
+                        if (
+                            body.classList.contains(
+                                'fieldplx-sidebar-mobile-open'
+                            )
+                        ) {
+                            closeMobileSidebar();
+                        }
                     }
                 }
             );
@@ -1156,6 +1633,13 @@ $topLevelIds =
                             currentMobileState;
 
                         syncSidebarMode();
+                    }
+
+                    if (
+                        quickCreate &&
+                        quickCreate.classList.contains('open')
+                    ) {
+                        positionQuickCreateMenu();
                     }
                 }
             );

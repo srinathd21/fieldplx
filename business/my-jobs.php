@@ -1,4 +1,5 @@
 <?php
+/* FieldPlx My Jobs - Version 1.1.0 - Calendar View - 2026-08-28 */
 require_once __DIR__ . '/includes/auth.php';
 
 $pageTitle = 'My Jobs';
@@ -4120,6 +4121,42 @@ a,a:link,a:visited,a:hover,a:focus,a:active{text-decoration:none!important}
 @media(max-width:900px){.mj-date-wrap{width:100%}.mj-date{flex:1;width:auto}}
 @media(max-width:767.98px){.mj-page-head{flex-direction:column}.mj-refresh{width:100%}.mj-search{width:100%}.mj-filter{flex:1;min-width:120px}}
 @media(max-width:480px){.mj-toolbar{align-items:stretch}.mj-filter,.mj-clear{width:100%}.mj-date-wrap{display:grid;grid-template-columns:auto 1fr auto 1fr}.mj-toast{left:12px;right:12px;width:auto}}
+
+/* My Jobs calendar view */
+.mj-head-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.mj-view-switch{min-height:38px;padding:0 12px;display:inline-flex;align-items:center;justify-content:center;gap:7px;border:1px solid var(--fd-border,#e5eaf1);border-radius:8px;color:#43546c;background:#fff;font-size:9.5px;font-weight:700;cursor:pointer}
+.mj-view-switch:hover,.mj-view-switch.active{border-color:#74b824;color:#fff;background:linear-gradient(90deg,#7fc92d,#68aa1d)}
+.mj-calendar-view{display:none;padding:14px;background:#fff}
+.mj-calendar-view.show{display:block}
+.mj-table-view.is-hidden{display:none}
+.mj-calendar-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:13px;flex-wrap:wrap}
+.mj-calendar-title{margin:0;color:#0b1933;font-size:15px;font-weight:700}
+.mj-calendar-actions{display:flex;align-items:center;gap:6px}
+.mj-calendar-btn{min-width:34px;height:34px;padding:0 9px;display:inline-flex;align-items:center;justify-content:center;gap:5px;border:1px solid #dfe5ec;border-radius:7px;color:#53657b;background:#fff;font-size:9px;font-weight:700;cursor:pointer}
+.mj-calendar-btn:hover{border-color:#cfe3ae;color:#5d971b;background:#f9fcf4}
+.mj-calendar-loading{min-height:280px;display:grid;place-items:center;color:#8895a7;font-size:10px}
+.mj-calendar-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));border-top:1px solid #e5eaf1;border-left:1px solid #e5eaf1;background:#fff}
+.mj-calendar-weekday{min-height:34px;padding:9px 8px;border-right:1px solid #e5eaf1;border-bottom:1px solid #e5eaf1;color:#65738a;background:#f8fafc;font-size:8.5px;font-weight:700;text-align:center;text-transform:uppercase}
+.mj-calendar-day{min-width:0;min-height:126px;padding:7px;border-right:1px solid #e5eaf1;border-bottom:1px solid #e5eaf1;background:#fff}
+.mj-calendar-day.other{background:#fafbfc}
+.mj-calendar-day.today{background:#fbfdf8;box-shadow:inset 0 0 0 1px #b9d990}
+.mj-calendar-day-head{height:24px;display:flex;align-items:center;justify-content:space-between;margin-bottom:4px}
+.mj-calendar-date{width:25px;height:25px;display:grid;place-items:center;border-radius:50%;color:#4e6078;font-size:9px;font-weight:700}
+.mj-calendar-day.today .mj-calendar-date{color:#fff;background:#74b824}
+.mj-calendar-count{color:#8a97a8;font-size:7.5px}
+.mj-calendar-events{display:flex;flex-direction:column;gap:4px}
+.mj-calendar-event{width:100%;padding:6px 7px;display:block;overflow:hidden;border:1px solid #dfe7ef;border-left:3px solid #123d70;border-radius:6px;color:#20344e;background:#f8fbfe;text-decoration:none!important;cursor:pointer}
+.mj-calendar-event:hover{border-color:#bcd39b;border-left-color:#74b824;background:#f7fbed;color:#20344e}
+.mj-calendar-event.completed,.mj-calendar-event.closed,.mj-calendar-event.ready_to_invoice{border-left-color:#74b824;background:#f5faee}
+.mj-calendar-event.cancelled,.mj-calendar-event.archived{border-left-color:#e45b66;background:#fff7f7}
+.mj-calendar-event.in_progress,.mj-calendar-event.today,.mj-calendar-event.scheduled,.mj-calendar-event.upcoming{border-left-color:#d28a22;background:#fffaf1}
+.mj-calendar-event strong,.mj-calendar-event small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mj-calendar-event strong{font-size:8.5px;line-height:1.25;font-weight:700}
+.mj-calendar-event small{margin-top:2px;color:#76869a;font-size:7.4px;line-height:1.25}
+.mj-calendar-more{padding:3px 2px;color:#5d971b;font-size:7.5px;font-weight:700}
+.mj-calendar-empty{min-height:240px;display:grid;place-items:center;color:#8995a6;font-size:10px;text-align:center}
+@media(max-width:900px){.mj-calendar-view{padding:10px;overflow-x:auto}.mj-calendar-grid{min-width:840px}.mj-calendar-head{min-width:840px}}
+@media(max-width:767.98px){.mj-head-actions{width:100%;display:grid;grid-template-columns:1fr 1fr}.mj-refresh,.mj-view-switch{width:100%}}
 </style>
 </head>
 
@@ -4135,7 +4172,10 @@ a,a:link,a:visited,a:hover,a:focus,a:active{text-decoration:none!important}
     <h1 class="mj-title">My Jobs</h1>
     <p class="mj-sub">Jobs and assessment requests assigned directly to you or through one of your teams. Use the filters below to find assigned work by status, priority and scheduled date.</p>
   </div>
-  <button type="button" class="mj-refresh" id="refreshButton"><i class="bi bi-arrow-clockwise"></i> Refresh Jobs</button>
+  <div class="mj-head-actions">
+    <button type="button" class="mj-view-switch" id="viewSwitchButton"><i class="bi bi-calendar3"></i> Calendar View</button>
+    <button type="button" class="mj-refresh" id="refreshButton"><i class="bi bi-arrow-clockwise"></i> Refresh Jobs</button>
+  </div>
 </section>
 
 <section class="row g-3 mj-summary">
@@ -4154,16 +4194,30 @@ a,a:link,a:visited,a:hover,a:focus,a:active{text-decoration:none!important}
     <button type="button" class="mj-clear" id="clearFilters"><i class="bi bi-x-circle"></i> Clear</button>
   </div>
 
-  <div class="mj-table-wrap">
-    <table class="mj-table">
-      <thead><tr><th>S.No</th><th>Type / No</th><th>Work</th><th>Client / Location</th><th>Service</th><th>Schedule</th><th>Priority</th><th>Status</th><th>Assignment</th><th>Action</th></tr></thead>
-      <tbody id="jobsList"><tr class="mj-loading"><td colspan="10">Loading assigned jobs...</td></tr></tbody>
-    </table>
+  <div class="mj-table-view" id="tableView">
+    <div class="mj-table-wrap">
+      <table class="mj-table">
+        <thead><tr><th>S.No</th><th>Type / No</th><th>Work</th><th>Client / Location</th><th>Service</th><th>Schedule</th><th>Priority</th><th>Status</th><th>Assignment</th><th>Action</th></tr></thead>
+        <tbody id="jobsList"><tr class="mj-loading"><td colspan="10">Loading assigned jobs...</td></tr></tbody>
+      </table>
+    </div>
+
+    <div class="mj-pager">
+      <span id="countText">Showing 0 work items</span>
+      <div class="mj-pager-buttons"><button type="button" id="prevPage"><i class="bi bi-chevron-left"></i></button><button type="button" id="nextPage"><i class="bi bi-chevron-right"></i></button></div>
+    </div>
   </div>
 
-  <div class="mj-pager">
-    <span id="countText">Showing 0 work items</span>
-    <div class="mj-pager-buttons"><button type="button" id="prevPage"><i class="bi bi-chevron-left"></i></button><button type="button" id="nextPage"><i class="bi bi-chevron-right"></i></button></div>
+  <div class="mj-calendar-view" id="calendarView">
+    <div class="mj-calendar-head">
+      <h2 class="mj-calendar-title" id="calendarTitle">Calendar</h2>
+      <div class="mj-calendar-actions">
+        <button type="button" class="mj-calendar-btn" id="calendarPrev" title="Previous month"><i class="bi bi-chevron-left"></i></button>
+        <button type="button" class="mj-calendar-btn" id="calendarToday">Today</button>
+        <button type="button" class="mj-calendar-btn" id="calendarNext" title="Next month"><i class="bi bi-chevron-right"></i></button>
+      </div>
+    </div>
+    <div id="calendarBody" class="mj-calendar-loading"><span><i class="bi bi-hourglass-split"></i> Loading calendar...</span></div>
   </div>
 </section>
 </div>
@@ -4174,45 +4228,86 @@ a,a:link,a:visited,a:hover,a:focus,a:active{text-decoration:none!important}
 (function(){
 'use strict';
 var csrfToken=<?= json_encode($myJobsCsrfToken) ?>;
-var state={page:1,perPage:10,search:'',status:'',priority:'',dateFrom:'',dateTo:''};
+var state={page:1,perPage:10,search:'',status:'',priority:'',dateFrom:'',dateTo:'',view:'table'};
+var calendarDate=new Date();
+calendarDate=new Date(calendarDate.getFullYear(),calendarDate.getMonth(),1);
 var list=document.getElementById('jobsList'),toast=document.getElementById('toast'),toastMsg=document.getElementById('toastMsg'),toastTimer=null,searchTimer=null;
+var tableView=document.getElementById('tableView'),calendarView=document.getElementById('calendarView'),calendarBody=document.getElementById('calendarBody'),viewSwitchButton=document.getElementById('viewSwitchButton');
 function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;')}
 function title(v){return String(v||'-').replace(/_/g,' ').replace(/\b\w/g,function(x){return x.toUpperCase()})}
 function notify(type,msg){if(toastTimer)clearTimeout(toastTimer);toast.className='mj-toast '+(type||'info')+' show';toastMsg.textContent=msg||'Notification';toastTimer=setTimeout(function(){toast.classList.remove('show')},3000)}
 function parse(r){return r.text().then(function(raw){var d,t=(raw||'').trim();try{d=t?JSON.parse(t):{}}catch(e){throw new Error(t.replace(/<br\s*\/?>/gi,' ').replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim()||'Invalid server response.')}if(!r.ok||!d.success)throw new Error(d.message||'Request failed.');return d})}
 function request(fd){fd.append('csrf_token',csrfToken);return fetch('api/my-jobs.php',{method:'POST',body:fd,credentials:'same-origin',headers:{'X-Requested-With':'XMLHttpRequest','Accept':'application/json'}}).then(parse)}
-function fmtDate(v){if(!v)return 'Not scheduled';var d=new Date(String(v).replace(' ','T'));return isNaN(d.getTime())?esc(v):d.toLocaleDateString(undefined,{day:'2-digit',month:'short',year:'numeric'})}
+function parseDate(v){if(!v)return null;var parts=String(v).substring(0,10).split('-');if(parts.length!==3)return null;var y=Number(parts[0]),m=Number(parts[1]),d=Number(parts[2]);if(!y||!m||!d)return null;return new Date(y,m-1,d)}
+function dateKey(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
+function fmtDate(v){var d=parseDate(v);return !d?String(v||'Not scheduled'):d.toLocaleDateString(undefined,{day:'2-digit',month:'short',year:'numeric'})}
 function render(rows,pagination){
   if(!rows.length){list.innerHTML='<tr><td colspan="10" class="mj-empty-cell"><i class="bi bi-briefcase"></i><strong>No assigned work found</strong><span>Change the filters or wait for a new assignment.</span></td></tr>';return;}
   var h='',start=Number((pagination&&pagination.from)||1);
   rows.forEach(function(r,index){
     var isAssessment=r.item_type==='assessment';
-    var isRevisit=isAssessment && Number(r.revisit_count||0)>0;
+    var isRevisit=isAssessment&&Number(r.revisit_count||0)>0;
     var typeLabel=isRevisit?'Revisit':(isAssessment?'Assessment':'Job');
     var typeClass=isRevisit?'revisit':(isAssessment?'assessment':'job');
     var schedule=r.start_date?fmtDate(r.start_date):'Not scheduled';
     if(!isAssessment&&r.end_date&&r.end_date!==r.start_date)schedule+=' - '+fmtDate(r.end_date);
     var assignment=r.assignment_source==='team'?'Team: '+(r.assigned_team_name||'Assigned Team'):'Direct Assignment';
     var viewUrl=isAssessment?'my-assessment-view.php?id='+Number(r.id):'my-job-view.php?id='+Number(r.id);
-    h+='<tr>'+
-      '<td>'+Number(start+index)+'</td>'+
-      '<td><div><span class="mj-type '+typeClass+'">'+esc(typeLabel)+'</span><div class="mj-no" style="margin-top:5px">'+esc(r.item_no||'-')+'</div></div></td>'+
-      '<td><div class="mj-work"><strong>'+esc(r.title||'-')+'</strong><small>'+esc(r.workflow_name?("Workflow: "+r.workflow_name):typeLabel+' work item')+'</small></div></td>'+
-      '<td><div class="mj-client"><strong>'+esc(r.client_name||'-')+'</strong><small>'+esc(r.location_name||'No location')+'</small></div></td>'+
-      '<td>'+esc(r.service_name||'-')+'</td>'+
-      '<td>'+esc(schedule)+'</td>'+
-      '<td><span class="mj-priority '+esc(r.priority||'normal')+'">'+esc(title(r.priority))+'</span></td>'+
-      '<td><span class="mj-status '+esc(r.status)+'">'+esc(title(r.status))+'</span></td>'+
-      '<td><span class="mj-assigned"><i class="bi bi-person-check"></i> '+esc(assignment)+'</span></td>'+
-      '<td><a class="mj-view" href="'+viewUrl+'" title="View '+esc(typeLabel)+'"><i class="bi bi-eye"></i></a></td>'+
-    '</tr>';
+    h+='<tr>'+ '<td>'+Number(start+index)+'</td>'+ '<td><div><span class="mj-type '+typeClass+'">'+esc(typeLabel)+'</span><div class="mj-no" style="margin-top:5px">'+esc(r.item_no||'-')+'</div></div></td>'+ '<td><div class="mj-work"><strong>'+esc(r.title||'-')+'</strong><small>'+esc(r.workflow_name?('Workflow: '+r.workflow_name):typeLabel+' work item')+'</small></div></td>'+ '<td><div class="mj-client"><strong>'+esc(r.client_name||'-')+'</strong><small>'+esc(r.location_name||'No location')+'</small></div></td>'+ '<td>'+esc(r.service_name||'-')+'</td>'+ '<td>'+esc(schedule)+'</td>'+ '<td><span class="mj-priority '+esc(r.priority||'normal')+'">'+esc(title(r.priority))+'</span></td>'+ '<td><span class="mj-status '+esc(r.status)+'">'+esc(title(r.status))+'</span></td>'+ '<td><span class="mj-assigned"><i class="bi bi-person-check"></i> '+esc(assignment)+'</span></td>'+ '<td><a class="mj-view" href="'+viewUrl+'" title="View '+esc(typeLabel)+'"><i class="bi bi-eye"></i></a></td>'+ '</tr>';
   });
   list.innerHTML=h;
 }
 function loading(){list.innerHTML='<tr class="mj-loading"><td colspan="10"><i class="bi bi-hourglass-split"></i> Loading assigned jobs...</td></tr>'}
+function buildListRequest(page,perPage){var fd=new FormData();fd.append('action','list');fd.append('page',page);fd.append('per_page',perPage);fd.append('search',state.search);fd.append('status',state.status);fd.append('priority',state.priority);fd.append('date_from',state.dateFrom);fd.append('date_to',state.dateTo);return fd}
+function updateSummary(d){var s=d.summary||{};document.getElementById('statTotal').textContent=Number(s.total||0);document.getElementById('statToday').textContent=Number(s.today||0);document.getElementById('statProgress').textContent=Number(s.in_progress||0);document.getElementById('statCompleted').textContent=Number(s.completed||0)}
 function load(){
-  var fd=new FormData();fd.append('action','list');fd.append('page',state.page);fd.append('per_page',state.perPage);fd.append('search',state.search);fd.append('status',state.status);fd.append('priority',state.priority);fd.append('date_from',state.dateFrom);fd.append('date_to',state.dateTo);loading();
-  request(fd).then(function(d){var s=d.summary||{},p=d.pagination||{};render(d.jobs||[],p);document.getElementById('statTotal').textContent=Number(s.total||0);document.getElementById('statToday').textContent=Number(s.today||0);document.getElementById('statProgress').textContent=Number(s.in_progress||0);document.getElementById('statCompleted').textContent=Number(s.completed||0);document.getElementById('countText').textContent='Showing '+Number(p.from||0)+'-'+Number(p.to||0)+' of '+Number(p.total||0)+' work items';document.getElementById('prevPage').disabled=state.page<=1;document.getElementById('nextPage').disabled=state.page>=Number(p.pages||1)}).catch(function(e){list.innerHTML='<tr><td colspan="10" class="mj-empty-cell"><i class="bi bi-exclamation-circle"></i><strong>'+esc(e.message)+'</strong></td></tr>';notify('error',e.message)})
+  if(state.view==='calendar'){loadCalendar();return;}
+  loading();
+  request(buildListRequest(state.page,state.perPage)).then(function(d){var p=d.pagination||{};render(d.jobs||[],p);updateSummary(d);document.getElementById('countText').textContent='Showing '+Number(p.from||0)+'-'+Number(p.to||0)+' of '+Number(p.total||0)+' work items';document.getElementById('prevPage').disabled=state.page<=1;document.getElementById('nextPage').disabled=state.page>=Number(p.pages||1)}).catch(function(e){list.innerHTML='<tr><td colspan="10" class="mj-empty-cell"><i class="bi bi-exclamation-circle"></i><strong>'+esc(e.message)+'</strong></td></tr>';notify('error',e.message)})
+}
+function loadAllPages(){
+  return request(buildListRequest(1,100)).then(function(first){
+    updateSummary(first);
+    var all=(first.jobs||[]).slice(),p=first.pagination||{},pages=Math.max(1,Number(p.pages||1));
+    if(pages<=1)return all;
+    var chain=Promise.resolve();
+    for(var page=2;page<=pages;page++)(function(pageNo){chain=chain.then(function(){return request(buildListRequest(pageNo,100)).then(function(d){all=all.concat(d.jobs||[])})})})(page);
+    return chain.then(function(){return all});
+  });
+}
+function renderCalendar(rows){
+  var y=calendarDate.getFullYear(),m=calendarDate.getMonth();
+  document.getElementById('calendarTitle').textContent=calendarDate.toLocaleDateString(undefined,{month:'long',year:'numeric'});
+  var map={};
+  rows.filter(function(r){return r.item_type!=='assessment'&&r.start_date}).forEach(function(r){
+    var start=parseDate(r.start_date),end=parseDate(r.end_date)||start;if(!start)return;if(end<start)end=start;
+    var cursor=new Date(start.getFullYear(),start.getMonth(),start.getDate()),guard=0;
+    while(cursor<=end&&guard<370){var key=dateKey(cursor);if(!map[key])map[key]=[];map[key].push(r);cursor.setDate(cursor.getDate()+1);guard++}
+  });
+  var first=new Date(y,m,1),startOffset=first.getDay(),daysInMonth=new Date(y,m+1,0).getDate(),prevDays=new Date(y,m,0).getDate();
+  var today=new Date(),todayKey=dateKey(today),html='<div class="mj-calendar-grid">';
+  ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].forEach(function(day){html+='<div class="mj-calendar-weekday">'+day+'</div>'});
+  for(var cell=0;cell<42;cell++){
+    var dayNum=cell-startOffset+1,cellDate,other=false;
+    if(dayNum<1){cellDate=new Date(y,m-1,prevDays+dayNum);other=true}else if(dayNum>daysInMonth){cellDate=new Date(y,m+1,dayNum-daysInMonth);other=true}else{cellDate=new Date(y,m,dayNum)}
+    var key=dateKey(cellDate),events=map[key]||[],cls='mj-calendar-day'+(other?' other':'')+(key===todayKey?' today':'');
+    html+='<div class="'+cls+'"><div class="mj-calendar-day-head"><span class="mj-calendar-date">'+cellDate.getDate()+'</span>'+(events.length?'<span class="mj-calendar-count">'+events.length+' job'+(events.length>1?'s':'')+'</span>':'')+'</div><div class="mj-calendar-events">';
+    events.slice(0,4).forEach(function(r){var short=[r.item_no||'',r.client_name||''].filter(Boolean).join(' · ');html+='<a class="mj-calendar-event '+esc(r.status||'')+'" href="my-job-view.php?id='+Number(r.id)+'" title="Open '+esc(r.item_no||'job')+'"><strong>'+esc(r.title||r.item_no||'Job')+'</strong><small>'+esc(short)+'</small></a>'});
+    if(events.length>4)html+='<div class="mj-calendar-more">+'+(events.length-4)+' more</div>';
+    html+='</div></div>';
+  }
+  html+='</div>';calendarBody.className='';calendarBody.innerHTML=html;
+}
+function loadCalendar(){
+  calendarBody.className='mj-calendar-loading';calendarBody.innerHTML='<span><i class="bi bi-hourglass-split"></i> Loading all scheduled jobs...</span>';
+  loadAllPages().then(function(rows){renderCalendar(rows)}).catch(function(e){calendarBody.className='mj-calendar-empty';calendarBody.innerHTML='<div><i class="bi bi-exclamation-circle"></i><br>'+esc(e.message)+'</div>';notify('error',e.message)})
+}
+function setView(view){
+  state.view=view==='calendar'?'calendar':'table';
+  var calendar=state.view==='calendar';
+  tableView.classList.toggle('is-hidden',calendar);calendarView.classList.toggle('show',calendar);viewSwitchButton.classList.toggle('active',calendar);
+  viewSwitchButton.innerHTML=calendar?'<i class="bi bi-table"></i> Table View':'<i class="bi bi-calendar3"></i> Calendar View';
+  state.page=1;load();
 }
 document.getElementById('search').addEventListener('input',function(e){if(searchTimer)clearTimeout(searchTimer);searchTimer=setTimeout(function(){state.search=e.target.value.trim();state.page=1;load()},250)});
 document.getElementById('statusFilter').onchange=function(e){state.status=e.target.value;state.page=1;load()};
@@ -4221,6 +4316,10 @@ document.getElementById('dateFrom').onchange=function(e){state.dateFrom=e.target
 document.getElementById('dateTo').onchange=function(e){state.dateTo=e.target.value;if(state.dateFrom&&state.dateTo<state.dateFrom){document.getElementById('dateFrom').value=state.dateTo;state.dateFrom=state.dateTo}state.page=1;load()};
 document.getElementById('clearFilters').onclick=function(){document.getElementById('search').value='';document.getElementById('statusFilter').value='';document.getElementById('priorityFilter').value='';document.getElementById('dateFrom').value='';document.getElementById('dateTo').value='';state.search='';state.status='';state.priority='';state.dateFrom='';state.dateTo='';state.page=1;load()};
 document.getElementById('refreshButton').onclick=load;
+viewSwitchButton.onclick=function(){setView(state.view==='table'?'calendar':'table')};
+document.getElementById('calendarPrev').onclick=function(){calendarDate=new Date(calendarDate.getFullYear(),calendarDate.getMonth()-1,1);loadCalendar()};
+document.getElementById('calendarNext').onclick=function(){calendarDate=new Date(calendarDate.getFullYear(),calendarDate.getMonth()+1,1);loadCalendar()};
+document.getElementById('calendarToday').onclick=function(){var d=new Date();calendarDate=new Date(d.getFullYear(),d.getMonth(),1);loadCalendar()};
 document.getElementById('prevPage').onclick=function(){if(state.page>1){state.page--;load()}};
 document.getElementById('nextPage').onclick=function(){state.page++;load()};
 load();

@@ -1,4 +1,5 @@
 <?php
+/* FieldPlx Client View Page - Version 1.1.0 - 2026-09-02 */
 require_once __DIR__ . '/includes/auth.php';
 
 $pageTitle = 'Client View';
@@ -3359,6 +3360,95 @@ a:active{
   box-shadow:0 7px 16px rgba(104,170,29,.18);
 }
 
+/* Client View More actions - Version 1.1.0 */
+.fd-cv-more{
+  position:relative;
+  z-index:1250;
+}
+
+.fd-cv-more .fd-cv-btn{
+  cursor:pointer;
+}
+
+.fd-cv-more .fd-cv-btn .bi-chevron-down{
+  font-size:9px;
+  transition:transform .16s ease;
+}
+
+.fd-cv-more.open .fd-cv-btn .bi-chevron-down{
+  transform:rotate(180deg);
+}
+
+.fd-cv-more-menu{
+  width:205px;
+  padding:6px;
+  position:absolute;
+  top:calc(100% + 7px);
+  right:0;
+  z-index:1260;
+  display:none;
+  border:1px solid #dfe6ef;
+  border-radius:10px;
+  background:#fff;
+  box-shadow:0 18px 42px rgba(0,17,49,.17);
+}
+
+.fd-cv-more.open .fd-cv-more-menu{
+  display:block;
+}
+
+.fd-cv-more-item{
+  width:100%;
+  min-height:36px;
+  padding:8px 10px;
+  display:flex;
+  align-items:center;
+  gap:9px;
+  border:0;
+  border-radius:7px;
+  color:#33445f!important;
+  background:transparent;
+  font-size:10px;
+  font-weight:600;
+  text-decoration:none!important;
+}
+
+.fd-cv-more-item:hover{
+  color:var(--fd-green-dark)!important;
+  background:var(--fd-green-soft);
+}
+
+.fd-cv-more-item i{
+  width:17px;
+  color:#66758a;
+  font-size:13px;
+  text-align:center;
+}
+
+.fd-cv-more-item:hover i{
+  color:var(--fd-green-dark);
+}
+
+.fd-cv-more-item + .fd-cv-more-item{
+  margin-top:2px;
+}
+
+@media(max-width:575.98px){
+  .fd-cv-more{
+    flex:1 1 100%;
+  }
+
+  .fd-cv-more > .fd-cv-btn{
+    width:100%;
+  }
+
+  .fd-cv-more-menu{
+    left:0;
+    right:0;
+    width:100%;
+  }
+}
+
 .fd-cv-grid{
   display:grid;
   grid-template-columns:1.15fr .85fr;
@@ -3587,6 +3677,32 @@ a:active{
                                 <i class="bi bi-plus-lg"></i>
                                 Add Location
                             </a>
+
+                            <div class="fd-cv-more" id="clientViewMore">
+                                <button type="button" class="fd-cv-btn" id="clientViewMoreButton" aria-expanded="false" aria-haspopup="true">
+                                    <i class="bi bi-three-dots"></i>
+                                    More
+                                    <i class="bi bi-chevron-down"></i>
+                                </button>
+                                <div class="fd-cv-more-menu" id="clientViewMoreMenu" role="menu" aria-hidden="true">
+                                    <a class="fd-cv-more-item" id="clientViewAddQuotation" href="#" role="menuitem">
+                                        <i class="bi bi-file-earmark-text"></i>
+                                        Add Quotation
+                                    </a>
+                                    <a class="fd-cv-more-item" id="clientViewCreateJob" href="#" role="menuitem">
+                                        <i class="bi bi-hammer"></i>
+                                        Create Job
+                                    </a>
+                                    <a class="fd-cv-more-item" id="clientViewAddInvoice" href="#" role="menuitem">
+                                        <i class="bi bi-receipt"></i>
+                                        Add Invoice
+                                    </a>
+                                    <a class="fd-cv-more-item" id="clientViewPayment" href="#" role="menuitem">
+                                        <i class="bi bi-cash-coin"></i>
+                                        Payment
+                                    </a>
+                                </div>
+                            </div>
                         </div>
                     </section>
 
@@ -3738,6 +3854,46 @@ a:active{
                 document.getElementById('manageLocationsButton').href = locationUrl;
                 document.getElementById('addLocationButton').href = locationUrl + '&add=1';
                 document.getElementById('addLocationButton2').href = locationUrl + '&add=1';
+
+                /* More workflow actions for the customer currently being viewed. */
+                document.getElementById('clientViewAddQuotation').href = 'add-quotation.php?client_id=' + clientId;
+                document.getElementById('clientViewCreateJob').href = 'job-form.php?client_id=' + clientId;
+                document.getElementById('clientViewAddInvoice').href = 'add-invoice.php?client_id=' + clientId;
+                document.getElementById('clientViewPayment').href = 'payment.php?client_id=' + clientId;
+
+                var clientViewMore = document.getElementById('clientViewMore');
+                var clientViewMoreButton = document.getElementById('clientViewMoreButton');
+                var clientViewMoreMenu = document.getElementById('clientViewMoreMenu');
+
+                function setClientViewMore(open){
+                    if(!clientViewMore || !clientViewMoreButton || !clientViewMoreMenu) return;
+                    clientViewMore.classList.toggle('open', !!open);
+                    clientViewMoreButton.setAttribute('aria-expanded', open ? 'true' : 'false');
+                    clientViewMoreMenu.setAttribute('aria-hidden', open ? 'false' : 'true');
+                }
+
+                clientViewMoreButton.addEventListener('click', function(event){
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setClientViewMore(!clientViewMore.classList.contains('open'));
+                });
+
+                clientViewMoreMenu.addEventListener('click', function(event){
+                    event.stopPropagation();
+                });
+
+                document.addEventListener('click', function(event){
+                    if(clientViewMore && !clientViewMore.contains(event.target)){
+                        setClientViewMore(false);
+                    }
+                });
+
+                document.addEventListener('keydown', function(event){
+                    if(event.key === 'Escape'){
+                        setClientViewMore(false);
+                        clientViewMoreButton.focus();
+                    }
+                });
 
                 document.getElementById('clientsToastClose').onclick = function(){
                     toast.classList.remove('show');
