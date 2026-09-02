@@ -1,4 +1,5 @@
 <?php
+/* FieldPlx Job Card - Version 2.1.0 - direct job or quotation + recurring schedules, billing, attachments and checklists */
 require_once __DIR__ . '/includes/auth.php';
 
 $pageTitle = 'Job Card';
@@ -15,6 +16,10 @@ if (empty($_SESSION['jobs_csrf_token'])) {
 $jobsCsrfToken = (string)$_SESSION['jobs_csrf_token'];
 $jobId = isset($_GET['job_id']) ? (int)$_GET['job_id'] : 0;
 $quoteId = isset($_GET['quote_id']) ? (int)$_GET['quote_id'] : 0;
+$clientId = isset($_GET['client_id']) ? (int)$_GET['client_id'] : 0;
+$locationId = isset($_GET['location_id']) ? (int)$_GET['location_id'] : 0;
+$serviceId = isset($_GET['product_service_id']) ? (int)$_GET['product_service_id'] : (isset($_GET['service_id']) ? (int)$_GET['service_id'] : 0);
+$requestId = isset($_GET['request_id']) ? (int)$_GET['request_id'] : 0;
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -1131,6 +1136,40 @@ $quoteId = isset($_GET['quote_id']) ? (int)$_GET['quote_id'] : 0;
         @media(max-width:767.98px){.jf-head{flex-direction:column}.jf-actions{width:100%}.jf-actions .jf-btn{flex:1}.jf-grid,.jf-assignment-grid{grid-template-columns:1fr}.jf-field.full,.jf-section,.jf-assignment,.jf-note{grid-column:auto}.jf-quote-info.full{grid-column:1/-1}.jf-info-grid{grid-template-columns:1fr 1fr}.jf-footer{flex-direction:column-reverse}.jf-footer .jf-btn{width:100%}}
         @media(max-width:575.98px){.jf-info-grid{grid-template-columns:1fr}.jf-toast{top:72px;left:12px;right:12px;width:auto}}
 
+    
+
+        /* ---------- Expanded scheduling / billing ---------- */
+        .jf-schedule-list{display:grid;gap:12px}
+        .jf-schedule-card{border:1px solid #dfe6ee;border-radius:10px;background:#fbfcfd;overflow:hidden}
+        .jf-schedule-head{padding:10px 12px;display:flex;align-items:center;gap:9px;border-bottom:1px solid #e7ecf1;background:#fff}
+        .jf-schedule-number{width:27px;height:27px;display:grid;place-items:center;border-radius:8px;background:var(--fd-green-soft);color:var(--fd-green-dark);font-size:10px;font-weight:700}
+        .jf-schedule-head strong{color:#263750;font-size:10px}.jf-schedule-head small{display:block;margin-top:2px;color:#8a96a7;font-size:8px}
+        .jf-schedule-head .jf-icon-btn{margin-left:auto}
+        .jf-schedule-body{padding:12px}
+        .jf-schedule-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:11px}
+        .jf-schedule-grid .span-2{grid-column:span 2}.jf-schedule-grid .span-4{grid-column:1/-1}
+        .jf-inline-title{margin:3px 0 -1px;grid-column:1/-1;color:#52637a;font-size:8.5px;font-weight:700;text-transform:uppercase;letter-spacing:.03em}
+        .jf-weekdays{display:flex;flex-wrap:wrap;gap:6px}
+        .jf-weekday{min-width:39px;height:31px;padding:0 8px;display:inline-flex;align-items:center;justify-content:center;border:1px solid #dce4eb;border-radius:7px;background:#fff;color:#586a81;font-size:8px;cursor:pointer}
+        .jf-weekday input{position:absolute;opacity:0;pointer-events:none}.jf-weekday:has(input:checked){border-color:#9bc967;background:var(--fd-green-soft);color:var(--fd-green-dark);font-weight:700}
+        .jf-icon-btn{width:29px;height:29px;padding:0;display:grid;place-items:center;border:0;border-radius:7px;background:transparent;color:#788699;cursor:pointer}
+        .jf-icon-btn:hover{background:var(--fd-green-soft);color:var(--fd-green-dark)}.jf-icon-btn.danger:hover{background:#fff0f1;color:#b9444d}
+        .jf-add-schedule{margin-left:auto}
+        .jf-feature-alert{margin-bottom:12px;padding:10px 11px;display:none;gap:8px;border:1px solid #f1d8a4;border-radius:9px;background:#fff9ea;color:#7f641c;font-size:8.5px;line-height:1.5}.jf-feature-alert.show{display:flex}.jf-feature-alert i{font-size:15px}
+        .jf-selected-people{margin-top:8px;display:flex;flex-wrap:wrap;gap:6px}.jf-person-chip{min-height:27px;padding:5px 8px;display:inline-flex;align-items:center;gap:6px;border:1px solid #dce8cf;border-radius:999px;background:#f7fbf1;color:#3f5528;font-size:8.5px;font-weight:600}.jf-person-chip i{color:var(--fd-green-dark)}
+        .jf-empty-chips{color:#98a3b2;font-size:8px}
+        .jf-billing-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;margin-bottom:13px}.jf-billing-metric{padding:11px;border:1px solid #e3e9ef;border-radius:9px;background:#fbfcfd}.jf-billing-metric span,.jf-billing-metric strong{display:block}.jf-billing-metric span{margin-bottom:5px;color:#8793a5;font-size:8px;text-transform:uppercase;font-weight:700}.jf-billing-metric strong{color:#17233b;font-size:14px}
+        .jf-billing-types{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.jf-radio-card{position:relative;padding:12px 12px 12px 38px;border:1px solid #dfe6ed;border-radius:9px;background:#fff;cursor:pointer}.jf-radio-card input{position:absolute;left:13px;top:14px;width:14px;height:14px;accent-color:var(--fd-green)}.jf-radio-card strong,.jf-radio-card small{display:block}.jf-radio-card strong{font-size:9.5px;color:#273951}.jf-radio-card small{margin-top:4px;color:#7e8b9d;font-size:8px;line-height:1.5}.jf-radio-card:has(input:checked){border-color:#a8d174;background:#f9fcf5}
+        .jf-source-types{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:13px}.jf-source-panel{display:none}.jf-source-panel.show{display:block}.jf-direct-preview{margin-top:12px}.jf-source-label{margin:0 0 8px;color:#718096;font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+        .jf-switch-row{margin-top:11px;padding:10px 11px;display:flex;align-items:center;gap:10px;border:1px solid #e5eaf0;border-radius:9px;background:#fbfcfd}.jf-switch-row input{width:16px;height:16px;accent-color:var(--fd-green)}.jf-switch-row strong,.jf-switch-row small{display:block}.jf-switch-row strong{font-size:9px}.jf-switch-row small{margin-top:2px;color:#8a96a7;font-size:8px;line-height:1.4}
+        .jf-file-drop{padding:18px;border:1px dashed #cfd9e3;border-radius:10px;background:#fbfcfd;text-align:center}.jf-file-drop i{display:block;margin-bottom:7px;color:var(--fd-green-dark);font-size:25px}.jf-file-drop strong{display:block;color:#31445e;font-size:10px}.jf-file-drop small{display:block;margin-top:4px;color:#8a96a7;font-size:8px}.jf-file-drop input{margin-top:10px;max-width:100%;font-size:9px}
+        .jf-file-list{margin-top:10px;display:grid;gap:6px}.jf-file-row{padding:7px 9px;display:flex;align-items:center;gap:8px;border:1px solid #e7ecf1;border-radius:7px;background:#fff;color:#53657d;font-size:8.5px}.jf-file-row i{color:#789f31}.jf-file-row span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.jf-file-row small{margin-left:auto;color:#9aa4b3}
+        .jf-checklist-select{margin-bottom:10px}.jf-capture-banner{padding:12px;display:flex;gap:10px;align-items:center;border:1px solid #dbe9c9;border-radius:9px;background:#f7fbed}.jf-capture-icon{width:36px;height:36px;flex:0 0 36px;display:grid;place-items:center;border-radius:10px;background:#fff;color:var(--fd-green-dark);font-size:17px}.jf-capture-copy{min-width:0;flex:1}.jf-capture-copy strong{display:block;color:#2d3e54;font-size:9.5px}.jf-capture-copy small{display:block;margin-top:3px;color:#7d8a9b;font-size:8px;line-height:1.45}
+        .jf-checklist-builder{display:none;margin-top:11px;padding:12px;border:1px solid #e3e8ed;border-radius:10px;background:#fbfcfd}.jf-checklist-builder.show{display:block}.jf-checklist-items{margin-top:9px;display:grid;gap:7px}.jf-checklist-item{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:7px;align-items:center}.jf-checklist-item input[type=text]{height:36px}.jf-required-mini{display:flex;align-items:center;gap:5px;color:#66768a;font-size:8px;white-space:nowrap}.jf-required-mini input{width:13px;height:13px;accent-color:var(--fd-green)}
+        .jf-preview-line{margin-top:10px;padding:9px 10px;border:1px solid #e2e8ee;border-radius:8px;background:#fff;color:#607188;font-size:8.5px;line-height:1.5}.jf-preview-line strong{color:#263750}
+        @media(max-width:991.98px){.jf-schedule-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.jf-schedule-grid .span-4{grid-column:1/-1}}
+        @media(max-width:575.98px){.jf-schedule-grid{grid-template-columns:1fr}.jf-schedule-grid .span-2,.jf-schedule-grid .span-4{grid-column:auto}.jf-billing-summary,.jf-billing-types,.jf-source-types{grid-template-columns:1fr}.jf-checklist-item{grid-template-columns:1fr auto}.jf-required-mini{grid-column:1}.jf-schedule-head{align-items:flex-start}}
+
     </style>
 </head>
 <body>
@@ -1143,69 +1182,73 @@ $quoteId = isset($_GET['quote_id']) ? (int)$_GET['quote_id'] : 0;
                 <section class="jf-head">
                     <div>
                         <h1 class="jf-title" id="pageTitle"><?= $jobId > 0 ? 'Edit Job Card' : 'Create Job Card' ?></h1>
-                        <p class="jf-sub">Create scheduled field work from an approved quotation, assign one or more employees, and notify the assigned workforce and customer after the job is created.</p>
+                        <p class="jf-sub">Create a direct job or convert an approved quotation, then build one-off or recurring visits, assign employees, configure billing, and capture field requirements.</p>
                     </div>
                     <div class="jf-actions">
                         <a href="jobs" class="jf-btn"><i class="bi bi-arrow-left"></i> Back to Jobs</a>
                     </div>
                 </section>
 
-                <form id="jobForm">
+                <form id="jobForm" enctype="multipart/form-data">
+                    <input type="hidden" name="schedule_json" id="scheduleJson" value="">
+                    <input type="hidden" name="new_checklist_json" id="newChecklistJson" value="">
                     <input type="hidden" name="job_id" id="jobId" value="<?= (int)$jobId ?>">
+                    <input type="hidden" name="request_id" id="requestId" value="<?= (int)$requestId ?>">
                     <div class="jf-layout">
                         <div class="jf-stack">
                             <section class="jf-card">
-                                <div class="jf-card-head"><span class="jf-card-icon"><i class="bi bi-receipt"></i></span><div class="jf-card-copy"><h2>Approved Quotation</h2><p>Select the approved quotation that will be converted to executable work.</p></div></div>
+                                <div class="jf-card-head"><span class="jf-card-icon"><i class="bi bi-signpost-split"></i></span><div class="jf-card-copy"><h2>Job Source</h2><p>Create the job directly for a customer or convert an approved quotation.</p></div></div>
                                 <div class="jf-card-body">
-                                    <div class="jf-grid">
-                                        <div class="jf-field full">
-                                            <label>Approved Quotation <span class="req">*</span></label>
-                                            <select name="quote_id" id="quoteId" class="jf-select2" required><option value="">Select Approved Quotation</option></select>
-                                            <div class="jf-hint">Only approved quotations not already converted to an active job are available.</div>
-                                        </div>
-                                        <div class="jf-quote-info full" id="quoteInfo">
-                                            <div class="jf-info-grid">
-                                                <div class="jf-info">
-                                                    <span>Customer</span>
-                                                    <strong id="quoteCustomer">-</strong>
-                                                </div>
-                                                <div class="jf-info">
-                                                    <span>Customer Email</span>
-                                                    <strong class="jf-info-email" id="quoteCustomerEmail">-</strong>
-                                                </div>
-                                                <div class="jf-info">
-                                                    <span>Customer Phone</span>
-                                                    <strong id="quoteCustomerPhone">-</strong>
-                                                </div>
-                                                <div class="jf-info">
-                                                    <span>Service</span>
-                                                    <strong id="quoteService">-</strong>
-                                                </div>
-                                                <div class="jf-info">
-                                                    <span>Quotation No.</span>
-                                                    <strong id="quoteNumber">-</strong>
-                                                </div>
-                                                <div class="jf-info">
-                                                    <span>Quotation Total</span>
-                                                    <strong class="jf-info-money" id="quoteTotal">-</strong>
-                                                </div>
-                                                <div class="jf-info">
-                                                    <span>Workflow</span>
-                                                    <strong id="quoteWorkflow">-</strong>
-                                                </div>
-                                                <div class="jf-info">
-                                                    <span>Source</span>
-                                                    <strong class="jf-info-source">Approved Quotation</strong>
+                                    <div class="jf-source-types">
+                                        <label class="jf-radio-card"><input type="radio" name="job_source" value="direct" checked><strong>Direct Job</strong><small>Create a job without an approved quotation. Select the customer, location and service directly.</small></label>
+                                        <label class="jf-radio-card"><input type="radio" name="job_source" value="quotation"><strong>From Approved Quotation</strong><small>Use customer, location, service and pricing from an approved quotation.</small></label>
+                                    </div>
+
+                                    <div class="jf-source-panel" id="quotationSourcePanel">
+                                        <div class="jf-grid">
+                                            <div class="jf-field full">
+                                                <label>Approved Quotation <span class="req">*</span></label>
+                                                <select name="quote_id" id="quoteId" class="jf-select2"><option value="">Select Approved Quotation</option></select>
+                                                <div class="jf-hint">Only approved quotations not already converted to an active job are available.</div>
+                                            </div>
+                                            <div class="jf-quote-info full" id="quoteInfo">
+                                                <div class="jf-info-grid">
+                                                    <div class="jf-info"><span>Customer</span><strong id="quoteCustomer">-</strong></div>
+                                                    <div class="jf-info"><span>Customer Email</span><strong class="jf-info-email" id="quoteCustomerEmail">-</strong></div>
+                                                    <div class="jf-info"><span>Customer Phone</span><strong id="quoteCustomerPhone">-</strong></div>
+                                                    <div class="jf-info"><span>Service</span><strong id="quoteService">-</strong></div>
+                                                    <div class="jf-info"><span>Quotation No.</span><strong id="quoteNumber">-</strong></div>
+                                                    <div class="jf-info"><span>Quotation Total</span><strong class="jf-info-money" id="quoteTotal">-</strong></div>
+                                                    <div class="jf-info"><span>Workflow</span><strong id="quoteWorkflow">-</strong></div>
+                                                    <div class="jf-info"><span>Source</span><strong class="jf-info-source">Approved Quotation</strong></div>
                                                 </div>
                                             </div>
+                                            <div class="jf-field full" id="jobServiceWrap" style="display:none">
+                                                <label>Service <span class="req">*</span></label>
+                                                <select name="product_service_id" id="jobServiceId" class="jf-select2"><option value="">Select Service</option></select>
+                                                <div class="jf-hint">This quotation does not contain a service. Select the service for this job card. The default workflow mapped to the selected service will be saved automatically.</div>
+                                            </div>
                                         </div>
+                                    </div>
 
-                                        <div class="jf-field full" id="jobServiceWrap" style="display:none">
-                                            <label>Service <span class="req">*</span></label>
-                                            <select name="product_service_id" id="jobServiceId" class="jf-select2">
-                                                <option value="">Select Service</option>
-                                            </select>
-                                            <div class="jf-hint">This quotation does not contain a service. Select the service for this job card. The default workflow mapped to the selected service will be saved automatically.</div>
+                                    <div class="jf-source-panel show" id="directSourcePanel">
+                                        <div class="jf-grid">
+                                            <div class="jf-field"><label>Customer <span class="req">*</span></label><select name="client_id" id="directClientId" class="jf-select2"><option value="">Select Customer</option></select></div>
+                                            <div class="jf-field"><label>Service Location</label><select name="location_id" id="directLocationId" class="jf-select2"><option value="">Select Location</option></select><div class="jf-hint">Optional when the job is not tied to a saved service location.</div></div>
+                                            <div class="jf-field"><label>Service <span class="req">*</span></label><select name="direct_product_service_id" id="directServiceId" class="jf-select2"><option value="">Select Service</option></select></div>
+                                            <div class="jf-field"><label>Branch</label><select name="direct_branch_id" id="directBranchId" class="jf-select2"><option value="">Use Customer / Current Branch</option></select></div>
+                                        </div>
+                                        <div class="jf-quote-info show jf-direct-preview" id="directInfo">
+                                            <div class="jf-info-grid">
+                                                <div class="jf-info"><span>Customer</span><strong id="directCustomerName">Not selected</strong></div>
+                                                <div class="jf-info"><span>Email</span><strong class="jf-info-email" id="directCustomerEmail">-</strong></div>
+                                                <div class="jf-info"><span>Phone</span><strong id="directCustomerPhone">-</strong></div>
+                                                <div class="jf-info"><span>Location</span><strong id="directLocationName">Not selected</strong></div>
+                                                <div class="jf-info"><span>Service</span><strong id="directServiceName">Not selected</strong></div>
+                                                <div class="jf-info"><span>Workflow</span><strong id="directWorkflowName">Select a service</strong></div>
+                                                <div class="jf-info"><span>Branch</span><strong id="directBranchName">Current / customer branch</strong></div>
+                                                <div class="jf-info"><span>Source</span><strong class="jf-info-source">Direct Job</strong></div>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
@@ -1224,21 +1267,63 @@ $quoteId = isset($_GET['quote_id']) ? (int)$_GET['quote_id'] : 0;
                             </section>
 
                             <section class="jf-card">
-                                <div class="jf-card-head"><span class="jf-card-icon"><i class="bi bi-calendar-event"></i></span><div class="jf-card-copy"><h2>Job Schedule</h2><p>Set the exact planned start and end date/time shown in employee and customer notifications.</p></div></div>
+                                <div class="jf-card-head">
+                                    <span class="jf-card-icon"><i class="bi bi-calendar-event"></i></span>
+                                    <div class="jf-card-copy"><h2>Job Schedule</h2><p>Add one or more one-off or recurring visit schedules. Each schedule can use its own team and visit instructions.</p></div>
+                                    <button type="button" class="jf-btn jf-add-schedule" id="addScheduleButton"><i class="bi bi-plus-lg"></i> Add Schedule</button>
+                                </div>
                                 <div class="jf-card-body">
-                                    <div class="jf-grid">
-                                        <div class="jf-section">Start</div>
-                                        <div class="jf-field"><label>Start Date <span class="req">*</span></label><input type="date" name="start_date" id="startDate" required></div>
-                                        <div class="jf-field"><label>Start Time <span class="req">*</span></label><input type="time" name="start_time" id="startTime" required></div>
-                                        <div class="jf-section">End</div>
-                                        <div class="jf-field"><label>End Date <span class="req">*</span></label><input type="date" name="end_date" id="endDate" required></div>
-                                        <div class="jf-field"><label>End Time <span class="req">*</span></label><input type="time" name="end_time" id="endTime" required></div>
+                                    <div class="jf-feature-alert" id="scheduleMigrationAlert"><i class="bi bi-exclamation-triangle"></i><div>Expanded scheduling is not installed yet. Run <strong>migration_job_recurring_schedules_v2.sql</strong> once, then refresh this page.</div></div>
+                                    <div class="jf-schedule-list" id="schedulesBox"></div>
+                                    <div class="jf-preview-line" id="schedulePreview"><strong>Schedule preview:</strong> Add a schedule to calculate visits.</div>
+                                </div>
+                            </section>
+
+                            <section class="jf-card">
+                                <div class="jf-card-head"><span class="jf-card-icon"><i class="bi bi-credit-card"></i></span><div class="jf-card-copy"><h2>Billing &amp; Automatic Payments</h2><p>Configure how recurring visits become billable and preview the expected invoice dates.</p></div></div>
+                                <div class="jf-card-body">
+                                    <div class="jf-billing-summary">
+                                        <div class="jf-billing-metric"><span>Total invoices</span><strong id="billingInvoiceCount">0</strong></div>
+                                        <div class="jf-billing-metric"><span>First</span><strong id="billingFirstDate">-</strong></div>
+                                        <div class="jf-billing-metric"><span>Last</span><strong id="billingLastDate">-</strong></div>
+                                    </div>
+                                    <div class="jf-section">Billing Type</div>
+                                    <div class="jf-billing-types">
+                                        <label class="jf-radio-card"><input type="radio" name="billing_type" value="visit_based" checked><strong>Visit based</strong><small>Each scheduled visit is billable. Visits can be listed as billable items when invoices are generated.</small></label>
+                                        <label class="jf-radio-card"><input type="radio" name="billing_type" value="fixed_price"><strong>Fixed price</strong><small>Each scheduled invoice uses the same fixed amount.</small></label>
+                                    </div>
+                                    <div class="jf-field" id="fixedInvoiceAmountWrap" style="display:none;margin-top:11px"><label>Fixed Amount Per Invoice</label><input type="number" name="fixed_invoice_amount" id="fixedInvoiceAmount" min="0" step="0.01" placeholder="0.00"><div class="jf-hint">Leave blank to divide the approved quotation total equally across the scheduled invoices.</div></div>
+                                    <label class="jf-switch-row"><input type="checkbox" name="automatic_payments_enabled" id="automaticPayments" value="1"><span><strong>Enable automatic payments</strong><small>Save this job as eligible for automatic collection. Actual charging still requires a configured payment provider and a saved customer payment method.</small></span></label>
+                                </div>
+                            </section>
+
+                            <section class="jf-card">
+                                <div class="jf-card-head"><span class="jf-card-icon"><i class="bi bi-paperclip"></i></span><div class="jf-card-copy"><h2>Attach Files &amp; Photos</h2><p>Add common job documents, reference files and photos available with this job card.</p></div></div>
+                                <div class="jf-card-body">
+                                    <div class="jf-file-drop"><i class="bi bi-cloud-arrow-up"></i><strong>Attach files &amp; photos</strong><small>Up to 12 files per save, maximum 10 MB each. Images, PDF, Office documents and text files are supported.</small><input type="file" name="job_attachments[]" id="jobAttachments" multiple accept="image/*,.pdf,.doc,.docx,.xls,.xlsx,.txt,.csv"></div>
+                                    <div class="jf-file-list" id="selectedFileList"></div>
+                                    <div class="jf-file-list" id="existingFileList"></div>
+                                </div>
+                            </section>
+
+                            <section class="jf-card">
+                                <div class="jf-card-head"><span class="jf-card-icon"><i class="bi bi-list-check"></i></span><div class="jf-card-copy"><h2>Capture On-Site Details</h2><p>Attach custom-built checklists so that nothing gets missed while the team is on site.</p></div></div>
+                                <div class="jf-card-body">
+                                    <div class="jf-field jf-checklist-select"><label>Checklist Templates</label><select name="checklist_template_ids[]" id="checklistTemplates" multiple></select><div class="jf-hint">Select one or more reusable checklists to attach to this job.</div><div class="jf-selected-people" id="selectedChecklistNames"></div></div>
+                                    <div class="jf-capture-banner"><span class="jf-capture-icon"><i class="bi bi-clipboard-check"></i></span><div class="jf-capture-copy"><strong>Create a Checklist</strong><small>Build a reusable checklist here and attach it to this job immediately.</small></div><button type="button" class="jf-btn" id="toggleChecklistBuilder"><i class="bi bi-plus-lg"></i> Create a Checklist</button></div>
+                                    <div class="jf-checklist-builder" id="checklistBuilder">
+                                        <div class="jf-grid">
+                                            <div class="jf-field"><label>Checklist Name</label><input type="text" id="newChecklistName" maxlength="190" placeholder="e.g. AC Service Completion"></div>
+                                            <div class="jf-field"><label>Description</label><input type="text" id="newChecklistDescription" maxlength="500" placeholder="Optional description"></div>
+                                        </div>
+                                        <div class="jf-checklist-items" id="checklistItems"></div>
+                                        <div style="margin-top:9px"><button type="button" class="jf-btn" id="addChecklistItem"><i class="bi bi-plus-lg"></i> Add Checklist Item</button></div>
                                     </div>
                                 </div>
                             </section>
 
                             <section class="jf-card">
-                                <div class="jf-card-head"><span class="jf-card-icon"><i class="bi bi-people"></i></span><div class="jf-card-copy"><h2>Assignment</h2><p>Select the employee, employees, or department responsible for this job.</p></div></div>
+                                <div class="jf-card-head"><span class="jf-card-icon"><i class="bi bi-people"></i></span><div class="jf-card-copy"><h2>Default Assignment</h2><p>Select the default employee, employees, or department. Individual schedules can override this team.</p></div></div>
                                 <div class="jf-card-body">
                                     <div class="jf-grid">
                                         <div class="jf-field"><label>Assignment Mode</label><select name="assignment_mode" id="assignmentMode"><option value="single_user">Single Employee</option><option value="multiple_users">Multiple Employees</option><option value="department">Department</option></select></div>
@@ -1250,6 +1335,7 @@ $quoteId = isset($_GET['quote_id']) ? (int)$_GET['quote_id'] : 0;
                                                 <div class="jf-field" id="departmentWrap" style="display:none"><label>Department <span class="req">*</span></label><select name="department_id" id="departmentId" class="jf-select2"><option value="">Select Department</option></select><div class="jf-hint">All active service users in the department will be assigned.</div></div>
                                             </div>
                                         </div>
+                                        <div class="jf-field full"><label>Selected Team Members</label><div class="jf-selected-people" id="defaultAssigneeNames"><span class="jf-empty-chips">No employees selected.</span></div></div>
                                         <div class="jf-note"><i class="bi bi-envelope-check"></i><div><strong>Email notification:</strong> after a new job card is created, every selected employee with a valid email address receives the job assignment and schedule. The linked customer also receives the job confirmation and schedule when customer email notification is allowed.</div></div>
                                     </div>
                                 </div>
@@ -1261,9 +1347,11 @@ $quoteId = isset($_GET['quote_id']) ? (int)$_GET['quote_id'] : 0;
                             <section class="jf-card">
                                 <div class="jf-card-head"><span class="jf-card-icon"><i class="bi bi-info-circle"></i></span><div class="jf-card-copy"><h2>Job Card Summary</h2><p>Information that will be stored with the job.</p></div></div>
                                 <div class="jf-card-body"><div class="jf-side-list">
-                                    <div class="jf-side-row"><span>Quotation</span><strong id="sideQuote">Not selected</strong></div>
+                                    <div class="jf-side-row"><span>Source</span><strong id="sideQuote">Direct Job</strong></div>
                                     <div class="jf-side-row"><span>Customer</span><strong id="sideCustomer">Not selected</strong></div>
                                     <div class="jf-side-row"><span>Schedule</span><strong id="sideSchedule">Not scheduled</strong></div>
+                                    <div class="jf-side-row"><span>Visits</span><strong id="sideVisitCount">0 scheduled visit(s)</strong></div>
+                                    <div class="jf-side-row"><span>Billing</span><strong id="sideBilling">Visit based</strong></div>
                                     <div class="jf-side-row"><span>Assignment</span><strong id="sideAssignment">Single Employee</strong></div>
                                 </div></div>
                             </section>
@@ -1292,12 +1380,14 @@ $quoteId = isset($_GET['quote_id']) ? (int)$_GET['quote_id'] : 0;
     var csrfToken = <?= json_encode($jobsCsrfToken) ?>;
     var jobId = <?= (int)$jobId ?>;
     var requestedQuoteId = <?= (int)$quoteId ?>;
+    var requestedClientId = <?= (int)$clientId ?>;
+    var requestedLocationId = <?= (int)$locationId ?>;
+    var requestedServiceId = <?= (int)$serviceId ?>;
+    var requestedRequestId = <?= (int)$requestId ?>;
     var basePath = <?= json_encode(rtrim(dirname($_SERVER['SCRIPT_NAME']), '/\\')) ?>;
     var apiUrl = basePath + '/api/jobs.php';
-    var meta = {quotes:[],users:[],departments:[],services:[],currency:{}};
-    var currentQuotation = null;
-    var existingJobServiceId = 0;
-    var toastTimer = null;
+    var meta = {quotes:[],clients:[],locations:[],branches:[],users:[],departments:[],services:[],checklist_templates:[],currency:{}};
+    var currentQuotation = null, existingJobServiceId = 0, toastTimer = null, scheduleSeq = 0;
 
     function el(id){return document.getElementById(id)}
     function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;')}
@@ -1307,194 +1397,171 @@ $quoteId = isset($_GET['quote_id']) ? (int)$_GET['quote_id'] : 0;
     function request(fd){fd.append('csrf_token',csrfToken);return fetch(apiUrl,{method:'POST',body:fd,credentials:'same-origin',cache:'no-store',headers:{'X-Requested-With':'XMLHttpRequest','Accept':'application/json'}}).then(parseResponse)}
     function money(value){var c=meta.currency||{},places=parseInt(c.decimal_places,10);if(isNaN(places))places=2;var n=Number(value||0).toFixed(places),sym=c.symbol||'';return c.symbol_position==='after'?n+(sym?' '+sym:''):(sym||'')+n}
     function optionRows(rows,label){var html='<option value="">'+esc(label)+'</option>';(rows||[]).forEach(function(x){html+='<option value="'+Number(x.id)+'">'+esc(x.name||'')+'</option>'});return html}
-    function initSelect2(){$('.jf-select2').select2({width:'100%'});$('.jf-multi').select2({width:'100%',placeholder:'Select employees'})}
+    function userById(id){id=Number(id||0);return (meta.users||[]).find(function(x){return Number(x.id)===id})||null}
+    function userOptions(){return (meta.users||[]).map(function(x){return '<option value="'+Number(x.id)+'">'+esc(x.name||'')+(x.job_title?' · '+esc(x.job_title):'')+'</option>'}).join('')}
+    function chipHtml(ids){ids=(ids||[]).map(Number).filter(Boolean);if(!ids.length)return '<span class="jf-empty-chips">No employees selected.</span>';return ids.map(function(id){var u=userById(id);return u?'<span class="jf-person-chip"><i class="bi bi-person-check"></i>'+esc(u.name)+'</span>':''}).join('')||'<span class="jf-empty-chips">No employees selected.</span>'}
+
+    function initStaticSelect2(){
+        $('.jf-select2').select2({width:'100%'});
+        $('#userIds').select2({width:'100%',placeholder:'Select employees'});
+        $('#checklistTemplates').select2({width:'100%',placeholder:'Select checklist templates'});
+    }
+
     function setMeta(m){
         meta=m||meta;
-
         var q='<option value="">Select Approved Quotation</option>';
-        (meta.quotes||[]).forEach(function(x){
-            q+='<option value="'+Number(x.id)+'">'+esc(x.quote_no)+' · '+esc(x.client_name)+' · '+esc(money(x.total))+'</option>';
-        });
+        (meta.quotes||[]).forEach(function(x){q+='<option value="'+Number(x.id)+'">'+esc(x.quote_no)+' · '+esc(x.client_name)+' · '+esc(money(x.total))+'</option>'});
         $('#quoteId').html(q);
-
+        $('#directClientId').html(optionRows(meta.clients,'Select Customer'));
+        $('#directServiceId').html(optionRows(meta.services,'Select Service'));
+        $('#directBranchId').html(optionRows(meta.branches,'Use Customer / Current Branch'));
         $('#singleUserId').html(optionRows(meta.users,'Select Employee'));
-
-        var uh='';
-        (meta.users||[]).forEach(function(x){
-            uh+='<option value="'+Number(x.id)+'">'+esc(x.name)+(x.job_title?' · '+esc(x.job_title):'')+'</option>';
-        });
-        $('#userIds').html(uh);
-
+        $('#userIds').html(userOptions());
         $('#departmentId').html(optionRows(meta.departments,'Select Department'));
         $('#jobServiceId').html(optionRows(meta.services,'Select Service'));
+        var ch=(meta.checklist_templates||[]).map(function(x){return '<option value="'+Number(x.id)+'">'+esc(x.name)+(Number(x.item_count||0)?' · '+Number(x.item_count)+' items':'')+'</option>'}).join('');
+        $('#checklistTemplates').html(ch);
+        refreshScheduleUserOptions();
+        el('scheduleMigrationAlert').classList.toggle('show',Number(meta.expanded_schedule_ready||0)!==1);
     }
 
-    function serviceMeta(id){
-        id=Number(id||0);
-        var rows=meta.services||[];
-
-        for(var i=0;i<rows.length;i++){
-            if(Number(rows[i].id)===id){
-                return rows[i];
-            }
-        }
-
-        return null;
-    }
-
-    function updateSelectedServicePreview(){
-        if(!currentQuotation || Number(currentQuotation.product_service_id||0)>0){
-            return;
-        }
-
-        var service=serviceMeta(el('jobServiceId').value);
-
-        if(!service){
-            el('quoteService').textContent='Select service below';
-            el('quoteWorkflow').textContent='Workflow will be selected from the service';
-            return;
-        }
-
-        el('quoteService').textContent=service.name||'-';
-        el('quoteWorkflow').textContent=service.workflow_id
-            ? (service.workflow_name||'Default workflow assigned')
-            : 'No active workflow mapped';
-    }
+    function sourceMode(){var x=document.querySelector('input[name="job_source"]:checked');return x?x.value:'direct'}
+    function clientMeta(id){id=Number(id||0);return (meta.clients||[]).find(function(x){return Number(x.id)===id})||null}
+    function locationMeta(id){id=Number(id||0);return (meta.locations||[]).find(function(x){return Number(x.id)===id})||null}
+    function branchMeta(id){id=Number(id||0);return (meta.branches||[]).find(function(x){return Number(x.id)===id})||null}
+    function refreshDirectLocations(selected){var cid=Number(el('directClientId').value||0),rows=(meta.locations||[]).filter(function(x){return Number(x.client_id||0)===cid});var html='<option value="">Select Location</option>';rows.forEach(function(x){html+='<option value="'+Number(x.id)+'">'+esc(x.name||'Service Location')+'</option>'});$('#directLocationId').html(html);if(selected&&rows.some(function(x){return Number(x.id)===Number(selected)}))$('#directLocationId').val(String(selected)).trigger('change.select2');else $('#directLocationId').val('').trigger('change.select2')}
+    function renderDirectPreview(){var c=clientMeta(el('directClientId').value),l=locationMeta(el('directLocationId').value),sv=serviceMeta(el('directServiceId').value),b=branchMeta(el('directBranchId').value);el('directCustomerName').textContent=c?(c.name||'-'):'Not selected';el('directCustomerEmail').textContent=c?(c.email||'No email'):'-';el('directCustomerPhone').textContent=c?(c.phone||'-'):'-';el('directLocationName').textContent=l?(l.name||'Service Location'):'Not selected';el('directServiceName').textContent=sv?(sv.name||'-'):'Not selected';el('directWorkflowName').textContent=sv?(sv.workflow_id?(sv.workflow_name||'Default workflow assigned'):'No active workflow mapped'):'Select a service';el('directBranchName').textContent=b?(b.name||'-'):(c&&c.branch_name?c.branch_name:'Current / customer branch');el('sideCustomer').textContent=c?(c.name||'-'):'Not selected'}
+    function applyDirectCustomer(selectedLocation){var c=clientMeta(el('directClientId').value);refreshDirectLocations(selectedLocation||0);if(c&&Number(c.branch_id||0)>0&&!el('directBranchId').value)$('#directBranchId').val(String(c.branch_id)).trigger('change.select2');renderDirectPreview()}
+    function updateSourceMode(){var mode=sourceMode(),quote=mode==='quotation';el('quotationSourcePanel').classList.toggle('show',quote);el('directSourcePanel').classList.toggle('show',!quote);el('quoteId').required=quote;el('directClientId').required=!quote;el('directServiceId').required=!quote;if(!quote){currentQuotation=null;el('quoteInfo').classList.remove('show');el('jobServiceWrap').style.display='none';el('jobServiceId').required=false;el('sideQuote').textContent='Direct Job';renderDirectPreview()}else{el('sideQuote').textContent=el('quoteId').value?'Loading quotation...':'Approved Quotation';if(el('quoteId').value)quoteDetails(el('quoteId').value)}updateBillingPreview()}
+    function serviceMeta(id){id=Number(id||0);return (meta.services||[]).find(function(x){return Number(x.id)===id})||null}
+    function updateSelectedServicePreview(){if(!currentQuotation||Number(currentQuotation.product_service_id||0)>0)return;var service=serviceMeta(el('jobServiceId').value);if(!service){el('quoteService').textContent='Select service below';el('quoteWorkflow').textContent='Workflow will be selected from the service';return}el('quoteService').textContent=service.name||'-';el('quoteWorkflow').textContent=service.workflow_id?(service.workflow_name||'Default workflow assigned'):'No active workflow mapped'}
 
     function quoteDetails(id){
-        if(!id){
-            currentQuotation=null;
-            el('quoteInfo').classList.remove('show');
-            el('jobServiceWrap').style.display='none';
-            el('jobServiceId').required=false;
-            $('#jobServiceId').val('').trigger('change.select2');
-            el('sideQuote').textContent='Not selected';
-            el('sideCustomer').textContent='Not selected';
-            return Promise.resolve();
-        }
-
-        var fd=new FormData();
-        fd.append('action','quote_details');
-        fd.append('quote_id',id);
-        fd.append('job_id',jobId||0);
-
-        return request(fd).then(function(d){
-            var q=d.quotation||{};
-            currentQuotation=q;
-            meta.currency=d.currency||meta.currency;
-
-            el('quoteCustomer').textContent=q.client_name||'-';
-            el('quoteCustomerEmail').textContent=q.client_email||'No email';
-            el('quoteCustomerPhone').textContent=q.client_phone||'-';
-            el('quoteTotal').textContent=money(q.total);
-            el('quoteNumber').textContent=q.quote_no||'-';
-            el('sideQuote').textContent=q.quote_no||'-';
-            el('sideCustomer').textContent=q.client_name||'-';
-
-            var hasService=Number(q.product_service_id||0)>0;
-
-            if(hasService){
-                el('quoteService').textContent=q.service_name||'-';
-                el('quoteWorkflow').textContent=q.workflow_id
-                    ? (q.workflow_name||'Default workflow assigned')
-                    : 'No active workflow mapped';
-
-                el('jobServiceWrap').style.display='none';
-                el('jobServiceId').required=false;
-                $('#jobServiceId').val('').trigger('change.select2');
-            }else{
-                el('quoteService').textContent='Select service below';
-                el('quoteWorkflow').textContent='Workflow will be selected from the service';
-
-                el('jobServiceWrap').style.display='block';
-                el('jobServiceId').required=true;
-
-                if(existingJobServiceId>0){
-                    $('#jobServiceId').val(String(existingJobServiceId)).trigger('change.select2');
-                }else{
-                    $('#jobServiceId').val('').trigger('change.select2');
-                }
-
-                updateSelectedServicePreview();
-            }
-
-            el('quoteInfo').classList.add('show');
-
-            if(!el('title').value){
-                el('title').value=q.title||q.request_title||'';
-            }
-        }).catch(function(e){
-            notify('error',e.message);
-            throw e;
-        });
+        if(!id){currentQuotation=null;el('quoteInfo').classList.remove('show');el('jobServiceWrap').style.display='none';el('jobServiceId').required=false;$('#jobServiceId').val('').trigger('change.select2');el('sideQuote').textContent='Approved Quotation';if(sourceMode()==='quotation')el('sideCustomer').textContent='Not selected';return Promise.resolve()}
+        var fd=new FormData();fd.append('action','quote_details');fd.append('quote_id',id);fd.append('job_id',jobId||0);
+        return request(fd).then(function(d){var q=d.quotation||{};currentQuotation=q;meta.currency=d.currency||meta.currency;el('quoteCustomer').textContent=q.client_name||'-';el('quoteCustomerEmail').textContent=q.client_email||'No email';el('quoteCustomerPhone').textContent=q.client_phone||'-';el('quoteTotal').textContent=money(q.total);el('quoteNumber').textContent=q.quote_no||'-';el('sideQuote').textContent=q.quote_no||'-';el('sideCustomer').textContent=q.client_name||'-';var hasService=Number(q.product_service_id||0)>0;if(hasService){el('quoteService').textContent=q.service_name||'-';el('quoteWorkflow').textContent=q.workflow_id?(q.workflow_name||'Default workflow assigned'):'No active workflow mapped';el('jobServiceWrap').style.display='none';el('jobServiceId').required=false;$('#jobServiceId').val('').trigger('change.select2')}else{el('quoteService').textContent='Select service below';el('quoteWorkflow').textContent='Workflow will be selected from the service';el('jobServiceWrap').style.display='block';el('jobServiceId').required=true;$('#jobServiceId').val(existingJobServiceId>0?String(existingJobServiceId):'').trigger('change.select2');updateSelectedServicePreview()}el('quoteInfo').classList.add('show');if(!el('title').value)el('title').value=q.title||q.request_title||'';updateBillingPreview()}).catch(function(e){notify('error',e.message);throw e})
     }
 
-    function updateAssignment(){var m=el('assignmentMode').value;el('singleUserWrap').style.display=m==='single_user'?'block':'none';el('multiUsersWrap').style.display=m==='multiple_users'?'block':'none';el('departmentWrap').style.display=m==='department'?'block':'none';el('sideAssignment').textContent=m==='single_user'?'Single Employee':m==='multiple_users'?'Multiple Employees':'Department'}
-    function formatSchedule(){var sd=el('startDate').value,st=el('startTime').value,ed=el('endDate').value,et=el('endTime').value;el('sideSchedule').textContent=(sd&&st&&ed&&et)?sd+' '+st+' → '+ed+' '+et:'Not scheduled'}
+    function defaultAssignedIds(){
+        var mode=el('assignmentMode').value;
+        if(mode==='single_user')return el('singleUserId').value?[Number(el('singleUserId').value)]:[];
+        if(mode==='multiple_users')return ($('#userIds').val()||[]).map(Number);
+        if(mode==='department'){var d=Number(el('departmentId').value||0);return (meta.users||[]).filter(function(x){return Number(x.department_id||0)===d}).map(function(x){return Number(x.id)})}
+        return [];
+    }
+    function renderDefaultNames(){el('defaultAssigneeNames').innerHTML=chipHtml(defaultAssignedIds())}
+    function updateAssignment(){var m=el('assignmentMode').value;el('singleUserWrap').style.display=m==='single_user'?'block':'none';el('multiUsersWrap').style.display=m==='multiple_users'?'block':'none';el('departmentWrap').style.display=m==='department'?'block':'none';el('sideAssignment').textContent=m==='single_user'?'Single Employee':m==='multiple_users'?'Multiple Employees':'Department';renderDefaultNames()}
+
+    function scheduleEmployeeOptions(selected){selected=(selected||[]).map(Number);return (meta.users||[]).map(function(x){return '<option value="'+Number(x.id)+'"'+(selected.indexOf(Number(x.id))>=0?' selected':'')+'>'+esc(x.name||'')+(x.job_title?' · '+esc(x.job_title):'')+'</option>'}).join('')}
+    function weekdayHtml(selected){selected=(selected||[]).map(Number);var days=[['Sun',0],['Mon',1],['Tue',2],['Wed',3],['Thu',4],['Fri',5],['Sat',6]];return days.map(function(d){return '<label class="jf-weekday"><input type="checkbox" data-field="weekly-day" value="'+d[1]+'"'+(selected.indexOf(d[1])>=0?' checked':'')+'>'+d[0]+'</label>'}).join('')}
+    function scheduleRow(data){
+        data=data||{};scheduleSeq++;var id=scheduleSeq,repeat=data.repeat_type||'none',endMode=data.end_mode||'after_occurrences';
+        return '<article class="jf-schedule-card" data-schedule-id="'+id+'">'+
+            '<div class="jf-schedule-head"><span class="jf-schedule-number">'+id+'</span><div><strong>Schedule</strong><small>One-off or recurring visit plan</small></div><button type="button" class="jf-icon-btn danger" data-remove-schedule title="Remove schedule"><i class="bi bi-trash"></i></button></div>'+
+            '<div class="jf-schedule-body"><div class="jf-schedule-grid">'+
+            '<div class="jf-inline-title">Date &amp; Time</div>'+
+            field('Start Date','<input type="date" data-field="start_date" value="'+esc(data.start_date||'')+'" required>')+
+            field('Start Time','<input type="time" data-field="start_time" value="'+esc((data.start_time||'').substring(0,5))+'" required>')+
+            field('End Date','<input type="date" data-field="end_date" value="'+esc(data.end_date||'')+'" required>')+
+            field('End Time','<input type="time" data-field="end_time" value="'+esc((data.end_time||'').substring(0,5))+'" required>')+
+            '<div class="jf-inline-title">Repeats</div>'+
+            field('Repeats','<select data-field="repeat_type"><option value="none"'+(repeat==='none'?' selected':'')+'>Does not repeat</option><option value="daily"'+(repeat==='daily'?' selected':'')+'>Daily</option><option value="weekly"'+(repeat==='weekly'?' selected':'')+'>Weekly</option><option value="monthly"'+(repeat==='monthly'?' selected':'')+'>Monthly</option><option value="yearly"'+(repeat==='yearly'?' selected':'')+'>Yearly</option></select>')+
+            '<div class="jf-field" data-repeat-options><label>Every</label><div style="display:grid;grid-template-columns:85px 1fr;gap:7px"><input type="number" min="1" max="365" data-field="repeat_interval" value="'+Number(data.repeat_interval||1)+'"><div class="jf-preview-line" style="margin:0;padding:10px" data-repeat-unit>day(s)</div></div></div>'+
+            '<div class="jf-field span-2" data-weekly-options><label>Weekly on</label><div class="jf-weekdays">'+weekdayHtml(data.weekly_days||[])+'</div></div>'+
+            '<div class="jf-field" data-end-options><label>Ends</label><select data-field="end_mode"><option value="after_occurrences"'+(endMode==='after_occurrences'?' selected':'')+'>After number of visits</option><option value="after_duration"'+(endMode==='after_duration'?' selected':'')+'>After a duration</option><option value="on_date"'+(endMode==='on_date'?' selected':'')+'>On date</option></select></div>'+
+            '<div class="jf-field" data-occurrence-options><label>Ends after</label><input type="number" min="1" max="500" data-field="repeat_occurrences" value="'+Number(data.repeat_occurrences||1)+'"><div class="jf-hint">Number of scheduled visits.</div></div>'+
+            '<div class="jf-field" data-duration-options><label>Ends after</label><div style="display:grid;grid-template-columns:85px 1fr;gap:7px"><input type="number" min="1" max="120" data-field="end_after_value" value="'+Number(data.end_after_value||6)+'"><select data-field="end_after_unit"><option value="days"'+(data.end_after_unit==='days'?' selected':'')+'>Days</option><option value="weeks"'+(data.end_after_unit==='weeks'?' selected':'')+'>Weeks</option><option value="months"'+(!data.end_after_unit||data.end_after_unit==='months'?' selected':'')+'>Months</option><option value="years"'+(data.end_after_unit==='years'?' selected':'')+'>Years</option></select></div></div>'+
+            '<div class="jf-field" data-end-date-options><label>Ends on</label><input type="date" data-field="repeat_end_date" value="'+esc(data.repeat_end_date||'')+'"></div>'+
+            '<div class="jf-inline-title">Assign &amp; Instructions</div>'+
+            '<div class="jf-field span-2"><label>Team Members</label><select multiple data-field="assignee_ids" class="jf-schedule-users">'+scheduleEmployeeOptions(data.assignee_ids||[])+'</select><div class="jf-hint">Leave blank to use the Default Assignment below.</div><div class="jf-selected-people" data-selected-users></div></div>'+
+            '<div class="jf-field span-2"><label>Visit Instructions</label><textarea data-field="instructions" placeholder="Access notes, technician instructions, recurring visit details...">'+esc(data.instructions||'')+'</textarea></div>'+
+            '</div></div></article>';
+    }
+    function field(label,control){return '<div class="jf-field"><label>'+label+'</label>'+control+'</div>'}
+    function addSchedule(data){el('schedulesBox').insertAdjacentHTML('beforeend',scheduleRow(data||{}));var card=el('schedulesBox').lastElementChild;enhanceScheduleCard(card);renumberSchedules();updateSchedulePreview()}
+    function enhanceScheduleCard(card){
+        var sel=$(card).find('.jf-schedule-users');sel.select2({width:'100%',placeholder:'Use default assignment or select team members'});sel.on('change',function(){renderScheduleNames(card);updateSchedulePreview()});
+        card.querySelector('[data-remove-schedule]').addEventListener('click',function(){if(el('schedulesBox').children.length<=1){notify('warning','A job needs at least one schedule.');return}$(card).find('.jf-schedule-users').select2('destroy');card.remove();renumberSchedules();updateSchedulePreview()});
+        card.querySelectorAll('input,select,textarea').forEach(function(x){x.addEventListener('change',function(){toggleScheduleFields(card);updateSchedulePreview()});x.addEventListener('input',function(){updateSchedulePreview()})});
+        toggleScheduleFields(card);renderScheduleNames(card);
+    }
+    function refreshScheduleUserOptions(){document.querySelectorAll('.jf-schedule-card').forEach(function(card){var sel=$(card).find('.jf-schedule-users'),selected=(sel.val()||[]).map(Number);if(sel.hasClass('select2-hidden-accessible'))sel.select2('destroy');sel.html(scheduleEmployeeOptions(selected));sel.select2({width:'100%',placeholder:'Use default assignment or select team members'});sel.on('change',function(){renderScheduleNames(card);updateSchedulePreview()});renderScheduleNames(card)})}
+    function renumberSchedules(){document.querySelectorAll('.jf-schedule-card').forEach(function(card,i){card.querySelector('.jf-schedule-number').textContent=i+1;card.querySelector('.jf-schedule-head strong').textContent='Schedule '+(i+1)})}
+    function repeatUnit(type){return type==='daily'?'day(s)':type==='weekly'?'week(s)':type==='monthly'?'month(s)':type==='yearly'?'year(s)':'visit'}
+    function toggleScheduleFields(card){var repeat=card.querySelector('[data-field="repeat_type"]').value,endMode=card.querySelector('[data-field="end_mode"]').value;card.querySelector('[data-repeat-options]').style.display=repeat==='none'?'none':'block';card.querySelector('[data-weekly-options]').style.display=repeat==='weekly'?'block':'none';card.querySelector('[data-end-options]').style.display=repeat==='none'?'none':'block';card.querySelector('[data-occurrence-options]').style.display=repeat!=='none'&&endMode==='after_occurrences'?'block':'none';card.querySelector('[data-duration-options]').style.display=repeat!=='none'&&endMode==='after_duration'?'block':'none';card.querySelector('[data-end-date-options]').style.display=repeat!=='none'&&endMode==='on_date'?'block':'none';card.querySelector('[data-repeat-unit]').textContent=repeatUnit(repeat)}
+    function renderScheduleNames(card){var ids=($(card).find('.jf-schedule-users').val()||[]).map(Number);card.querySelector('[data-selected-users]').innerHTML=ids.length?chipHtml(ids):'<span class="jf-empty-chips">Uses Default Assignment.</span>'}
+
+    function collectSchedules(){var rows=[];document.querySelectorAll('.jf-schedule-card').forEach(function(card){var val=function(name){var n=card.querySelector('[data-field="'+name+'"]');return n?n.value:''};rows.push({start_date:val('start_date'),start_time:val('start_time'),end_date:val('end_date'),end_time:val('end_time'),repeat_type:val('repeat_type')||'none',repeat_interval:Number(val('repeat_interval')||1),weekly_days:Array.prototype.slice.call(card.querySelectorAll('[data-field="weekly-day"]:checked')).map(function(x){return Number(x.value)}),end_mode:val('end_mode')||'after_occurrences',repeat_end_date:val('repeat_end_date'),repeat_occurrences:Number(val('repeat_occurrences')||1),end_after_value:Number(val('end_after_value')||6),end_after_unit:val('end_after_unit')||'months',assignee_ids:($(card).find('.jf-schedule-users').val()||[]).map(Number),instructions:val('instructions')})});return rows}
+    function localDate(d,t){if(!d||!t)return null;var x=new Date(d+'T'+t+':00');return isNaN(x.getTime())?null:x}
+    function addDays(d,n){var x=new Date(d.getTime());x.setDate(x.getDate()+n);return x}
+    function addMonthsSafe(d,n){var day=d.getDate(),x=new Date(d.getTime());x.setDate(1);x.setMonth(x.getMonth()+n);var last=new Date(x.getFullYear(),x.getMonth()+1,0).getDate();x.setDate(Math.min(day,last));return x}
+    function addYearsSafe(d,n){var day=d.getDate(),month=d.getMonth(),x=new Date(d.getTime());x.setDate(1);x.setFullYear(x.getFullYear()+n);x.setMonth(month);var last=new Date(x.getFullYear(),month+1,0).getDate();x.setDate(Math.min(day,last));return x}
+    function dayKey(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
+    function scheduleOccurrences(s){
+        var start=localDate(s.start_date,s.start_time),end=localDate(s.end_date,s.end_time);if(!start||!end||end<=start)return [];
+        var duration=end-start,out=[],repeat=s.repeat_type||'none',interval=Math.max(1,Number(s.repeat_interval||1)),limit=Math.min(500,Math.max(1,Number(s.repeat_occurrences||1))),endDate=s.repeat_end_date||'';
+        if(s.end_mode==='after_duration'){var amount=Math.max(1,Number(s.end_after_value||1)),base=new Date(start.getTime()),until;if(s.end_after_unit==='days')until=addDays(base,amount);else if(s.end_after_unit==='weeks')until=addDays(base,amount*7);else if(s.end_after_unit==='years')until=addYearsSafe(base,amount);else until=addMonthsSafe(base,amount);endDate=dayKey(until)}
+        function allowed(d){return (s.end_mode!=='on_date'&&s.end_mode!=='after_duration')||!endDate||dayKey(d)<=endDate}
+        function push(d){if(!allowed(d))return false;out.push({start:new Date(d.getTime()),end:new Date(d.getTime()+duration)});return true}
+        if(repeat==='none'){push(start);return out}
+        if(repeat==='daily'){for(var i=0;i<500;i++){var d=addDays(start,i*interval);if(!push(d))break;if(s.end_mode!=='on_date'&&out.length>=limit)break}}
+        if(repeat==='monthly'){for(var m=0;m<500;m++){var md=addMonthsSafe(start,m*interval);if(!push(md))break;if(s.end_mode!=='on_date'&&out.length>=limit)break}}
+        if(repeat==='yearly'){for(var y=0;y<500;y++){var yd=addYearsSafe(start,y*interval);if(!push(yd))break;if(s.end_mode!=='on_date'&&out.length>=limit)break}}
+        if(repeat==='weekly'){var days=(s.weekly_days||[]).map(Number);if(!days.length)days=[start.getDay()];var anchor=new Date(start.getFullYear(),start.getMonth(),start.getDate());var nd=anchor.getDay();var mondayOffset=nd===0?6:nd-1;anchor=addDays(anchor,-mondayOffset);for(var g=0,c=new Date(start.getTime());g<20000&&out.length<500;g++,c=addDays(c,1)){if(!allowed(c))break;var cm=new Date(c.getFullYear(),c.getMonth(),c.getDate()),week=Math.floor((cm-anchor)/(7*86400000));if(week%interval===0&&days.indexOf(c.getDay())>=0){push(c);if(s.end_mode!=='on_date'&&out.length>=limit)break}}}
+        return out
+    }
+    function allOccurrences(){var all=[];collectSchedules().forEach(function(s){all=all.concat(scheduleOccurrences(s))});all.sort(function(a,b){return a.start-b.start});return all.slice(0,500)}
+    function humanDate(d){if(!d)return '-';return d.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'})}
+    function updateSchedulePreview(){var schedules=collectSchedules(),occ=allOccurrences();if(!occ.length){el('schedulePreview').innerHTML='<strong>Schedule preview:</strong> Complete the date/time fields to calculate visits.';el('sideSchedule').textContent='Not scheduled';el('sideVisitCount').textContent='0 scheduled visit(s)'}else{el('schedulePreview').innerHTML='<strong>Schedule preview:</strong> '+occ.length+' visit(s) from '+esc(humanDate(occ[0].start))+' to '+esc(humanDate(occ[occ.length-1].start))+'. '+schedules.length+' schedule definition(s).';el('sideSchedule').textContent=humanDate(occ[0].start)+' → '+humanDate(occ[occ.length-1].end);el('sideVisitCount').textContent=occ.length+' scheduled visit(s)'}updateBillingPreview(occ)}
+    function validateSchedules(){var rows=collectSchedules();if(!rows.length){notify('warning','Add at least one job schedule.');return false}for(var i=0;i<rows.length;i++){var s=rows[i],start=localDate(s.start_date,s.start_time),end=localDate(s.end_date,s.end_time);if(!start||!end){notify('warning','Schedule '+(i+1)+': enter the start and end date/time.');return false}if(end<=start){notify('warning','Schedule '+(i+1)+': end date/time must be after start date/time.');return false}if(s.repeat_type!=='none'&&s.end_mode==='on_date'&&!s.repeat_end_date){notify('warning','Schedule '+(i+1)+': select when the recurrence ends.');return false}if(s.repeat_type==='weekly'&&!s.weekly_days.length){notify('warning','Schedule '+(i+1)+': choose at least one weekday.');return false}}var occ=allOccurrences();if(!occ.length){notify('warning','The schedule does not create any visits.');return false}if(occ.length>=500){notify('warning','The schedule is limited to 500 visits. Reduce the recurrence range.');return false}el('scheduleJson').value=JSON.stringify(rows);return true}
+
+    function billingType(){var x=document.querySelector('input[name="billing_type"]:checked');return x?x.value:'visit_based'}
+    function updateBillingPreview(precomputed){var occ=precomputed||allOccurrences(),type=billingType();el('billingInvoiceCount').textContent=occ.length||0;el('billingFirstDate').textContent=occ.length?humanDate(occ[0].start):'-';el('billingLastDate').textContent=occ.length?humanDate(occ[occ.length-1].start):'-';el('fixedInvoiceAmountWrap').style.display=type==='fixed_price'?'block':'none';el('sideBilling').textContent=(type==='fixed_price'?'Fixed price':'Visit based')+(occ.length?' · '+occ.length+' invoice(s)':'');if(type==='fixed_price'&&!el('fixedInvoiceAmount').value&&occ.length&&currentQuotation&&Number(currentQuotation.total||0)>0){el('fixedInvoiceAmount').placeholder=money(Number(currentQuotation.total)/occ.length)}}
+
+    function renderChecklistNames(){var ids=($('#checklistTemplates').val()||[]).map(Number);if(!ids.length){el('selectedChecklistNames').innerHTML='<span class="jf-empty-chips">No checklist selected.</span>';return}el('selectedChecklistNames').innerHTML=ids.map(function(id){var x=(meta.checklist_templates||[]).find(function(t){return Number(t.id)===id});return x?'<span class="jf-person-chip"><i class="bi bi-list-check"></i>'+esc(x.name)+'</span>':''}).join('')}
+    function addChecklistItemRow(item){item=item||{};el('checklistItems').insertAdjacentHTML('beforeend','<div class="jf-checklist-item"><input type="text" data-check-title maxlength="255" placeholder="Checklist item" value="'+esc(item.title||'')+'"><label class="jf-required-mini"><input type="checkbox" data-check-required '+(item.required?'checked':'')+'> Required</label><button type="button" class="jf-icon-btn danger" data-remove-check><i class="bi bi-trash"></i></button></div>');var row=el('checklistItems').lastElementChild;row.querySelector('[data-remove-check]').onclick=function(){row.remove()}}
+    function serializeNewChecklist(){var builder=el('checklistBuilder');if(!builder.classList.contains('show')){el('newChecklistJson').value='';return true}var name=el('newChecklistName').value.trim();if(!name){notify('warning','Enter a name for the new checklist or close the checklist builder.');return false}var items=[];el('checklistItems').querySelectorAll('.jf-checklist-item').forEach(function(row){var title=row.querySelector('[data-check-title]').value.trim();if(title)items.push({title:title,required:row.querySelector('[data-check-required]').checked?1:0})});if(!items.length){notify('warning','Add at least one item to the new checklist.');return false}el('newChecklistJson').value=JSON.stringify({name:name,description:el('newChecklistDescription').value.trim(),items:items});return true}
+
+    function renderSelectedFiles(){var files=el('jobAttachments').files||[],html='';for(var i=0;i<files.length;i++){html+='<div class="jf-file-row"><i class="bi bi-paperclip"></i><span>'+esc(files[i].name)+'</span><small>'+Math.max(1,Math.round(files[i].size/1024))+' KB</small></div>'}el('selectedFileList').innerHTML=html}
+    function renderExistingFiles(rows){if(!rows||!rows.length){el('existingFileList').innerHTML='';return}el('existingFileList').innerHTML='<div class="jf-section" style="margin-top:3px">Already Attached</div>'+rows.map(function(f){return '<div class="jf-file-row"><i class="bi bi-'+(String(f.file_mime||'').indexOf('image/')===0?'image':'file-earmark')+'"></i><span>'+esc(f.file_name||'File')+'</span><small>'+esc(f.attachment_type||'file')+'</small></div>'}).join('')}
+
     function loadMeta(){var fd=new FormData();fd.append('action','meta');fd.append('job_id',jobId||0);return request(fd).then(function(d){setMeta(d.meta||{})})}
+    function legacySchedule(r){if(!r.start_date||!r.start_time||!r.end_date||!r.end_time)return null;return {start_date:r.start_date,start_time:r.start_time,end_date:r.end_date,end_time:r.end_time,repeat_type:r.job_type==='recurring'?'daily':'none',repeat_interval:1,end_mode:'after_occurrences',repeat_occurrences:1,weekly_days:[],instructions:''}}
     function loadExisting(){
         if(jobId<=0){
-            if(requestedQuoteId>0){
-                $('#quoteId').val(String(requestedQuoteId)).trigger('change.select2');
-                return quoteDetails(requestedQuoteId);
-            }
+            addSchedule({});
+            if(requestedQuoteId>0){document.querySelector('input[name="job_source"][value="quotation"]').checked=true;updateSourceMode();$('#quoteId').val(String(requestedQuoteId)).trigger('change.select2');return quoteDetails(requestedQuoteId)}
+            document.querySelector('input[name="job_source"][value="direct"]').checked=true;updateSourceMode();
+            if(requestedClientId>0){$('#directClientId').val(String(requestedClientId)).trigger('change.select2');applyDirectCustomer(requestedLocationId);if(requestedServiceId>0)$('#directServiceId').val(String(requestedServiceId)).trigger('change.select2');renderDirectPreview()}
             return Promise.resolve();
         }
-
-        var fd=new FormData();
-        fd.append('action','get');
-        fd.append('job_id',jobId);
-
-        return request(fd).then(function(d){
-            var r=d.job||{},a=d.assignments||[];
-            setMeta(d.meta||meta);
-
-            existingJobServiceId=Number(r.product_service_id||0);
-
-            el('pageTitle').textContent='Edit '+(r.job_no||'Job Card');
-            el('saveText').textContent='Update Job Card';
-            el('jobId').value=r.id||jobId;
-            $('#quoteId').val(String(r.quote_id||'')).trigger('change.select2');
-
-            el('title').value=r.title||'';
-            el('description').value=r.description||'';
-            el('priority').value=r.priority||'normal';
-            el('status').value=r.status||'scheduled';
-            el('startDate').value=r.start_date||'';
-            el('startTime').value=(r.start_time||'').substring(0,5);
-            el('endDate').value=r.end_date||'';
-            el('endTime').value=(r.end_time||'').substring(0,5);
-            el('completionMode').value=r.assignment_completion_mode||'primary_only';
-
-            if(r.assignment_mode==='single_user'){
-                el('assignmentMode').value='single_user';
-                var x=a.find(function(z){return z.user_id});
-                $('#singleUserId').val(x?String(x.user_id):'').trigger('change.select2');
-            }else{
-                el('assignmentMode').value='multiple_users';
-                $('#userIds').val(a.filter(function(z){return z.user_id}).map(function(z){return String(z.user_id)})).trigger('change');
-            }
-
-            updateAssignment();
-            formatSchedule();
-
-            return quoteDetails(r.quote_id);
-        });
+        var fd=new FormData();fd.append('action','get');fd.append('job_id',jobId);
+        return request(fd).then(function(d){var r=d.job||{},a=d.assignments||[],schedules=d.schedules||[],billing=d.billing||null;setMeta(d.meta||meta);existingJobServiceId=Number(r.product_service_id||0);el('pageTitle').textContent='Edit '+(r.job_no||'Job Card');el('saveText').textContent='Update Job Card';el('jobId').value=r.id||jobId;el('requestId').value=r.request_id||requestedRequestId||0;el('title').value=r.title||'';el('description').value=r.description||'';el('priority').value=r.priority||'normal';el('status').value=r.status||'scheduled';el('completionMode').value=r.assignment_completion_mode||'primary_only';if(r.assignment_mode==='single_user'){el('assignmentMode').value='single_user';var x=a.find(function(z){return z.user_id});$('#singleUserId').val(x?String(x.user_id):'').trigger('change.select2')}else{el('assignmentMode').value='multiple_users';$('#userIds').val(a.filter(function(z){return z.user_id}).map(function(z){return String(z.user_id)})).trigger('change')}
+            updateAssignment();el('schedulesBox').innerHTML='';scheduleSeq=0;if(schedules.length){schedules.forEach(function(x){addSchedule(x)})}else{var legacy=legacySchedule(r);addSchedule(legacy||{})}
+            if(billing){$('input[name="billing_type"][value="'+billing.billing_type+'"]').prop('checked',true);el('automaticPayments').checked=Number(billing.automatic_payments_enabled||0)===1;el('fixedInvoiceAmount').value=billing.fixed_invoice_amount||''}
+            $('#checklistTemplates').val((d.checklist_template_ids||[]).map(String)).trigger('change');renderChecklistNames();renderExistingFiles(d.attachments||[]);
+            if(Number(r.quote_id||0)>0){document.querySelector('input[name="job_source"][value="quotation"]').checked=true;updateSourceMode();$('#quoteId').val(String(r.quote_id)).trigger('change.select2');updateBillingPreview();return quoteDetails(r.quote_id)}
+            document.querySelector('input[name="job_source"][value="direct"]').checked=true;updateSourceMode();$('#directClientId').val(String(r.client_id||'')).trigger('change.select2');applyDirectCustomer(r.location_id||0);$('#directServiceId').val(String(r.product_service_id||'')).trigger('change.select2');if(r.branch_id)$('#directBranchId').val(String(r.branch_id)).trigger('change.select2');renderDirectPreview();updateBillingPreview();return Promise.resolve()})
     }
 
-    function validateSchedule(){var sd=el('startDate').value,st=el('startTime').value,ed=el('endDate').value,et=el('endTime').value;if(!sd||!st||!ed||!et){notify('warning','Enter start date/time and end date/time.');return false}var start=new Date(sd+'T'+st+':00'),end=new Date(ed+'T'+et+':00');if(isNaN(start.getTime())||isNaN(end.getTime())){notify('warning','Enter a valid job schedule.');return false}if(end<=start){notify('warning','End date/time must be after start date/time.');return false}return true}
-
     el('assignmentMode').addEventListener('change',updateAssignment);
-    el('quoteId').addEventListener('change',function(){
-        existingJobServiceId=0;
-        quoteDetails(this.value);
-    });
+    $('#singleUserId,#userIds,#departmentId').on('change',function(){renderDefaultNames();updateSchedulePreview()});
+    document.querySelectorAll('input[name="job_source"]').forEach(function(x){x.addEventListener('change',updateSourceMode)});
+    el('quoteId').addEventListener('change',function(){existingJobServiceId=0;if(sourceMode()==='quotation')quoteDetails(this.value)});
+    $('#directClientId').on('change',function(){applyDirectCustomer(0)});
+    $('#directLocationId,#directServiceId,#directBranchId').on('change',renderDirectPreview);
     el('jobServiceId').addEventListener('change',updateSelectedServicePreview);
-    ['startDate','startTime','endDate','endTime'].forEach(function(id){el(id).addEventListener('change',formatSchedule)});
-    el('jobForm').addEventListener('submit',function(e){e.preventDefault();if(!this.reportValidity()){notify('warning','Complete all required job card fields.');return}if(currentQuotation&&Number(currentQuotation.product_service_id||0)<=0&&!el('jobServiceId').value){notify('warning','Select a service for this quotation.');el('jobServiceId').focus();return}if(!validateSchedule())return;var mode=el('assignmentMode').value;if(mode==='single_user'&&!el('singleUserId').value){notify('warning','Select an employee.');return}if(mode==='multiple_users'&&!($('#userIds').val()||[]).length){notify('warning','Select at least one employee.');return}if(mode==='department'&&!el('departmentId').value){notify('warning','Select a department.');return}var fd=new FormData(this);fd.append('action','save');var b=el('saveButton');loading(b,true);request(fd).then(function(d){var n=d.notifications||{},msg=d.message||'Job saved.';if(!jobId){var emp=Number(n.employee_email_sent||0),cust=Number(n.customer_email_sent||0),failed=Number(n.email_failed||0);msg+=' Employee emails: '+emp+'. Customer email: '+(cust?'sent':'not sent')+'.';if(failed)msg+=' Failed emails: '+failed+'.'}notify(Number(n.email_failed||0)>0?'warning':'success',msg);setTimeout(function(){window.location.href='jobs'},1200)}).catch(function(err){notify('error',err.message)}).finally(function(){loading(b,false)})});
+    el('addScheduleButton').addEventListener('click',function(){addSchedule({})});
+    document.querySelectorAll('input[name="billing_type"]').forEach(function(x){x.addEventListener('change',updateBillingPreview)});
+    el('jobAttachments').addEventListener('change',renderSelectedFiles);
+    $('#checklistTemplates').on('change',renderChecklistNames);
+    el('toggleChecklistBuilder').addEventListener('click',function(){el('checklistBuilder').classList.toggle('show');if(el('checklistBuilder').classList.contains('show')&&!el('checklistItems').children.length)addChecklistItemRow({})});
+    el('addChecklistItem').addEventListener('click',function(){addChecklistItemRow({})});
 
-    initSelect2();updateAssignment();formatSchedule();
-    loadMeta().then(loadExisting).catch(function(e){notify('error',e.message)});
+    el('jobForm').addEventListener('submit',function(e){e.preventDefault();if(!this.reportValidity()){notify('warning','Complete all required job card fields.');return}if(Number(meta.expanded_schedule_ready||0)!==1){notify('error','Run migration_job_recurring_schedules_v2.sql before saving this job.');return}var source=sourceMode();if(source==='quotation'){if(!el('quoteId').value){notify('warning','Select an approved quotation.');return}if(currentQuotation&&Number(currentQuotation.product_service_id||0)<=0&&!el('jobServiceId').value){notify('warning','Select a service for this quotation.');return}}else{if(!el('directClientId').value){notify('warning','Select a customer for the direct job.');return}if(!el('directServiceId').value){notify('warning','Select a service for the direct job.');return}}var mode=el('assignmentMode').value;if(mode==='single_user'&&!el('singleUserId').value){notify('warning','Select an employee.');return}if(mode==='multiple_users'&&!($('#userIds').val()||[]).length){notify('warning','Select at least one employee.');return}if(mode==='department'&&!el('departmentId').value){notify('warning','Select a department.');return}if(!validateSchedules()||!serializeNewChecklist())return;var fd=new FormData(this);fd.set('schedule_json',el('scheduleJson').value);fd.set('new_checklist_json',el('newChecklistJson').value);fd.append('action','save');var b=el('saveButton');loading(b,true);request(fd).then(function(d){var n=d.notifications||{},msg=d.message||'Job saved.';if(d.attachments&&Number(d.attachments.saved||0)>0)msg+=' '+Number(d.attachments.saved)+' attachment(s) saved.';notify(Number(n.email_failed||0)>0?'warning':'success',msg);setTimeout(function(){window.location.href='jobs'},1300)}).catch(function(err){notify('error',err.message)}).finally(function(){loading(b,false)})});
+
+    initStaticSelect2();updateAssignment();renderChecklistNames();
+    loadMeta().then(loadExisting).catch(function(e){notify('error',e.message);if(!el('schedulesBox').children.length)addSchedule({})});
 })();
 </script>
 </body>

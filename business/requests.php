@@ -1,4 +1,5 @@
 <?php
+/* FieldPlx Service Requests Page - Version 2.2.0 - 2026-09-02 - Row Click Request View */
 require_once __DIR__ . '/includes/auth.php';
 
 $pageTitle = 'Service Requests';
@@ -13,6 +14,137 @@ if (empty($_SESSION['requests_csrf_token'])) {
 }
 
 $requestsCsrfToken = (string)$_SESSION['requests_csrf_token'];
+
+/*
+ * Request dashboard statistics are calculated directly on this page.
+ * The existing api/requests.php endpoint remains responsible only for
+ * the searchable/paginated request table and request CRUD interactions.
+ */
+$requestStats = array(
+    'needs_approval' => 0,
+    'new' => 0,
+    'assessment_completed' => 0,
+    'overdue' => 0,
+    'unscheduled' => 0,
+    'new_requests_30' => 0,
+    'previous_new_requests_30' => 0,
+    'new_requests_change' => 0.0,
+    'conversion_rate' => 0.0,
+    'previous_conversion_rate' => 0.0,
+    'conversion_change' => 0.0,
+    'converted_requests_30' => 0,
+    'requests_30' => 0,
+    'current_period_label' => date('M j', strtotime('-29 days')) . ' - ' . date('M j'),
+    'previous_period_label' => date('M j', strtotime('-59 days')) . ' - ' . date('M j', strtotime('-30 days'))
+);
+
+$requestStatsTenantId = isset($_SESSION['tenant_id']) ? (int)$_SESSION['tenant_id'] : 0;
+$requestStatsPdo = null;
+if (isset($pdo) && $pdo instanceof PDO) {
+    $requestStatsPdo = $pdo;
+} elseif (isset($db) && $db instanceof PDO) {
+    $requestStatsPdo = $db;
+}
+
+if ($requestStatsTenantId > 0 && $requestStatsPdo instanceof PDO) {
+    try {
+        $summaryStmt = $requestStatsPdo->prepare(
+            "SELECT
+                SUM(CASE WHEN r.status = 'quote_required' THEN 1 ELSE 0 END) AS needs_approval,
+                SUM(CASE WHEN r.status = 'new' THEN 1 ELSE 0 END) AS new_count,
+                SUM(CASE
+                    WHEN r.status NOT IN ('converted','closed','cancelled')
+                     AND EXISTS (
+                        SELECT 1
+                        FROM assessments a
+                        WHERE a.tenant_id = r.tenant_id
+                          AND a.request_id = r.id
+                          AND a.status = 'completed'
+                     )
+                    THEN 1 ELSE 0 END) AS assessment_completed,
+                SUM(CASE
+                    WHEN r.status NOT IN ('converted','closed','cancelled')
+                     AND r.preferred_date IS NOT NULL
+                     AND r.preferred_date < CURDATE()
+                    THEN 1 ELSE 0 END) AS overdue_count,
+                SUM(CASE
+                    WHEN r.status NOT IN ('converted','closed','cancelled')
+                     AND r.preferred_date IS NULL
+                    THEN 1 ELSE 0 END) AS unscheduled_count,
+                SUM(CASE
+                    WHEN r.created_at >= DATE_SUB(CURDATE(), INTERVAL 29 DAY)
+                     AND r.created_at < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+                    THEN 1 ELSE 0 END) AS requests_30,
+                SUM(CASE
+                    WHEN r.created_at >= DATE_SUB(CURDATE(), INTERVAL 59 DAY)
+                     AND r.created_at < DATE_SUB(CURDATE(), INTERVAL 29 DAY)
+                    THEN 1 ELSE 0 END) AS previous_requests_30,
+                SUM(CASE
+                    WHEN r.created_at >= DATE_SUB(CURDATE(), INTERVAL 29 DAY)
+                     AND r.created_at < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
+                     AND (
+                        EXISTS (SELECT 1 FROM quotes q WHERE q.tenant_id = r.tenant_id AND q.request_id = r.id)
+                        OR EXISTS (SELECT 1 FROM jobs j WHERE j.tenant_id = r.tenant_id AND j.request_id = r.id AND j.deleted_at IS NULL)
+                     )
+                    THEN 1 ELSE 0 END) AS converted_30,
+                SUM(CASE
+                    WHEN r.created_at >= DATE_SUB(CURDATE(), INTERVAL 59 DAY)
+                     AND r.created_at < DATE_SUB(CURDATE(), INTERVAL 29 DAY)
+                     AND (
+                        EXISTS (SELECT 1 FROM quotes q2 WHERE q2.tenant_id = r.tenant_id AND q2.request_id = r.id)
+                        OR EXISTS (SELECT 1 FROM jobs j2 WHERE j2.tenant_id = r.tenant_id AND j2.request_id = r.id AND j2.deleted_at IS NULL)
+                     )
+                    THEN 1 ELSE 0 END) AS previous_converted_30
+             FROM service_requests r
+             WHERE r.tenant_id = :tenant_id"
+        );
+        $summaryStmt->execute(array(':tenant_id' => $requestStatsTenantId));
+        $row = $summaryStmt->fetch(PDO::FETCH_ASSOC);
+
+        if (is_array($row)) {
+            $requestStats['needs_approval'] = (int)($row['needs_approval'] ?? 0);
+            $requestStats['new'] = (int)($row['new_count'] ?? 0);
+            $requestStats['assessment_completed'] = (int)($row['assessment_completed'] ?? 0);
+            $requestStats['overdue'] = (int)($row['overdue_count'] ?? 0);
+            $requestStats['unscheduled'] = (int)($row['unscheduled_count'] ?? 0);
+            $requestStats['new_requests_30'] = (int)($row['requests_30'] ?? 0);
+            $requestStats['previous_new_requests_30'] = (int)($row['previous_requests_30'] ?? 0);
+            $requestStats['converted_requests_30'] = (int)($row['converted_30'] ?? 0);
+            $requestStats['requests_30'] = (int)($row['requests_30'] ?? 0);
+
+            $previousConverted = (int)($row['previous_converted_30'] ?? 0);
+            $previousRequests = (int)($row['previous_requests_30'] ?? 0);
+
+            if ($requestStats['previous_new_requests_30'] > 0) {
+                $requestStats['new_requests_change'] = (($requestStats['new_requests_30'] - $requestStats['previous_new_requests_30']) / $requestStats['previous_new_requests_30']) * 100;
+            } elseif ($requestStats['new_requests_30'] > 0) {
+                $requestStats['new_requests_change'] = 100.0;
+            }
+
+            if ($requestStats['requests_30'] > 0) {
+                $requestStats['conversion_rate'] = ($requestStats['converted_requests_30'] / $requestStats['requests_30']) * 100;
+            }
+            if ($previousRequests > 0) {
+                $requestStats['previous_conversion_rate'] = ($previousConverted / $previousRequests) * 100;
+            }
+            $requestStats['conversion_change'] = $requestStats['conversion_rate'] - $requestStats['previous_conversion_rate'];
+        }
+    } catch (Throwable $requestStatsError) {
+        // Keep zero-value cards if the dashboard statistic query cannot run.
+    }
+}
+
+function fieldplxRequestTrendClass($value) {
+    if ($value > 0.0001) return 'up';
+    if ($value < -0.0001) return 'down';
+    return 'flat';
+}
+
+function fieldplxRequestTrendArrow($value) {
+    if ($value > 0.0001) return '↑';
+    if ($value < -0.0001) return '↓';
+    return '';
+}
 ?>
 
 <!DOCTYPE html>
@@ -4064,6 +4196,83 @@ a:active{
 
 /* Separate Edit Request action */
 .fd-rq-icon[href]{text-decoration:none!important}
+
+
+/* ==========================================================
+   Service Requests v2.1 - same compact stats cards as Quotations
+   ========================================================== */
+.fd-rq-summary-v2{margin-bottom:17px}
+.fd-rq-summary-v2 > div{display:flex}
+.fd-rq-metric-card{
+  width:100%;height:100%;min-height:134px;padding:15px 18px;position:relative;
+  overflow:visible;border:1px solid #dfe6ef;border-radius:12px;background:#fff;
+  box-shadow:0 3px 12px rgba(24,45,76,.035)
+}
+.fd-rq-metric-title{
+  margin:0;color:#15233a;font-size:15px;font-weight:700;line-height:1.2
+}
+.fd-rq-metric-title-row{display:flex;align-items:center;gap:7px}
+.fd-rq-metric-info{color:#8b9bb0;font-size:12px;line-height:1}
+.fd-rq-card-arrow{
+  position:absolute;top:14px;right:15px;color:#7f90a8;font-size:15px;line-height:1
+}
+.fd-rq-metric-sub{
+  margin:4px 24px 0 0;max-width:315px;color:#738197;font-size:9.5px;line-height:1.35
+}
+.fd-rq-overview-list{margin-top:8px;display:flex;flex-direction:column;gap:4px}
+.fd-rq-overview-item{
+  min-height:14px;display:grid;grid-template-columns:8px minmax(0,1fr) auto;
+  align-items:center;gap:6px;color:#4f6078;font-size:9px;line-height:1.15;
+  text-decoration:none!important
+}
+.fd-rq-overview-item:hover{color:var(--fd-green-dark)}
+.fd-rq-overview-dot{width:6px;height:6px;border-radius:50%;background:#aab5c5}
+.fd-rq-overview-dot.approval{background:#d7aa25}
+.fd-rq-overview-dot.new{background:#94a8c1}
+.fd-rq-overview-dot.assessment{background:#5d9f2f}
+.fd-rq-overview-dot.overdue{background:#e45b66}
+.fd-rq-overview-dot.unscheduled{background:#7e91a8}
+.fd-rq-overview-count{color:#253750;font-size:9px;font-weight:700;text-align:right}
+.fd-rq-metric-period{margin-top:3px;color:#7c8a9e;font-size:9px;line-height:1.2}
+.fd-rq-metric-value-row{margin-top:18px;display:flex;align-items:center;gap:9px}
+.fd-rq-metric-value{
+  color:#071426;font-size:30px;line-height:1;font-weight:700;letter-spacing:-.5px
+}
+.fd-rq-metric-change{
+  min-height:22px;padding:0 8px;display:inline-flex;align-items:center;justify-content:center;
+  border-radius:999px;font-size:9px;font-weight:700;white-space:nowrap
+}
+.fd-rq-metric-change.up{color:#5d971b;background:#edf7e4}
+.fd-rq-metric-change.down{color:#b9444d;background:#fff0f1}
+.fd-rq-metric-change.flat{color:#718096;background:#eef2f6}
+.fd-rq-trend-wrap{position:relative;display:inline-flex}
+.fd-rq-trend-popup{
+  min-width:190px;padding:11px 12px;position:absolute;right:-8px;bottom:calc(100% + 12px);z-index:30;
+  visibility:hidden;opacity:0;transform:translateY(5px);pointer-events:none;
+  border:1px solid #dfe6ef;border-radius:10px;background:#fff;
+  box-shadow:0 12px 28px rgba(20,42,75,.14);transition:.15s ease
+}
+.fd-rq-trend-popup:after{
+  width:10px;height:10px;position:absolute;right:22px;bottom:-6px;content:"";
+  border-right:1px solid #dfe6ef;border-bottom:1px solid #dfe6ef;background:#fff;
+  transform:rotate(45deg)
+}
+.fd-rq-trend-wrap:hover .fd-rq-trend-popup,
+.fd-rq-trend-wrap:focus-within .fd-rq-trend-popup{visibility:visible;opacity:1;transform:translateY(0)}
+.fd-rq-trend-popup-title{margin-bottom:7px;color:#62738a;font-size:9px;font-weight:700}
+.fd-rq-trend-popup-row{
+  display:flex;align-items:center;justify-content:space-between;gap:15px;padding:3px 0;
+  color:#607086;font-size:9px
+}
+.fd-rq-trend-popup-row strong{color:#243650;font-size:9px}
+@media(max-width:1199.98px){.fd-rq-metric-card{min-height:136px}}
+@media(max-width:767.98px){.fd-rq-metric-card{min-height:132px}.fd-rq-summary-v2{row-gap:12px}}
+@media(max-width:575.98px){.fd-rq-metric-card{min-height:128px;padding:14px 16px}.fd-rq-metric-value{font-size:28px}}
+
+/* Version 2.2.0 - entire request row opens Request View */
+.fd-rq-table tbody tr.fd-rq-clickable-row{cursor:pointer;transition:background .15s ease}
+.fd-rq-table tbody tr.fd-rq-clickable-row:hover{background:#fbfcfa}
+.fd-rq-table tbody tr.fd-rq-clickable-row:focus{outline:2px solid rgba(116,184,36,.30);outline-offset:-2px;background:#fbfcfa}
 </style>
 </head>
 
@@ -4096,57 +4305,87 @@ a:active{
                         </div>
                     </section>
 
-                    <section class="row g-3 fd-rq-summary">
-                        <div class="col-xl-3 col-md-6">
-                            <article class="fd-rq-stat">
-                                <div class="fd-rq-stat-row">
-                                    <span class="fd-rq-stat-icon"><i class="bi bi-inbox"></i></span>
-                                    <div>
-                                        <span class="fd-rq-stat-label">Total Requests</span>
-                                        <strong class="fd-rq-stat-value" id="statTotal">0</strong>
+                    <section class="row g-3 fd-rq-summary-v2">
+                        <div class="col-xl-4 col-md-12">
+                            <article class="fd-rq-metric-card">
+                                <h2 class="fd-rq-metric-title">Overview</h2>
+                                <div class="fd-rq-overview-list">
+                                    <a class="fd-rq-overview-item" href="#requestsTableCard" data-overview-status="quote_required">
+                                        <span class="fd-rq-overview-dot approval"></span>
+                                        <span>Needs approval</span>
+                                        <span class="fd-rq-overview-count"><?= (int)$requestStats['needs_approval'] ?></span>
+                                    </a>
+                                    <a class="fd-rq-overview-item" href="#requestsTableCard" data-overview-status="new">
+                                        <span class="fd-rq-overview-dot new"></span>
+                                        <span>New</span>
+                                        <span class="fd-rq-overview-count"><?= (int)$requestStats['new'] ?></span>
+                                    </a>
+                                    <div class="fd-rq-overview-item">
+                                        <span class="fd-rq-overview-dot assessment"></span>
+                                        <span>Assessment complete</span>
+                                        <span class="fd-rq-overview-count"><?= (int)$requestStats['assessment_completed'] ?></span>
+                                    </div>
+                                    <div class="fd-rq-overview-item">
+                                        <span class="fd-rq-overview-dot overdue"></span>
+                                        <span>Overdue</span>
+                                        <span class="fd-rq-overview-count"><?= (int)$requestStats['overdue'] ?></span>
+                                    </div>
+                                    <div class="fd-rq-overview-item">
+                                        <span class="fd-rq-overview-dot unscheduled"></span>
+                                        <span>Unscheduled</span>
+                                        <span class="fd-rq-overview-count"><?= (int)$requestStats['unscheduled'] ?></span>
                                     </div>
                                 </div>
                             </article>
                         </div>
 
-                        <div class="col-xl-3 col-md-6">
-                            <article class="fd-rq-stat">
-                                <div class="fd-rq-stat-row">
-                                    <span class="fd-rq-stat-icon"><i class="bi bi-stars"></i></span>
-                                    <div>
-                                        <span class="fd-rq-stat-label">New</span>
-                                        <strong class="fd-rq-stat-value" id="statNew">0</strong>
-                                    </div>
+                        <div class="col-xl-4 col-md-6">
+                            <article class="fd-rq-metric-card">
+                                <span class="fd-rq-card-arrow"><i class="bi bi-arrow-up-right"></i></span>
+                                <h2 class="fd-rq-metric-title">New requests</h2>
+                                <div class="fd-rq-metric-period">Past 30 days</div>
+                                <div class="fd-rq-metric-value-row">
+                                    <strong class="fd-rq-metric-value"><?= (int)$requestStats['new_requests_30'] ?></strong>
+                                    <span class="fd-rq-trend-wrap" tabindex="0">
+                                        <span class="fd-rq-metric-change <?= fieldplxRequestTrendClass($requestStats['new_requests_change']) ?>">
+                                            <?= fieldplxRequestTrendArrow($requestStats['new_requests_change']) ?> <?= number_format(abs((float)$requestStats['new_requests_change']), 0) ?>%
+                                        </span>
+                                        <span class="fd-rq-trend-popup" role="tooltip">
+                                            <span class="fd-rq-trend-popup-title">New requests</span>
+                                            <span class="fd-rq-trend-popup-row"><span><?= htmlspecialchars($requestStats['previous_period_label']) ?></span><strong><?= (int)$requestStats['previous_new_requests_30'] ?></strong></span>
+                                            <span class="fd-rq-trend-popup-row"><span><?= htmlspecialchars($requestStats['current_period_label']) ?></span><strong><?= (int)$requestStats['new_requests_30'] ?></strong></span>
+                                        </span>
+                                    </span>
                                 </div>
                             </article>
                         </div>
 
-                        <div class="col-xl-3 col-md-6">
-                            <article class="fd-rq-stat">
-                                <div class="fd-rq-stat-row">
-                                    <span class="fd-rq-stat-icon"><i class="bi bi-signpost-split"></i></span>
-                                    <div>
-                                        <span class="fd-rq-stat-label">Action Required</span>
-                                        <strong class="fd-rq-stat-value" id="statAction">0</strong>
-                                    </div>
+                        <div class="col-xl-4 col-md-6">
+                            <article class="fd-rq-metric-card">
+                                <span class="fd-rq-card-arrow"><i class="bi bi-arrow-up-right"></i></span>
+                                <div class="fd-rq-metric-title-row">
+                                    <h2 class="fd-rq-metric-title">Conversion rate</h2>
+                                    <span class="fd-rq-metric-info" title="Quotes or jobs created from requests in the past 30 days"><i class="bi bi-info-circle"></i></span>
                                 </div>
-                            </article>
-                        </div>
-
-                        <div class="col-xl-3 col-md-6">
-                            <article class="fd-rq-stat">
-                                <div class="fd-rq-stat-row">
-                                    <span class="fd-rq-stat-icon"><i class="bi bi-exclamation-triangle"></i></span>
-                                    <div>
-                                        <span class="fd-rq-stat-label">Urgent</span>
-                                        <strong class="fd-rq-stat-value" id="statUrgent">0</strong>
-                                    </div>
+                                <div class="fd-rq-metric-period">Past 30 days</div>
+                                <div class="fd-rq-metric-value-row">
+                                    <strong class="fd-rq-metric-value"><?= number_format((float)$requestStats['conversion_rate'], 0) ?>%</strong>
+                                    <span class="fd-rq-trend-wrap" tabindex="0">
+                                        <span class="fd-rq-metric-change <?= fieldplxRequestTrendClass($requestStats['conversion_change']) ?>">
+                                            <?= fieldplxRequestTrendArrow($requestStats['conversion_change']) ?> <?= number_format(abs((float)$requestStats['conversion_change']), 0) ?>%
+                                        </span>
+                                        <span class="fd-rq-trend-popup" role="tooltip">
+                                            <span class="fd-rq-trend-popup-title">Conversion rate</span>
+                                            <span class="fd-rq-trend-popup-row"><span><?= htmlspecialchars($requestStats['previous_period_label']) ?></span><strong><?= number_format((float)$requestStats['previous_conversion_rate'], 0) ?>%</strong></span>
+                                            <span class="fd-rq-trend-popup-row"><span><?= htmlspecialchars($requestStats['current_period_label']) ?></span><strong><?= number_format((float)$requestStats['conversion_rate'], 0) ?>%</strong></span>
+                                        </span>
+                                    </span>
                                 </div>
                             </article>
                         </div>
                     </section>
 
-                    <section class="fd-card fd-rq-card">
+                    <section class="fd-card fd-rq-card" id="requestsTableCard">
                         <div class="fd-rq-toolbar">
                             <div class="fd-rq-search">
                                 <i class="bi bi-search"></i>
@@ -4717,7 +4956,7 @@ a:active{
                         }
 
                         html +=
-                            '<tr>'+
+                            '<tr class="fd-rq-clickable-row" data-request-view="'+Number(row.id)+'" tabindex="0" role="link" aria-label="View '+esc(row.request_no || 'request')+'">'+
                                 '<td>'+((state.page-1)*state.perPage+index+1)+'</td>'+
                                 '<td><div class="fd-rq-request"><strong>'+esc(row.request_no)+'</strong><small>'+esc(row.title)+'</small></div></td>'+
                                 '<td><div class="fd-rq-client"><strong>'+esc(row.client_name)+'</strong><small><i class="bi bi-geo-alt"></i> '+esc(row.location_name || 'Location not confirmed')+'</small></div></td>'+
@@ -4760,20 +4999,6 @@ a:active{
                         .then(function(data){
                             render(data.requests || []);
                             applyMeta(data.meta || {});
-
-                            var s = data.summary || {};
-
-                            document.getElementById('statTotal').textContent =
-                                Number(s.total || 0);
-
-                            document.getElementById('statNew').textContent =
-                                Number(s.new_count || 0);
-
-                            document.getElementById('statAction').textContent =
-                                Number(s.action_required || 0);
-
-                            document.getElementById('statUrgent').textContent =
-                                Number(s.urgent || 0);
 
                             var p = data.pagination || {};
 
@@ -5074,6 +5299,29 @@ a:active{
                 });
 
                 
+                /* Version 2.2.0: open Request View from anywhere on the normal row. */
+                function openRequestViewFromRow(row){
+                    if(!row) return;
+                    var requestId = Number(row.getAttribute('data-request-view') || 0);
+                    if(requestId > 0){
+                        window.location.href = 'request-view.php?request_id=' + requestId;
+                    }
+                }
+
+                tableBody.addEventListener('click',function(event){
+                    if(event.target.closest('a,button,input,select,textarea,label,[data-action]')) return;
+                    openRequestViewFromRow(event.target.closest('tr[data-request-view]'));
+                });
+
+                tableBody.addEventListener('keydown',function(event){
+                    if(event.key !== 'Enter' && event.key !== ' ') return;
+                    if(event.target.closest('a,button,input,select,textarea,label,[data-action]')) return;
+                    var row = event.target.closest('tr[data-request-view]');
+                    if(!row) return;
+                    event.preventDefault();
+                    openRequestViewFromRow(row);
+                });
+
                 document.getElementById('refreshButton').onclick = load;
                 document.getElementById('requestModalClose').onclick = closeRequest;
                 document.getElementById('cancelRequest').onclick = closeRequest;
@@ -5165,6 +5413,17 @@ a:active{
                         if(event.target === modal){
                             modal.classList.remove('show');
                         }
+                    });
+                });
+
+
+                document.querySelectorAll('[data-overview-status]').forEach(function(link){
+                    link.addEventListener('click',function(){
+                        var status = this.getAttribute('data-overview-status') || '';
+                        document.getElementById('statusFilter').value = status;
+                        state.status = status;
+                        state.page = 1;
+                        load();
                     });
                 });
 

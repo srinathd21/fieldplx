@@ -1,28 +1,139 @@
 <?php
-/* FieldPlx Client View Page - Version 1.2.0 - 2026-09-02 */
+/* FieldPlx Request View Page - Version 1.0.0 - 2026-09-02 */
 require_once __DIR__ . '/includes/auth.php';
 
-$pageTitle = 'Client View';
-$activePage = 'clients';
+$pageTitle = 'Request View';
+$activePage = 'requests';
 
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-if (empty($_SESSION['clients_csrf_token'])) {
-    $_SESSION['clients_csrf_token'] = bin2hex(random_bytes(32));
+$requestId = isset($_GET['request_id']) ? (int)$_GET['request_id'] : 0;
+$tenantId = isset($_SESSION['tenant_id']) ? (int)$_SESSION['tenant_id'] : 0;
+$requestViewPdo = null;
+if (isset($pdo) && $pdo instanceof PDO) {
+    $requestViewPdo = $pdo;
+} elseif (isset($db) && $db instanceof PDO) {
+    $requestViewPdo = $db;
 }
 
-$clientsCsrfToken = (string)$_SESSION['clients_csrf_token'];
-?>
+$requestRow = null;
+$requestQuotes = array();
+$requestJobs = array();
+$requestAssessments = array();
+$requestViewError = '';
 
+function rvh($value) { return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8'); }
+function rvReadable($value) { $value = str_replace('_', ' ', (string)$value); return ucwords($value); }
+function rvDate($value, $withTime = false) {
+    if (!$value) return '-';
+    $ts = strtotime((string)$value);
+    if (!$ts) return (string)$value;
+    return date($withTime ? 'd M Y, h:i A' : 'd M Y', $ts);
+}
+function rvTime($value) {
+    if (!$value) return '-';
+    $ts = strtotime((string)$value);
+    return $ts ? date('h:i A', $ts) : (string)$value;
+}
+
+if ($requestId <= 0 || $tenantId <= 0 || !($requestViewPdo instanceof PDO)) {
+    $requestViewError = 'Invalid request or database connection.';
+} else {
+    try {
+        $stmt = $requestViewPdo->prepare(
+            "SELECT r.*,
+                    c.display_name AS client_name,
+                    c.company_name AS client_company,
+                    c.email AS client_email,
+                    c.phone AS client_phone,
+                    c.alternate_phone AS client_alternate_phone,
+                    c.client_type AS client_type,
+                    l.name AS location_name,
+                    l.location_type AS location_type,
+                    l.address_line1 AS location_address1,
+                    l.address_line2 AS location_address2,
+                    l.city AS location_city,
+                    l.state AS location_state,
+                    l.postal_code AS location_postal_code,
+                    l.contact_name AS location_contact_name,
+                    l.contact_phone AS location_contact_phone,
+                    ps.name AS service_name,
+                    ps.item_type AS service_type,
+                    b.name AS branch_name,
+                    CONCAT_WS(' ', au.first_name, au.last_name) AS assigned_name,
+                    au.email AS assigned_email,
+                    au.phone AS assigned_phone,
+                    CONCAT_WS(' ', cu.first_name, cu.last_name) AS created_by_name
+             FROM service_requests r
+             INNER JOIN clients c ON c.id = r.client_id AND c.tenant_id = r.tenant_id
+             LEFT JOIN client_locations l ON l.id = r.location_id AND l.tenant_id = r.tenant_id
+             LEFT JOIN product_services ps ON ps.id = r.product_service_id AND ps.tenant_id = r.tenant_id
+             LEFT JOIN branches b ON b.id = r.branch_id AND b.tenant_id = r.tenant_id
+             LEFT JOIN users au ON au.id = r.assigned_user_id AND au.tenant_id = r.tenant_id
+             LEFT JOIN users cu ON cu.id = r.created_by_user_id AND cu.tenant_id = r.tenant_id
+             WHERE r.id = :request_id AND r.tenant_id = :tenant_id
+             LIMIT 1"
+        );
+        $stmt->execute(array(':request_id' => $requestId, ':tenant_id' => $tenantId));
+        $requestRow = $stmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$requestRow) {
+            $requestViewError = 'Service request not found.';
+        } else {
+            $quoteStmt = $requestViewPdo->prepare(
+                "SELECT id, quote_no, title, status, total, created_at
+                 FROM quotes
+                 WHERE tenant_id = :tenant_id AND request_id = :request_id
+                 ORDER BY id DESC"
+            );
+            $quoteStmt->execute(array(':tenant_id' => $tenantId, ':request_id' => $requestId));
+            $requestQuotes = $quoteStmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $jobStmt = $requestViewPdo->prepare(
+                "SELECT id, job_no, title, status, start_date, start_time, created_at
+                 FROM jobs
+                 WHERE tenant_id = :tenant_id AND request_id = :request_id AND deleted_at IS NULL
+                 ORDER BY id DESC"
+            );
+            $jobStmt->execute(array(':tenant_id' => $tenantId, ':request_id' => $requestId));
+            $requestJobs = $jobStmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $assessmentStmt = $requestViewPdo->prepare(
+                "SELECT id, assessment_no, status, result, scheduled_start, scheduled_end, notes, created_at
+                 FROM assessments
+                 WHERE tenant_id = :tenant_id AND request_id = :request_id
+                 ORDER BY id DESC"
+            );
+            $assessmentStmt->execute(array(':tenant_id' => $tenantId, ':request_id' => $requestId));
+            $requestAssessments = $assessmentStmt->fetchAll(PDO::FETCH_ASSOC);
+        }
+    } catch (Throwable $e) {
+        $requestViewError = 'Unable to load service request details.';
+        error_log('Request view error: ' . $e->getMessage());
+    }
+}
+
+$convertQuoteUrl = '';
+$convertJobUrl = '';
+if (is_array($requestRow)) {
+    $query = array(
+        'request_id' => (int)$requestRow['id'],
+        'client_id' => (int)$requestRow['client_id']
+    );
+    if (!empty($requestRow['location_id'])) $query['location_id'] = (int)$requestRow['location_id'];
+    if (!empty($requestRow['product_service_id'])) $query['product_service_id'] = (int)$requestRow['product_service_id'];
+    $convertQuoteUrl = 'add-quotation.php?' . http_build_query($query);
+    $convertJobUrl = 'job-form.php?' . http_build_query($query);
+}
+?>
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="utf-8" />
     <meta content="width=device-width, initial-scale=1" name="viewport" />
-    <title>Client View - FieldPlx</title>
+    <title>Request View - FieldPlx</title>
     <?php require_once __DIR__ . '/includes/links.php'; ?>
     <style>
         :root {
@@ -3290,7 +3401,122 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer {
   }
 }
 
-/* Client View page */
+/* Client Locations page */
+.fd-loc-head{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:16px;
+  margin-bottom:18px;
+}
+.fd-loc-title{
+  margin:0 0 7px;
+  color:var(--fd-text);
+  font-size:21px;
+  font-weight:700;
+}
+.fd-loc-sub{
+  margin:0;
+  max-width:800px;
+  color:var(--fd-muted);
+  font-size:11px;
+  line-height:1.55;
+}
+.fd-loc-actions{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+}
+.fd-loc-client{
+  margin-bottom:14px;
+  padding:12px 14px;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  border:1px solid var(--fd-border);
+  border-radius:10px;
+  background:#fff;
+}
+.fd-loc-client-icon{
+  width:38px;
+  height:38px;
+  display:grid;
+  place-items:center;
+  flex:0 0 38px;
+  border-radius:10px;
+  color:var(--fd-green-dark);
+  background:var(--fd-green-soft);
+}
+.fd-loc-client strong,
+.fd-loc-client small{
+  display:block;
+}
+.fd-loc-client strong{
+  color:var(--fd-text);
+  font-size:11px;
+}
+.fd-loc-client small{
+  margin-top:3px;
+  color:var(--fd-muted);
+  font-size:8.5px;
+}
+.fd-loc-address{
+  min-width:260px;
+  white-space:normal !important;
+  line-height:1.4;
+}
+.fd-loc-modal{
+  width:min(900px,100%);
+}
+.fd-loc-map-link{
+  color:#123d70 !important;
+  font-weight:700;
+  text-decoration:none !important;
+}
+.fd-loc-map-link:hover{
+  color:var(--fd-green-dark) !important;
+}
+.fd-loc-primary{
+  color:#5d971b;
+  background:#f0f8e5;
+}
+.fd-loc-type{
+  color:#123d70;
+  background:#edf2f7;
+}
+.fd-loc-table .fd-team-actions-cell{
+  justify-content:flex-start;
+}
+.fd-loc-table-wrap{
+  overflow-x:auto;
+  overflow-y:hidden;
+  scrollbar-width:thin;
+  scrollbar-color:#9aa0a6 transparent;
+}
+.fd-loc-table-wrap::-webkit-scrollbar{height:3px!important}
+.fd-loc-table-wrap::-webkit-scrollbar-track{background:transparent!important}
+.fd-loc-table-wrap::-webkit-scrollbar-thumb{
+  min-width:20px;
+  border-radius:999px!important;
+  background:#9aa0a6!important;
+}
+.fd-loc-table-wrap::-webkit-scrollbar-button{
+  width:0!important;
+  height:0!important;
+  display:none!important;
+}
+@media(max-width:767.98px){
+  .fd-loc-head{
+    flex-direction:column;
+  }
+  .fd-loc-actions{
+    width:100%;
+  }
+}
+
+/* ==========================================================
+   Service Requests - tenant CRM intake
+   ========================================================== */
 a,
 a:link,
 a:visited,
@@ -3300,37 +3526,38 @@ a:active{
   text-decoration:none!important;
 }
 
-.fd-cv-head{
+.fd-rq-head{
   display:flex;
   align-items:flex-start;
   justify-content:space-between;
   gap:16px;
-  margin-bottom:16px;
+  margin-bottom:18px;
 }
 
-.fd-cv-title{
-  margin:0 0 6px;
+.fd-rq-title{
+  margin:0 0 7px;
   color:var(--fd-text);
   font-size:21px;
   line-height:1.2;
   font-weight:700;
 }
 
-.fd-cv-sub{
+.fd-rq-sub{
   margin:0;
+  max-width:860px;
   color:var(--fd-muted);
-  font-size:10px;
-  line-height:1.5;
+  font-size:11px;
+  line-height:1.55;
 }
 
-.fd-cv-actions{
+.fd-rq-actions{
   display:flex;
   align-items:center;
   gap:8px;
   flex-wrap:wrap;
 }
 
-.fd-cv-btn{
+.fd-rq-btn{
   min-height:39px;
   padding:0 13px;
   display:inline-flex;
@@ -3339,275 +3566,537 @@ a:active{
   gap:7px;
   border:1px solid var(--fd-border);
   border-radius:8px;
-  color:#43546c!important;
+  color:#43546c;
   background:#fff;
   box-shadow:0 4px 12px rgba(31,43,88,.04);
   font-size:10px;
   font-weight:700;
-  text-decoration:none!important;
+  cursor:pointer;
 }
 
-.fd-cv-btn:hover{
+.fd-rq-btn:hover{
   border-color:#cfe3ae;
-  color:var(--fd-green-dark)!important;
+  color:var(--fd-green-dark);
   background:#f9fcf4;
 }
 
-.fd-cv-btn.primary{
+.fd-rq-btn.primary{
   border-color:var(--fd-green);
-  color:#fff!important;
+  color:#fff;
   background:linear-gradient(90deg,#7fc92d,#68aa1d);
   box-shadow:0 7px 16px rgba(104,170,29,.18);
 }
 
-/* Client View More actions - Version 1.1.0 */
-.fd-cv-more{
-  position:relative;
-  z-index:1250;
+.fd-rq-btn.primary:hover{
+  color:#fff;
+  background:linear-gradient(90deg,#74b824,#5d971b);
 }
 
-.fd-cv-more .fd-cv-btn{
-  cursor:pointer;
-}
-
-.fd-cv-more .fd-cv-btn .bi-chevron-down{
-  font-size:9px;
-  transition:transform .16s ease;
-}
-
-.fd-cv-more.open .fd-cv-btn .bi-chevron-down{
-  transform:rotate(180deg);
-}
-
-.fd-cv-more-menu{
-  width:205px;
-  padding:6px;
-  position:absolute;
-  top:calc(100% + 7px);
-  right:0;
-  z-index:1260;
-  display:none;
-  border:1px solid #dfe6ef;
-  border-radius:10px;
+.fd-rq-btn.danger{
+  border-color:#ffd5d9;
+  color:#b9444d;
   background:#fff;
-  box-shadow:0 18px 42px rgba(0,17,49,.17);
 }
 
-.fd-cv-more.open .fd-cv-more-menu{
-  display:block;
+.fd-rq-btn:disabled{
+  opacity:.58;
+  cursor:not-allowed;
 }
 
-.fd-cv-more-item{
-  width:100%;
-  min-height:36px;
-  padding:8px 10px;
+.fd-rq-loader{
+  width:13px;
+  height:13px;
+  display:none;
+  border:2px dotted currentColor;
+  border-radius:50%;
+  animation:fdRqSpin .75s linear infinite;
+}
+
+.fd-rq-btn.loading .fd-rq-loader{display:inline-block}
+
+@keyframes fdRqSpin{
+  to{transform:rotate(360deg)}
+}
+
+.fd-rq-summary{margin-bottom:16px}
+
+.fd-rq-stat{
+  min-height:112px;
+  padding:18px 20px;
+  border:1px solid #dfe6ef;
+  border-radius:12px;
+  background:#fff;
+  box-shadow:0 3px 12px rgba(24,45,76,.035);
+}
+
+.fd-rq-stat-row{
+  min-height:72px;
   display:flex;
   align-items:center;
-  gap:9px;
-  border:0;
-  border-radius:7px;
-  color:#33445f!important;
-  background:transparent;
-  font-size:10px;
-  font-weight:600;
-  text-decoration:none!important;
+  gap:18px;
 }
 
-.fd-cv-more-item:hover{
-  color:var(--fd-green-dark)!important;
-  background:var(--fd-green-soft);
+.fd-rq-stat-icon{
+  width:58px;
+  height:58px;
+  flex:0 0 58px;
+  display:grid;
+  place-items:center;
+  border-radius:16px;
+  color:#fff;
+  background:#123f73;
+  font-size:25px;
 }
 
-.fd-cv-more-item i{
-  width:17px;
-  color:#66758a;
+.fd-rq-stat-label{
+  display:block;
+  margin-bottom:8px;
+  color:#506784;
   font-size:13px;
+}
+
+.fd-rq-stat-value{
+  display:block;
+  color:#020b16;
+  font-size:31px;
+  line-height:1;
+  font-weight:700;
+}
+
+.fd-rq-card{overflow:hidden}
+
+.fd-rq-toolbar{
+  padding:13px 14px;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex-wrap:wrap;
+  border-bottom:1px solid var(--fd-border);
+  background:#fbfcfd;
+}
+
+.fd-rq-search{
+  width:280px;
+  position:relative;
+}
+
+.fd-rq-search i{
+  position:absolute;
+  left:12px;
+  top:50%;
+  transform:translateY(-50%);
+  color:#8a96a7;
+  font-size:13px;
+}
+
+.fd-rq-search input,
+.fd-rq-filter{
+  height:39px;
+  border:1px solid #dde4ec;
+  border-radius:8px;
+  outline:0;
+  color:#33445f;
+  background:#fff;
+  font-size:10px;
+}
+
+.fd-rq-search input{
+  width:100%;
+  padding:8px 11px 8px 34px;
+}
+
+.fd-rq-filter{
+  min-width:140px;
+  padding:8px 10px;
+}
+
+.fd-rq-search input:focus,
+.fd-rq-filter:focus{
+  border-color:#a9cf75;
+  box-shadow:0 0 0 3px rgba(116,184,36,.11);
+}
+
+.fd-rq-spacer{margin-left:auto}
+
+.fd-rq-table-wrap{
+  width:100%;
+  overflow-x:auto;
+  overflow-y:hidden;
+  scrollbar-width:thin;
+  scrollbar-color:#9aa0a6 transparent;
+}
+
+.fd-rq-table-wrap::-webkit-scrollbar{height:3px!important}
+.fd-rq-table-wrap::-webkit-scrollbar-track{background:transparent!important}
+.fd-rq-table-wrap::-webkit-scrollbar-thumb{
+  min-width:20px;
+  border-radius:999px!important;
+  background:#9aa0a6!important;
+}
+.fd-rq-table-wrap::-webkit-scrollbar-button{
+  width:0!important;
+  height:0!important;
+  display:none!important;
+}
+
+.fd-rq-table{
+  width:100%;
+  min-width:1320px;
+  margin:0;
+  border-collapse:collapse;
+  white-space:nowrap;
+}
+
+.fd-rq-table th{
+  padding:11px 12px;
+  border-bottom:1px solid var(--fd-border);
+  color:#65738a;
+  background:#f8fafc;
+  font-size:9px;
+  line-height:1.2;
+  font-weight:700;
+  text-align:left;
+  text-transform:uppercase;
+}
+
+.fd-rq-table td{
+  padding:12px;
+  border-bottom:1px solid #f1f3f7;
+  color:#33445f;
+  font-size:9.5px;
+  line-height:1.45;
+  vertical-align:middle;
+}
+
+.fd-rq-table tbody tr:hover{background:#fbfcfa}
+
+.fd-rq-table th:first-child,
+.fd-rq-table td:first-child{
+  width:55px;
   text-align:center;
 }
 
-.fd-cv-more-item:hover i{
-  color:var(--fd-green-dark);
+.fd-rq-request strong,
+.fd-rq-request small,
+.fd-rq-client strong,
+.fd-rq-client small{
+  display:block;
 }
 
-.fd-cv-more-item + .fd-cv-more-item{
-  margin-top:2px;
+.fd-rq-request strong{
+  color:#123d70;
+  font-size:10.5px;
+  font-weight:700;
 }
 
-@media(max-width:575.98px){
-  .fd-cv-more{
-    flex:1 1 100%;
-  }
-
-  .fd-cv-more > .fd-cv-btn{
-    width:100%;
-  }
-
-  .fd-cv-more-menu{
-    left:0;
-    right:0;
-    width:100%;
-  }
+.fd-rq-request small,
+.fd-rq-client small{
+  margin-top:3px;
+  color:#8995a6;
+  font-size:8.3px;
 }
 
-.fd-cv-grid{
-  display:grid;
-  grid-template-columns:1.15fr .85fr;
-  gap:14px;
-  margin-bottom:14px;
+.fd-rq-client strong{
+  color:#17233b;
+  font-size:10px;
+  font-weight:700;
 }
 
-.fd-cv-card{
-  padding:16px;
-  border:1px solid var(--fd-border);
-  border-radius:10px;
-  background:#fff;
-  box-shadow:0 4px 14px rgba(31,43,88,.04);
+.fd-rq-badge{
+  min-height:22px;
+  padding:4px 7px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  border-radius:5px;
+  font-size:8.5px;
+  line-height:1;
+  font-weight:700;
+  text-transform:capitalize;
 }
 
-.fd-cv-card-head{
+.fd-rq-badge.new,
+.fd-rq-badge.normal{
+  color:#123d70;
+  background:#edf2f7;
+}
+
+.fd-rq-badge.contacting,
+.fd-rq-badge.information_required{
+  color:#8a5e10;
+  background:#fff7df;
+}
+
+.fd-rq-badge.assessment_required,
+.fd-rq-badge.quote_required,
+.fd-rq-badge.job_required,
+.fd-rq-badge.high{
+  color:#b55b00;
+  background:#fff1e4;
+}
+
+.fd-rq-badge.converted,
+.fd-rq-badge.closed,
+.fd-rq-badge.low{
+  color:#5d971b;
+  background:#f0f8e5;
+}
+
+.fd-rq-badge.cancelled{
+  color:#8b4450;
+  background:#fff0f1;
+}
+
+.fd-rq-badge.urgent{
+  color:#bd2f3a;
+  background:#fff0f1;
+}
+
+.fd-rq-actions-cell{
+  min-width:120px;
   display:flex;
-  align-items:flex-start;
+  align-items:center;
+  gap:4px;
+}
+
+.fd-rq-icon{
+  width:29px;
+  height:29px;
+  min-width:29px;
+  padding:0;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  border:0;
+  border-radius:6px;
+  color:#66748b;
+  background:transparent;
+  cursor:pointer;
+  font-size:12px;
+  line-height:1;
+}
+
+.fd-rq-icon:hover{
+  color:var(--fd-green-dark);
+  background:var(--fd-green-soft);
+}
+
+.fd-rq-icon.danger:hover{
+  color:#b9444d;
+  background:#fff0f1;
+}
+
+.fd-rq-empty{
+  padding:28px 18px!important;
+  text-align:center;
+  color:#9aa4b3!important;
+  font-size:10px!important;
+}
+
+.fd-rq-pagination{
+  min-height:49px;
+  padding:10px 14px;
+  display:flex;
+  align-items:center;
   justify-content:space-between;
   gap:10px;
-  margin-bottom:13px;
+  border-top:1px solid var(--fd-border);
+  color:#768397;
+  background:#fff;
+  font-size:9px;
 }
 
-.fd-cv-card h3{
+.fd-rq-pagination-actions{
+  display:flex;
+  gap:5px;
+}
+
+/* Modal */
+.fd-rq-modal-bg{
+  position:fixed;
+  inset:0;
+  z-index:15000;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  padding:18px;
+  background:rgba(0,17,49,.46);
+  backdrop-filter:blur(3px);
+}
+
+.fd-rq-modal-bg.show{display:flex}
+
+.fd-rq-modal{
+  width:min(940px,100%);
+  max-height:calc(100vh - 34px);
+  overflow:auto;
+  border:1px solid #dfe5ec;
+  border-radius:12px;
+  background:#fff;
+  box-shadow:0 24px 65px rgba(0,17,49,.24);
+}
+
+.fd-rq-modal.small{
+  width:min(610px,100%);
+}
+
+.fd-rq-modal-header{
+  min-height:58px;
+  padding:11px 14px;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  border-bottom:1px solid var(--fd-border);
+  background:#fbfcfd;
+}
+
+.fd-rq-modal-icon{
+  width:34px;
+  height:34px;
+  display:grid;
+  place-items:center;
+  border-radius:9px;
+  color:var(--fd-green-dark);
+  background:var(--fd-green-soft);
+  font-size:15px;
+}
+
+.fd-rq-modal-heading{
+  min-width:0;
+  flex:1;
+}
+
+.fd-rq-modal-heading h3{
   margin:0;
   color:var(--fd-text);
   font-size:12px;
   font-weight:700;
 }
 
-.fd-cv-card small{
-  color:#7b8799;
+.fd-rq-modal-heading p{
+  margin:3px 0 0;
+  color:var(--fd-muted);
   font-size:8.5px;
 }
 
-.fd-cv-details{
+.fd-rq-modal-close{
+  width:30px;
+  height:30px;
+  display:grid;
+  place-items:center;
+  border:0;
+  border-radius:7px;
+  color:#8490a0;
+  background:transparent;
+  cursor:pointer;
+}
+
+.fd-rq-modal-body{padding:15px}
+
+.fd-rq-form-grid{
   display:grid;
   grid-template-columns:repeat(2,minmax(0,1fr));
-  gap:12px;
+  gap:13px;
 }
 
-.fd-cv-detail{
-  min-width:0;
-}
+.fd-rq-field.full{grid-column:1/-1}
 
-.fd-cv-detail label{
+.fd-rq-field label{
+  margin-bottom:6px;
   display:block;
-  margin-bottom:4px;
-  color:#7b8799;
-  font-size:8px;
+  color:#42536c;
+  font-size:9px;
+  font-weight:700;
+}
+
+.fd-rq-field input,
+.fd-rq-field select,
+.fd-rq-field textarea{
+  width:100%;
+  min-height:40px;
+  padding:8px 10px;
+  border:1px solid #dfe5ec;
+  border-radius:8px;
+  outline:0;
+  color:#263750;
+  background:#fff;
+  font-size:10px;
+}
+
+.fd-rq-field textarea{
+  min-height:88px;
+  resize:vertical;
+}
+
+.fd-rq-field input:focus,
+.fd-rq-field select:focus,
+.fd-rq-field textarea:focus{
+  border-color:#a9cf75;
+  box-shadow:0 0 0 3px rgba(116,184,36,.11);
+}
+
+.fd-rq-section{
+  grid-column:1/-1;
+  margin-top:4px;
+  padding:8px 0 3px;
+  border-bottom:1px solid #eef2f5;
+  color:#31425b;
+  font-size:9px;
   font-weight:700;
   text-transform:uppercase;
-  letter-spacing:.02em;
+  letter-spacing:.04em;
 }
 
-.fd-cv-detail strong{
-  display:block;
-  color:#293a53;
-  font-size:10px;
-  font-weight:600;
-  line-height:1.45;
-  word-break:break-word;
-}
-
-.fd-cv-notes{
-  color:#53637a;
-  font-size:9.5px;
-  line-height:1.65;
-  white-space:pre-wrap;
-}
-
-.fd-cv-locations{
-  display:grid;
-  gap:9px;
-}
-
-.fd-cv-location{
-  padding:11px 12px;
+.fd-rq-modal-footer{
+  padding:12px 15px;
   display:flex;
-  gap:10px;
-  border:1px solid #e5eaf1;
-  border-radius:9px;
+  justify-content:flex-end;
+  gap:8px;
+  border-top:1px solid var(--fd-border);
   background:#fbfcfd;
 }
 
-.fd-cv-loc-icon{
-  width:34px;
-  height:34px;
-  flex:0 0 34px;
+/* History */
+.fd-rq-history{
   display:grid;
-  place-items:center;
-  border-radius:9px;
-  color:var(--fd-green-dark);
-  background:var(--fd-green-soft);
+  gap:8px;
 }
 
-.fd-cv-loc-copy{
-  min-width:0;
-  flex:1;
+.fd-rq-history-item{
+  padding:10px 11px;
+  border:1px solid #e4e9ef;
+  border-radius:8px;
+  background:#fbfcfd;
 }
 
-.fd-cv-loc-copy strong{
-  display:block;
-  color:#263750;
-  font-size:10px;
-  font-weight:700;
-}
-
-.fd-cv-loc-copy small{
-  display:block;
-  margin-top:3px;
-  color:#7c889a;
-  font-size:8.5px;
-  line-height:1.45;
-}
-
-.fd-cv-tags{
-  margin-top:6px;
+.fd-rq-history-top{
   display:flex;
-  gap:5px;
-  flex-wrap:wrap;
-}
-
-.fd-cv-badge{
-  display:inline-flex;
   align-items:center;
-  padding:4px 7px;
-  border-radius:5px;
-  color:#123d70;
-  background:#edf2f7;
+  justify-content:space-between;
+  gap:10px;
+}
+
+.fd-rq-history-top strong{
+  color:#263750;
+  font-size:9.5px;
+}
+
+.fd-rq-history-item small{
+  display:block;
+  margin-top:4px;
+  color:#8793a5;
   font-size:8px;
-  font-weight:700;
-  text-transform:capitalize;
 }
 
-.fd-cv-badge.active,
-.fd-cv-badge.primary{
-  color:#5d971b;
-  background:#f0f8e5;
+.fd-rq-history-item p{
+  margin:7px 0 0;
+  color:#56667c;
+  font-size:8.5px;
+  line-height:1.5;
 }
 
-.fd-cv-badge.inactive{
-  color:#6f7b90;
-  background:#eef2f6;
-}
-
-.fd-cv-badge.archived{
-  color:#8a5e10;
-  background:#fff7df;
-}
-
-.fd-cv-empty{
-  padding:22px 10px;
-  color:#8c97a7;
-  font-size:9px;
-  text-align:center;
-}
-
-.fd-cv-toast{
+/* Toast */
+.fd-rq-toast{
   width:min(290px,calc(100vw - 24px));
   position:fixed;
   top:82px;
@@ -3626,383 +4115,287 @@ a:active{
   transition:.18s ease;
 }
 
-.fd-cv-toast.show{opacity:1;transform:translateY(0)}
-.fd-cv-toast.success{background:#5d971b}
-.fd-cv-toast.error{background:#e45b66}
-.fd-cv-toast.warning{background:#96a52f}
-.fd-cv-toast.info{background:#123d70}
-.fd-cv-toast-message{min-width:0;flex:1;font-size:8.5px;font-weight:600}
-.fd-cv-toast-close{width:19px;height:19px;padding:0;border:0;color:#fff;background:transparent;cursor:pointer}
+.fd-rq-toast.show{
+  opacity:1;
+  transform:translateY(0);
+}
 
-@media(max-width:900px){
-  .fd-cv-grid{grid-template-columns:1fr}
+.fd-rq-toast.success{background:#5d971b}
+.fd-rq-toast.error{background:#e45b66}
+.fd-rq-toast.warning{background:#96a52f}
+.fd-rq-toast.info{background:#123d70}
+
+.fd-rq-toast-msg{
+  min-width:0;
+  flex:1;
+  font-size:8.5px;
+  font-weight:600;
+}
+
+.fd-rq-toast-close{
+  width:19px;
+  height:19px;
+  padding:0;
+  border:0;
+  color:#fff;
+  background:transparent;
+  cursor:pointer;
+}
+
+@media(max-width:767.98px){
+  .fd-rq-head{flex-direction:column}
+  .fd-rq-actions{width:100%}
+  .fd-rq-form-grid{grid-template-columns:1fr}
+  .fd-rq-field.full,
+  .fd-rq-section{grid-column:auto}
+  .fd-rq-search{width:100%}
+  .fd-rq-spacer{display:none}
 }
 
 @media(max-width:575.98px){
-  .fd-cv-head{flex-direction:column}
-  .fd-cv-details{grid-template-columns:1fr}
-  .fd-cv-actions{width:100%}
-  .fd-cv-actions .fd-cv-btn{flex:1}
-  .fd-cv-toast{top:72px;left:12px;right:12px;width:auto}
+  .fd-rq-stat{
+    min-height:102px;
+    padding:15px 17px;
+  }
+  .fd-rq-stat-icon{
+    width:54px;
+    height:54px;
+    flex-basis:54px;
+  }
+  .fd-rq-stat-value{font-size:29px}
+  .fd-rq-filter{flex:1}
+  .fd-rq-modal-footer{flex-direction:column-reverse}
+  .fd-rq-modal-footer .fd-rq-btn{width:100%}
+  .fd-rq-toast{
+    top:72px;
+    left:12px;
+    right:12px;
+    width:auto;
+  }
 }
+
+/* Separate Edit Request action */
+.fd-rq-icon[href]{text-decoration:none!important}
+
+
+/* ==========================================================
+   Service Requests v2.1 - same compact stats cards as Quotations
+   ========================================================== */
+.fd-rq-summary-v2{margin-bottom:17px}
+.fd-rq-summary-v2 > div{display:flex}
+.fd-rq-metric-card{
+  width:100%;height:100%;min-height:134px;padding:15px 18px;position:relative;
+  overflow:visible;border:1px solid #dfe6ef;border-radius:12px;background:#fff;
+  box-shadow:0 3px 12px rgba(24,45,76,.035)
+}
+.fd-rq-metric-title{
+  margin:0;color:#15233a;font-size:15px;font-weight:700;line-height:1.2
+}
+.fd-rq-metric-title-row{display:flex;align-items:center;gap:7px}
+.fd-rq-metric-info{color:#8b9bb0;font-size:12px;line-height:1}
+.fd-rq-card-arrow{
+  position:absolute;top:14px;right:15px;color:#7f90a8;font-size:15px;line-height:1
+}
+.fd-rq-metric-sub{
+  margin:4px 24px 0 0;max-width:315px;color:#738197;font-size:9.5px;line-height:1.35
+}
+.fd-rq-overview-list{margin-top:8px;display:flex;flex-direction:column;gap:4px}
+.fd-rq-overview-item{
+  min-height:14px;display:grid;grid-template-columns:8px minmax(0,1fr) auto;
+  align-items:center;gap:6px;color:#4f6078;font-size:9px;line-height:1.15;
+  text-decoration:none!important
+}
+.fd-rq-overview-item:hover{color:var(--fd-green-dark)}
+.fd-rq-overview-dot{width:6px;height:6px;border-radius:50%;background:#aab5c5}
+.fd-rq-overview-dot.approval{background:#d7aa25}
+.fd-rq-overview-dot.new{background:#94a8c1}
+.fd-rq-overview-dot.assessment{background:#5d9f2f}
+.fd-rq-overview-dot.overdue{background:#e45b66}
+.fd-rq-overview-dot.unscheduled{background:#7e91a8}
+.fd-rq-overview-count{color:#253750;font-size:9px;font-weight:700;text-align:right}
+.fd-rq-metric-period{margin-top:3px;color:#7c8a9e;font-size:9px;line-height:1.2}
+.fd-rq-metric-value-row{margin-top:18px;display:flex;align-items:center;gap:9px}
+.fd-rq-metric-value{
+  color:#071426;font-size:30px;line-height:1;font-weight:700;letter-spacing:-.5px
+}
+.fd-rq-metric-change{
+  min-height:22px;padding:0 8px;display:inline-flex;align-items:center;justify-content:center;
+  border-radius:999px;font-size:9px;font-weight:700;white-space:nowrap
+}
+.fd-rq-metric-change.up{color:#5d971b;background:#edf7e4}
+.fd-rq-metric-change.down{color:#b9444d;background:#fff0f1}
+.fd-rq-metric-change.flat{color:#718096;background:#eef2f6}
+.fd-rq-trend-wrap{position:relative;display:inline-flex}
+.fd-rq-trend-popup{
+  min-width:190px;padding:11px 12px;position:absolute;right:-8px;bottom:calc(100% + 12px);z-index:30;
+  visibility:hidden;opacity:0;transform:translateY(5px);pointer-events:none;
+  border:1px solid #dfe6ef;border-radius:10px;background:#fff;
+  box-shadow:0 12px 28px rgba(20,42,75,.14);transition:.15s ease
+}
+.fd-rq-trend-popup:after{
+  width:10px;height:10px;position:absolute;right:22px;bottom:-6px;content:"";
+  border-right:1px solid #dfe6ef;border-bottom:1px solid #dfe6ef;background:#fff;
+  transform:rotate(45deg)
+}
+.fd-rq-trend-wrap:hover .fd-rq-trend-popup,
+.fd-rq-trend-wrap:focus-within .fd-rq-trend-popup{visibility:visible;opacity:1;transform:translateY(0)}
+.fd-rq-trend-popup-title{margin-bottom:7px;color:#62738a;font-size:9px;font-weight:700}
+.fd-rq-trend-popup-row{
+  display:flex;align-items:center;justify-content:space-between;gap:15px;padding:3px 0;
+  color:#607086;font-size:9px
+}
+.fd-rq-trend-popup-row strong{color:#243650;font-size:9px}
+@media(max-width:1199.98px){.fd-rq-metric-card{min-height:136px}}
+@media(max-width:767.98px){.fd-rq-metric-card{min-height:132px}.fd-rq-summary-v2{row-gap:12px}}
+@media(max-width:575.98px){.fd-rq-metric-card{min-height:128px;padding:14px 16px}.fd-rq-metric-value{font-size:28px}}
+
+/* ==========================================================
+   Request View - Version 1.0.0
+   ========================================================== */
+.fd-rv-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:18px}
+.fd-rv-title{margin:0 0 6px;color:var(--fd-text);font-size:21px;line-height:1.2;font-weight:700}
+.fd-rv-sub{margin:0;color:var(--fd-muted);font-size:11px;line-height:1.5}
+.fd-rv-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.fd-rv-btn{min-height:39px;padding:0 13px;display:inline-flex;align-items:center;justify-content:center;gap:7px;border:1px solid var(--fd-border);border-radius:8px;color:#43546c;background:#fff;box-shadow:0 4px 12px rgba(31,43,88,.04);font-size:10px;font-weight:700;text-decoration:none!important}
+.fd-rv-btn:hover{border-color:#cfe3ae;color:var(--fd-green-dark);background:#f9fcf4}
+.fd-rv-btn.primary{border-color:var(--fd-green);color:#fff;background:linear-gradient(90deg,#7fc92d,#68aa1d);box-shadow:0 7px 16px rgba(104,170,29,.18)}
+.fd-rv-btn.primary:hover{color:#fff;background:linear-gradient(90deg,#74b824,#5d971b)}
+.fd-rv-btn.navy{border-color:#123f73;color:#fff;background:#123f73}.fd-rv-btn.navy:hover{color:#fff;background:#0c315b}
+.fd-rv-summary{display:grid;grid-template-columns:1.35fr .85fr;gap:14px;margin-bottom:14px}
+.fd-rv-card{border:1px solid #dfe6ef;border-radius:12px;background:#fff;box-shadow:0 3px 12px rgba(24,45,76,.035);overflow:hidden}
+.fd-rv-hero{padding:18px 20px;display:flex;gap:14px;align-items:flex-start}
+.fd-rv-hero-icon{width:48px;height:48px;flex:0 0 48px;display:grid;place-items:center;border-radius:12px;color:#fff;background:#123f73;font-size:20px}
+.fd-rv-hero-main{min-width:0;flex:1}.fd-rv-request-no{display:block;margin-bottom:4px;color:#5d971b;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.03em}
+.fd-rv-hero h2{margin:0;color:#0b1933;font-size:17px;line-height:1.35;font-weight:700}.fd-rv-hero p{margin:7px 0 0;color:#6f7b90;font-size:10px;line-height:1.55}
+.fd-rv-badges{margin-top:11px;display:flex;gap:6px;flex-wrap:wrap}.fd-rv-badge{display:inline-flex;align-items:center;padding:5px 8px;border-radius:6px;font-size:8.5px;font-weight:700;text-transform:capitalize}.fd-rv-badge.status{color:#123d70;background:#edf2f7}.fd-rv-badge.priority{color:#5d971b;background:#f0f8e5}.fd-rv-badge.urgent,.fd-rv-badge.high{color:#b9444d;background:#fff0f1}
+.fd-rv-customer{padding:18px 20px}.fd-rv-card-title{margin:0 0 13px;color:#0b1933;font-size:12px;font-weight:700}.fd-rv-customer-name{color:#0b1933;font-size:13px;font-weight:700}.fd-rv-customer-company{margin-top:2px;color:#6f7b90;font-size:9px}.fd-rv-contact-row{margin-top:11px;display:flex;gap:12px;flex-wrap:wrap;color:#52627a;font-size:9px}.fd-rv-contact-row a{color:inherit!important}.fd-rv-contact-row i{margin-right:4px;color:#7695ba}
+.fd-rv-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.fd-rv-section-head{padding:12px 15px;border-bottom:1px solid #edf1f5;background:#fbfcfd}.fd-rv-section-head h3{margin:0;color:#0b1933;font-size:11px;font-weight:700}.fd-rv-section-head p{margin:3px 0 0;color:#8a96a7;font-size:8.5px}
+.fd-rv-section-body{padding:4px 15px 12px}.fd-rv-detail{min-height:43px;padding:9px 0;display:grid;grid-template-columns:145px minmax(0,1fr);gap:12px;border-bottom:1px solid #f1f3f6}.fd-rv-detail:last-child{border-bottom:0}.fd-rv-label{color:#8390a3;font-size:8.5px;font-weight:600}.fd-rv-value{min-width:0;color:#31425b;font-size:9.5px;line-height:1.5;overflow-wrap:anywhere}.fd-rv-value strong{color:#0b1933}
+.fd-rv-description{white-space:pre-wrap;line-height:1.65}.fd-rv-address{line-height:1.6}
+.fd-rv-related{margin-top:14px}.fd-rv-related-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;padding:14px}.fd-rv-related-item{min-height:94px;padding:12px;border:1px solid #e5eaf1;border-radius:9px;background:#fbfcfd}.fd-rv-related-icon{width:31px;height:31px;margin-bottom:9px;display:grid;place-items:center;border-radius:8px;color:#123d70;background:#edf2f7}.fd-rv-related-item strong{display:block;color:#17233b;font-size:10px}.fd-rv-related-item small{display:block;margin-top:3px;color:#8793a5;font-size:8.5px;line-height:1.45}.fd-rv-related-item a{margin-top:8px;display:inline-flex;color:#5d971b!important;font-size:8.5px;font-weight:700}
+.fd-rv-empty{padding:18px;color:#8b96a6;font-size:9px;text-align:center}
+.fd-rv-error{max-width:650px;margin:50px auto;padding:24px;text-align:center}.fd-rv-error i{font-size:30px;color:#e45b66}.fd-rv-error h2{margin:10px 0 6px;font-size:17px}.fd-rv-error p{color:#6f7b90;font-size:10px}
+@media(max-width:991.98px){.fd-rv-summary,.fd-rv-grid{grid-template-columns:1fr}.fd-rv-related-grid{grid-template-columns:1fr 1fr}}
+@media(max-width:767.98px){.fd-rv-head{flex-direction:column}.fd-rv-actions{width:100%;justify-content:flex-start}.fd-rv-related-grid{grid-template-columns:1fr}.fd-rv-detail{grid-template-columns:110px minmax(0,1fr)}}
+@media(max-width:575.98px){.fd-rv-actions .fd-rv-btn{flex:1}.fd-rv-detail{grid-template-columns:1fr;gap:4px}.fd-rv-hero{padding:15px}.fd-rv-customer{padding:15px}}
 </style>
 </head>
-
 <body>
-    <?php require_once __DIR__ . '/includes/nav.php'; ?>
-    <div class="fieldplx-main-layout">
-        <?php require_once __DIR__ . '/includes/sidebar.php'; ?>
-        <main class="fieldplx-main-content">
-            <div class="fieldplx-content-wrapper">
-                <div class="fd-dashboard">
+<?php require_once __DIR__ . '/includes/nav.php'; ?>
+<div class="fieldplx-main-layout">
+    <?php require_once __DIR__ . '/includes/sidebar.php'; ?>
+    <main class="fieldplx-main-content">
+        <div class="fieldplx-content-wrapper">
+            <div class="fd-dashboard">
 
-                    <section class="fd-cv-head">
-                        <div>
-                            <h1 class="fd-cv-title" id="viewClientName">Client View</h1>
-                            <p class="fd-cv-sub" id="viewClientSub">Loading client details...</p>
-                        </div>
-
-                        <div class="fd-cv-actions">
-                            <a class="fd-cv-btn" href="clients.php">
-                                <i class="bi bi-arrow-left"></i>
-                                Back
-                            </a>
-
-                            <a class="fd-cv-btn" id="manageLocationsButton" href="#">
-                                <i class="bi bi-geo-alt"></i>
-                                View Locations
-                            </a>
-
-                            <a class="fd-cv-btn primary" id="addLocationButton" href="#">
-                                <i class="bi bi-plus-lg"></i>
-                                Add Location
-                            </a>
-
-                            <div class="fd-cv-more" id="clientViewMore">
-                                <button type="button" class="fd-cv-btn" id="clientViewMoreButton" aria-expanded="false" aria-haspopup="true">
-                                    <i class="bi bi-three-dots"></i>
-                                    More
-                                    <i class="bi bi-chevron-down"></i>
-                                </button>
-                                <div class="fd-cv-more-menu" id="clientViewMoreMenu" role="menu" aria-hidden="true">
-                                    <a class="fd-cv-more-item" id="clientViewAddRequest" href="#" role="menuitem">
-                                        <i class="bi bi-inbox"></i>
-                                        Add Request
-                                    </a>
-                                    <a class="fd-cv-more-item" id="clientViewAddQuotation" href="#" role="menuitem">
-                                        <i class="bi bi-file-earmark-text"></i>
-                                        Add Quotation
-                                    </a>
-                                    <a class="fd-cv-more-item" id="clientViewCreateJob" href="#" role="menuitem">
-                                        <i class="bi bi-hammer"></i>
-                                        Create Job
-                                    </a>
-                                    <a class="fd-cv-more-item" id="clientViewAddInvoice" href="#" role="menuitem">
-                                        <i class="bi bi-receipt"></i>
-                                        Add Invoice
-                                    </a>
-                                    <a class="fd-cv-more-item" id="clientViewPayment" href="#" role="menuitem">
-                                        <i class="bi bi-cash-coin"></i>
-                                        Payment
-                                    </a>
-                                </div>
-                            </div>
-                        </div>
-                    </section>
-
-                    <div class="fd-cv-grid">
-                        <section class="fd-cv-card">
-                            <div class="fd-cv-card-head">
-                                <h3>Client Information</h3>
-                            </div>
-
-                            <div class="fd-cv-details">
-                                <div class="fd-cv-detail"><label>Client Type</label><strong id="dType">-</strong></div>
-                                <div class="fd-cv-detail"><label>Status</label><strong id="dStatus">-</strong></div>
-                                <div class="fd-cv-detail"><label>Company</label><strong id="dCompany">-</strong></div>
-                                <div class="fd-cv-detail"><label>Contact Person</label><strong id="dPerson">-</strong></div>
-                                <div class="fd-cv-detail"><label>Email</label><strong id="dEmail">-</strong></div>
-                                <div class="fd-cv-detail"><label>Phone</label><strong id="dPhone">-</strong></div>
-                                <div class="fd-cv-detail"><label>Alternate Phone</label><strong id="dAltPhone">-</strong></div>
-                                <div class="fd-cv-detail"><label>Source</label><strong id="dSource">-</strong></div>
-                                <div class="fd-cv-detail"><label>Preferred Contact</label><strong id="dPreferred">-</strong></div>
-                                <div class="fd-cv-detail"><label>Tax Number</label><strong id="dTax">-</strong></div>
-                                <div class="fd-cv-detail"><label>Email Allowed</label><strong id="dEmailAllowed">-</strong></div>
-                                <div class="fd-cv-detail"><label>SMS Allowed</label><strong id="dSmsAllowed">-</strong></div>
-                            </div>
-                        </section>
-
-                        <section class="fd-cv-card">
-                            <div class="fd-cv-card-head">
-                                <h3>Internal Notes</h3>
-                            </div>
-                            <div class="fd-cv-notes" id="dNotes">No notes.</div>
-                        </section>
+<?php if ($requestViewError !== ''): ?>
+                <section class="fd-rv-card fd-rv-error">
+                    <i class="bi bi-exclamation-circle"></i>
+                    <h2>Request unavailable</h2>
+                    <p><?= rvh($requestViewError) ?></p>
+                    <a href="requests.php" class="fd-rv-btn"><i class="bi bi-arrow-left"></i> Back to Requests</a>
+                </section>
+<?php else: ?>
+                <section class="fd-rv-head">
+                    <div>
+                        <h1 class="fd-rv-title">Request View</h1>
+                        <p class="fd-rv-sub">Review the complete customer request and continue it into quotation or job workflow.</p>
                     </div>
+                    <div class="fd-rv-actions">
+                        <a href="requests.php" class="fd-rv-btn"><i class="bi bi-arrow-left"></i> Back</a>
+                        <a href="edit-request.php?request_id=<?= (int)$requestRow['id'] ?>" class="fd-rv-btn"><i class="bi bi-pencil"></i> Edit</a>
+                        <a href="<?= rvh($convertQuoteUrl) ?>" class="fd-rv-btn navy"><i class="bi bi-file-earmark-text"></i> Convert to Quote</a>
+                        <a href="<?= rvh($convertJobUrl) ?>" class="fd-rv-btn primary"><i class="bi bi-briefcase"></i> Convert to Job</a>
+                    </div>
+                </section>
 
-                    <section class="fd-cv-card">
-                        <div class="fd-cv-card-head">
-                            <div>
-                                <h3>Service Locations</h3>
-                                <small>A single client can have multiple service locations.</small>
+                <section class="fd-rv-summary">
+                    <article class="fd-rv-card fd-rv-hero">
+                        <span class="fd-rv-hero-icon"><i class="bi bi-inbox"></i></span>
+                        <div class="fd-rv-hero-main">
+                            <span class="fd-rv-request-no"><?= rvh($requestRow['request_no']) ?></span>
+                            <h2><?= rvh($requestRow['title']) ?></h2>
+                            <p><?= rvh($requestRow['description'] ?: 'No requirement notes were entered for this request.') ?></p>
+                            <div class="fd-rv-badges">
+                                <span class="fd-rv-badge status"><?= rvh(rvReadable($requestRow['status'])) ?></span>
+                                <span class="fd-rv-badge priority <?= rvh($requestRow['priority']) ?>"><?= rvh(rvReadable($requestRow['priority'])) ?> priority</span>
+                                <span class="fd-rv-badge status"><?= rvh(rvReadable($requestRow['source'])) ?></span>
                             </div>
-
-                            <a class="fd-cv-btn primary" id="addLocationButton2" href="#">
-                                <i class="bi bi-plus-lg"></i>
-                                Add Location
-                            </a>
                         </div>
+                    </article>
 
-                        <div class="fd-cv-locations" id="viewLocations">
-                            <div class="fd-cv-empty">Loading locations...</div>
+                    <article class="fd-rv-card fd-rv-customer">
+                        <h3 class="fd-rv-card-title">Customer</h3>
+                        <div class="fd-rv-customer-name"><?= rvh($requestRow['client_name']) ?></div>
+                        <div class="fd-rv-customer-company"><?= rvh($requestRow['client_company'] ?: rvReadable($requestRow['client_type'])) ?></div>
+                        <div class="fd-rv-contact-row">
+                            <?php if (!empty($requestRow['client_phone'])): ?><a href="tel:<?= rvh($requestRow['client_phone']) ?>"><i class="bi bi-telephone"></i><?= rvh($requestRow['client_phone']) ?></a><?php endif; ?>
+                            <?php if (!empty($requestRow['client_email'])): ?><a href="mailto:<?= rvh($requestRow['client_email']) ?>"><i class="bi bi-envelope"></i><?= rvh($requestRow['client_email']) ?></a><?php endif; ?>
                         </div>
-                    </section>
+                        <div style="margin-top:12px"><a class="fd-rv-btn" href="client-view.php?client_id=<?= (int)$requestRow['client_id'] ?>"><i class="bi bi-person"></i> View Customer</a></div>
+                    </article>
+                </section>
 
-                </div>
+                <section class="fd-rv-grid">
+                    <article class="fd-rv-card">
+                        <div class="fd-rv-section-head"><h3>Request Details</h3><p>Requirement, service and ownership</p></div>
+                        <div class="fd-rv-section-body">
+                            <div class="fd-rv-detail"><div class="fd-rv-label">Request Number</div><div class="fd-rv-value"><strong><?= rvh($requestRow['request_no']) ?></strong></div></div>
+                            <div class="fd-rv-detail"><div class="fd-rv-label">Service</div><div class="fd-rv-value"><?= rvh($requestRow['service_name'] ?: '-') ?></div></div>
+                            <div class="fd-rv-detail"><div class="fd-rv-label">Branch</div><div class="fd-rv-value"><?= rvh($requestRow['branch_name'] ?: '-') ?></div></div>
+                            <div class="fd-rv-detail"><div class="fd-rv-label">Assigned To</div><div class="fd-rv-value"><?= rvh(trim((string)$requestRow['assigned_name']) ?: 'Unassigned') ?></div></div>
+                            <div class="fd-rv-detail"><div class="fd-rv-label">Created By</div><div class="fd-rv-value"><?= rvh(trim((string)$requestRow['created_by_name']) ?: 'System / Portal') ?></div></div>
+                            <div class="fd-rv-detail"><div class="fd-rv-label">Created</div><div class="fd-rv-value"><?= rvh(rvDate($requestRow['created_at'], true)) ?></div></div>
+                            <div class="fd-rv-detail"><div class="fd-rv-label">Last Updated</div><div class="fd-rv-value"><?= rvh(rvDate($requestRow['updated_at'] ?: $requestRow['created_at'], true)) ?></div></div>
+                        </div>
+                    </article>
 
-                <div class="fd-cv-toast info" id="clientsToast">
-                    <span class="fd-cv-toast-message" id="clientsToastMessage">Notification</span>
-                    <button type="button" class="fd-cv-toast-close" id="clientsToastClose"><i class="bi bi-x"></i></button>
-                </div>
+                    <article class="fd-rv-card">
+                        <div class="fd-rv-section-head"><h3>Schedule & Location</h3><p>Preferred service timing and customer site</p></div>
+                        <div class="fd-rv-section-body">
+                            <div class="fd-rv-detail"><div class="fd-rv-label">Preferred Date</div><div class="fd-rv-value"><?= rvh(rvDate($requestRow['preferred_date'])) ?></div></div>
+                            <div class="fd-rv-detail"><div class="fd-rv-label">Preferred Time</div><div class="fd-rv-value"><?php if ($requestRow['preferred_time_from']): ?><?= rvh(rvTime($requestRow['preferred_time_from'])) ?><?= $requestRow['preferred_time_to'] ? ' - '.rvh(rvTime($requestRow['preferred_time_to'])) : '' ?><?php else: ?>-<?php endif; ?></div></div>
+                            <div class="fd-rv-detail"><div class="fd-rv-label">Location</div><div class="fd-rv-value"><strong><?= rvh($requestRow['location_name'] ?: 'Not confirmed') ?></strong></div></div>
+                            <div class="fd-rv-detail"><div class="fd-rv-label">Location Type</div><div class="fd-rv-value"><?= rvh($requestRow['location_type'] ? rvReadable($requestRow['location_type']) : '-') ?></div></div>
+                            <div class="fd-rv-detail"><div class="fd-rv-label">Address</div><div class="fd-rv-value fd-rv-address"><?php $addressParts=array_filter(array($requestRow['location_address1'],$requestRow['location_address2'],$requestRow['location_city'],$requestRow['location_state'],$requestRow['location_postal_code'])); echo rvh($addressParts ? implode(', ', $addressParts) : '-'); ?></div></div>
+                            <div class="fd-rv-detail"><div class="fd-rv-label">Site Contact</div><div class="fd-rv-value"><?= rvh($requestRow['location_contact_name'] ?: '-') ?><?= !empty($requestRow['location_contact_phone']) ? ' · '.rvh($requestRow['location_contact_phone']) : '' ?></div></div>
+                        </div>
+                    </article>
 
-                <script>
-                (function(){
-                'use strict';
+                    <article class="fd-rv-card" style="grid-column:1/-1">
+                        <div class="fd-rv-section-head"><h3>Requirement / Initial Notes</h3><p>Customer requirement captured when the request was created</p></div>
+                        <div class="fd-rv-section-body"><div class="fd-rv-detail" style="grid-template-columns:1fr"><div class="fd-rv-value fd-rv-description"><?= rvh($requestRow['description'] ?: 'No notes entered.') ?></div></div></div>
+                    </article>
+                </section>
 
-                var clientId = Number(
-                    new URLSearchParams(window.location.search).get('client_id') || 0
-                );
-
-                var csrfToken = <?= json_encode($clientsCsrfToken) ?>;
-                var toast = document.getElementById('clientsToast');
-                var toastMessage = document.getElementById('clientsToastMessage');
-                var timer = null;
-
-                function esc(v){
-                    return String(v == null ? '' : v)
-                        .replace(/&/g,'&amp;')
-                        .replace(/</g,'&lt;')
-                        .replace(/>/g,'&gt;')
-                        .replace(/"/g,'&quot;')
-                        .replace(/'/g,'&#039;');
-                }
-
-                function notify(type,message){
-                    if(timer) clearTimeout(timer);
-
-                    toast.className =
-                        'fd-cv-toast ' +
-                        (type || 'info') +
-                        ' show';
-
-                    toastMessage.textContent =
-                        message || 'Notification';
-
-                    timer = setTimeout(function(){
-                        toast.classList.remove('show');
-                    },3000);
-                }
-
-                function parseResponse(response){
-                    return response.text().then(function(raw){
-                        var text = (raw || '').trim();
-                        var data;
-
-                        try{
-                            data = text ? JSON.parse(text) : {};
-                        }catch(e){
-                            var clean = text
-                                .replace(/<br\s*\/?>/gi,' ')
-                                .replace(/<[^>]*>/g,' ')
-                                .replace(/\s+/g,' ')
-                                .trim();
-
-                            throw new Error(
-                                clean || 'Server returned an invalid response.'
-                            );
-                        }
-
-                        if(!response.ok || !data.success){
-                            throw new Error(
-                                data.message || 'Request failed.'
-                            );
-                        }
-
-                        return data;
-                    });
-                }
-
-                function request(url,fd){
-                    fd.append('csrf_token',csrfToken);
-
-                    return fetch(url,{
-                        method:'POST',
-                        body:fd,
-                        credentials:'same-origin',
-                        headers:{
-                            'X-Requested-With':'XMLHttpRequest',
-                            'Accept':'application/json'
-                        }
-                    }).then(parseResponse);
-                }
-
-                if(clientId <= 0){
-                    notify('error','Invalid client.');
-                    return;
-                }
-
-                var locationUrl =
-                    'client-locations.php?client_id=' +
-                    clientId;
-
-                document.getElementById('manageLocationsButton').href = locationUrl;
-                document.getElementById('addLocationButton').href = locationUrl + '&add=1';
-                document.getElementById('addLocationButton2').href = locationUrl + '&add=1';
-
-                /* More workflow actions for the customer currently being viewed. */
-                document.getElementById('clientViewAddRequest').href = 'add-request.php?client_id=' + clientId;
-                document.getElementById('clientViewAddQuotation').href = 'add-quotation.php?client_id=' + clientId;
-                document.getElementById('clientViewCreateJob').href = 'job-form.php?client_id=' + clientId;
-                document.getElementById('clientViewAddInvoice').href = 'add-invoice.php?client_id=' + clientId;
-                document.getElementById('clientViewPayment').href = 'payment.php?client_id=' + clientId;
-
-                var clientViewMore = document.getElementById('clientViewMore');
-                var clientViewMoreButton = document.getElementById('clientViewMoreButton');
-                var clientViewMoreMenu = document.getElementById('clientViewMoreMenu');
-
-                function setClientViewMore(open){
-                    if(!clientViewMore || !clientViewMoreButton || !clientViewMoreMenu) return;
-                    clientViewMore.classList.toggle('open', !!open);
-                    clientViewMoreButton.setAttribute('aria-expanded', open ? 'true' : 'false');
-                    clientViewMoreMenu.setAttribute('aria-hidden', open ? 'false' : 'true');
-                }
-
-                clientViewMoreButton.addEventListener('click', function(event){
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setClientViewMore(!clientViewMore.classList.contains('open'));
-                });
-
-                clientViewMoreMenu.addEventListener('click', function(event){
-                    event.stopPropagation();
-                });
-
-                document.addEventListener('click', function(event){
-                    if(clientViewMore && !clientViewMore.contains(event.target)){
-                        setClientViewMore(false);
-                    }
-                });
-
-                document.addEventListener('keydown', function(event){
-                    if(event.key === 'Escape'){
-                        setClientViewMore(false);
-                        clientViewMoreButton.focus();
-                    }
-                });
-
-                document.getElementById('clientsToastClose').onclick = function(){
-                    toast.classList.remove('show');
-                };
-
-                var clientFd = new FormData();
-                clientFd.append('action','get');
-                clientFd.append('client_id',clientId);
-
-                request('api/clients.php',clientFd)
-                    .then(function(data){
-                        var c = data.client || {};
-
-                        document.getElementById('viewClientName').textContent =
-                            c.display_name || 'Client';
-
-                        document.getElementById('viewClientSub').textContent =
-                            [c.email,c.phone].filter(Boolean).join(' · ') ||
-                            'Client details';
-
-                        document.getElementById('dType').textContent = c.client_type || '-';
-                        document.getElementById('dStatus').textContent = c.status || '-';
-                        document.getElementById('dCompany').textContent = c.company_name || '-';
-                        document.getElementById('dPerson').textContent = [c.first_name,c.last_name].filter(Boolean).join(' ') || '-';
-                        document.getElementById('dEmail').textContent = c.email || '-';
-                        document.getElementById('dPhone').textContent = c.phone || '-';
-                        document.getElementById('dAltPhone').textContent = c.alternate_phone || '-';
-                        document.getElementById('dSource').textContent = c.source || '-';
-                        document.getElementById('dPreferred').textContent = c.preferred_contact_method || '-';
-                        document.getElementById('dTax').textContent = c.tax_number || '-';
-                        document.getElementById('dEmailAllowed').textContent = Number(c.allow_email) === 1 ? 'Yes' : 'No';
-                        document.getElementById('dSmsAllowed').textContent = Number(c.allow_sms) === 1 ? 'Yes' : 'No';
-                        document.getElementById('dNotes').textContent = c.notes || 'No notes.';
-                    })
-                    .catch(function(error){
-                        notify('error',error.message);
-                    });
-
-                var locationFd = new FormData();
-                locationFd.append('action','list');
-                locationFd.append('client_id',clientId);
-
-                request('api/client-locations.php',locationFd)
-                    .then(function(data){
-                        var rows = data.locations || [];
-                        var box = document.getElementById('viewLocations');
-
-                        if(!rows.length){
-                            box.innerHTML =
-                                '<div class="fd-cv-empty">'+
-                                'No locations yet. Click Add Location to create the first service location.'+
-                                '</div>';
-                            return;
-                        }
-
-                        var html = '';
-
-                        rows.forEach(function(x){
-                            var address = [
-                                x.address_line1,
-                                x.address_line2,
-                                x.city,
-                                x.state,
-                                x.postal_code,
-                                x.country_name
-                            ].filter(Boolean).join(', ');
-
-                            html +=
-                                '<div class="fd-cv-location">'+
-                                    '<span class="fd-cv-loc-icon"><i class="bi bi-geo-alt"></i></span>'+
-                                    '<div class="fd-cv-loc-copy">'+
-                                        '<strong>'+esc(x.name)+'</strong>'+
-                                        '<small>'+esc(address || '-')+'</small>'+
-                                        '<div class="fd-cv-tags">'+
-                                            '<span class="fd-cv-badge '+esc(x.status)+'">'+esc(x.status)+'</span>'+
-                                            '<span class="fd-cv-badge">'+esc(x.location_type)+'</span>'+
-                                            (Number(x.is_primary) === 1 ? '<span class="fd-cv-badge primary">Primary</span>' : '')+
-                                        '</div>'+
-                                    '</div>'+
-                                '</div>';
-                        });
-
-                        box.innerHTML = html;
-                    })
-                    .catch(function(error){
-                        document.getElementById('viewLocations').innerHTML =
-                            '<div class="fd-cv-empty">'+
-                            esc(error.message)+
-                            '</div>';
-
-                        notify('error',error.message);
-                    });
-
-                })();
-                </script>
+                <section class="fd-rv-card fd-rv-related">
+                    <div class="fd-rv-section-head"><h3>Related Workflow</h3><p>Assessments, quotations and jobs already linked to this request</p></div>
+                    <div class="fd-rv-related-grid">
+                        <div class="fd-rv-related-item">
+                            <span class="fd-rv-related-icon"><i class="bi bi-clipboard-check"></i></span>
+                            <strong>Assessments (<?= count($requestAssessments) ?>)</strong>
+                            <?php if ($requestAssessments): $a=$requestAssessments[0]; ?><small><?= rvh($a['assessment_no']) ?> · <?= rvh(rvReadable($a['status'])) ?><?= $a['result'] ? ' · '.rvh(rvReadable($a['result'])) : '' ?></small><?php else: ?><small>No assessment linked.</small><?php endif; ?>
+                        </div>
+                        <div class="fd-rv-related-item">
+                            <span class="fd-rv-related-icon"><i class="bi bi-file-earmark-text"></i></span>
+                            <strong>Quotations (<?= count($requestQuotes) ?>)</strong>
+                            <?php if ($requestQuotes): $q=$requestQuotes[0]; ?><small><?= rvh($q['quote_no']) ?> · <?= rvh(rvReadable($q['status'])) ?></small><a href="quotations.php">Open quotation <i class="bi bi-arrow-up-right"></i></a><?php else: ?><small>No quotation created yet.</small><a href="<?= rvh($convertQuoteUrl) ?>">Convert to Quote <i class="bi bi-arrow-up-right"></i></a><?php endif; ?>
+                        </div>
+                        <div class="fd-rv-related-item">
+                            <span class="fd-rv-related-icon"><i class="bi bi-briefcase"></i></span>
+                            <strong>Jobs (<?= count($requestJobs) ?>)</strong>
+                            <?php if ($requestJobs): $j=$requestJobs[0]; ?><small><?= rvh($j['job_no']) ?> · <?= rvh(rvReadable($j['status'])) ?></small><a href="jobs.php">Open job <i class="bi bi-arrow-up-right"></i></a><?php else: ?><small>No job created yet.</small><a href="<?= rvh($convertJobUrl) ?>">Convert to Job <i class="bi bi-arrow-up-right"></i></a><?php endif; ?>
+                        </div>
+                    </div>
+                </section>
+<?php endif; ?>
 
             </div>
-        </main>
-    </div>
-    <?php require_once __DIR__ . '/includes/footer.php'; ?>
-
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-
-
+        </div>
+    </main>
+</div>
+<?php require_once __DIR__ . '/includes/footer.php'; ?>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 </body>
-
 </html>
