@@ -1,4 +1,5 @@
 <?php
+/* FieldPlx Jobs Manage Page - Version 2.0.0 - 2026-09-02 */
 require_once __DIR__ . '/includes/auth.php';
 
 $pageTitle = 'Jobs';
@@ -4108,6 +4109,33 @@ a,a:link,a:visited,a:hover,a:focus,a:active{text-decoration:none!important}
 @media(max-width:767.98px){.fd-job-head{flex-direction:column}.fd-job-grid{grid-template-columns:1fr}.fd-job-field.full,.fd-job-section,.fd-job-assignment{grid-column:auto}.fd-job-search{width:100%}.fd-job-spacer{display:none}}
 
 .fd-job-quote-info{background:#f8fbf4!important;border-color:#dbe9c9!important}.fd-job-quote-info input[readonly]{background:#fff!important;color:#31445e!important}.fd-job-filter[type="date"]{min-width:135px}.fd-job-assignment>.fd-job-hint:last-child{margin-top:10px;color:#5d971b}
+
+/* Jobs manage-page UI v2.0 - matches approved Quotations/Requests pattern */
+.fd-job-head{margin-bottom:18px}
+.fd-job-sub{font-size:11px}
+.fd-job-manage-summary{margin-bottom:17px}
+.fd-job-manage-summary .fd-job-stat{min-height:122px;padding:17px 20px;position:relative;border:1px solid #dfe6ef;border-radius:12px;background:#fff;box-shadow:0 3px 12px rgba(24,45,76,.035)}
+.fd-job-stat-heading{color:#13213a;font-size:14px;line-height:1.2;font-weight:700}
+.fd-job-stat-sub{display:block;margin-top:3px;color:#7e8ba0;font-size:10px;line-height:1.25}
+.fd-job-stat-corner{position:absolute;top:15px;right:16px;color:#8190a5;font-size:14px}
+.fd-job-metric-line{min-height:58px;display:flex;align-items:flex-end;padding-top:13px}
+.fd-job-manage-summary .fd-job-stat-value{color:#07111f;font-size:29px;line-height:1;font-weight:700;letter-spacing:-.4px}
+.fd-job-overview-card{padding-top:15px!important}
+.fd-job-overview-list{margin:9px 0 0;padding:0;list-style:none;display:grid;gap:6px}
+.fd-job-overview-list li{display:grid;grid-template-columns:8px minmax(0,1fr) auto;align-items:center;gap:7px;color:#50627a;font-size:9px;line-height:1.15}
+.fd-job-overview-list strong{color:#19263c;font-size:9.5px;font-weight:700}
+.fd-job-overview-dot{width:6px;height:6px;border-radius:50%;background:#8796aa}
+.fd-job-overview-dot.navy{background:#8796aa}.fd-job-overview-dot.orange{background:#d7a827}.fd-job-overview-dot.blue{background:#3f78ad}.fd-job-overview-dot.green{background:#5d971b}
+.fd-job-toolbar{padding:13px 14px;background:#fff}
+.fd-job-search input,.fd-job-filter{height:40px;font-size:10px}
+.fd-job-table th{padding:12px 12px;background:#f7f9fb;color:#627188;font-size:9px}
+.fd-job-table td{padding:13px 12px;font-size:9.5px}
+.fd-job-table tbody tr[data-job-id]{cursor:pointer;transition:background .14s ease}
+.fd-job-table tbody tr[data-job-id]:hover{background:#f9fbf6}
+.fd-job-table tbody tr[data-job-id]:focus{outline:2px solid rgba(116,184,36,.28);outline-offset:-2px}
+.fd-job-pagination{min-height:56px}
+@media(max-width:1199.98px){.fd-job-manage-summary .fd-job-stat{min-height:122px}}
+@media(max-width:575.98px){.fd-job-manage-summary .fd-job-stat{min-height:118px;padding:15px 17px}.fd-job-stat-heading{font-size:13px}.fd-job-manage-summary .fd-job-stat-value{font-size:27px}}
 </style>
 </head>
 
@@ -4130,11 +4158,42 @@ a,a:link,a:visited,a:hover,a:focus,a:active{text-decoration:none!important}
   </div>
 </section>
 
-<section class="row g-3 fd-job-summary">
-  <div class="col-xl-3 col-md-6"><article class="fd-job-stat"><div class="fd-job-stat-row"><span class="fd-job-stat-icon"><i class="bi bi-briefcase"></i></span><div><span class="fd-job-stat-label">Total Jobs</span><strong class="fd-job-stat-value" id="statTotal">0</strong></div></div></article></div>
-  <div class="col-xl-3 col-md-6"><article class="fd-job-stat"><div class="fd-job-stat-row"><span class="fd-job-stat-icon"><i class="bi bi-play-circle"></i></span><div><span class="fd-job-stat-label">Assigned / Scheduled</span><strong class="fd-job-stat-value" id="statAssigned">0</strong></div></div></article></div>
-  <div class="col-xl-3 col-md-6"><article class="fd-job-stat"><div class="fd-job-stat-row"><span class="fd-job-stat-icon"><i class="bi bi-calendar-check"></i></span><div><span class="fd-job-stat-label">In Progress</span><strong class="fd-job-stat-value" id="statProgress">0</strong></div></div></article></div>
-  <div class="col-xl-3 col-md-6"><article class="fd-job-stat"><div class="fd-job-stat-row"><span class="fd-job-stat-icon"><i class="bi bi-receipt"></i></span><div><span class="fd-job-stat-label">Completed</span><strong class="fd-job-stat-value" id="statCompleted">0</strong></div></div></article></div>
+<section class="row g-3 fd-job-summary fd-job-manage-summary">
+  <div class="col-xl-3 col-md-6">
+    <article class="fd-job-stat fd-job-overview-card">
+      <div class="fd-job-stat-heading">Overview</div>
+      <ul class="fd-job-overview-list">
+        <li><span class="fd-job-overview-dot navy"></span><span>Total jobs</span><strong id="statOverviewTotal">0</strong></li>
+        <li><span class="fd-job-overview-dot orange"></span><span>Assigned / scheduled</span><strong id="statOverviewAssigned">0</strong></li>
+        <li><span class="fd-job-overview-dot blue"></span><span>In progress</span><strong id="statOverviewProgress">0</strong></li>
+        <li><span class="fd-job-overview-dot green"></span><span>Completed</span><strong id="statOverviewCompleted">0</strong></li>
+      </ul>
+    </article>
+  </div>
+  <div class="col-xl-3 col-md-6">
+    <article class="fd-job-stat fd-job-metric-card">
+      <span class="fd-job-stat-corner"><i class="bi bi-arrow-up-right"></i></span>
+      <div class="fd-job-stat-heading">Assigned / Scheduled</div>
+      <span class="fd-job-stat-sub">Current jobs</span>
+      <div class="fd-job-metric-line"><strong class="fd-job-stat-value" id="statAssigned">0</strong></div>
+    </article>
+  </div>
+  <div class="col-xl-3 col-md-6">
+    <article class="fd-job-stat fd-job-metric-card">
+      <span class="fd-job-stat-corner"><i class="bi bi-arrow-up-right"></i></span>
+      <div class="fd-job-stat-heading">In Progress</div>
+      <span class="fd-job-stat-sub">Active field work</span>
+      <div class="fd-job-metric-line"><strong class="fd-job-stat-value" id="statProgress">0</strong></div>
+    </article>
+  </div>
+  <div class="col-xl-3 col-md-6">
+    <article class="fd-job-stat fd-job-metric-card">
+      <span class="fd-job-stat-corner"><i class="bi bi-arrow-up-right"></i></span>
+      <div class="fd-job-stat-heading">Completed</div>
+      <span class="fd-job-stat-sub">Completed jobs</span>
+      <div class="fd-job-metric-line"><strong class="fd-job-stat-value" id="statCompleted">0</strong></div>
+    </article>
+  </div>
 </section>
 
 <section class="fd-card">
@@ -4225,14 +4284,15 @@ function applyMeta(m){state.meta=m||state.meta;var q='<option value="">Select Ap
 function loadMeta(jobId,cb){var fd=new FormData();fd.append('action','meta');fd.append('job_id',jobId||0);req(fd).then(function(d){applyMeta(d.meta||{});if(cb)cb()}).catch(function(e){notify('error',e.message)})}
 function quoteDetails(id){if(!id){document.getElementById('quoteInfo').style.display='none';return}var fd=new FormData();fd.append('action','quote_details');fd.append('quote_id',id);fd.append('job_id',document.getElementById('jobId').value||0);req(fd).then(function(d){var q=d.quotation||{};state.meta.currency=d.currency||state.meta.currency;document.getElementById('quoteCustomer').value=q.client_name||'';document.getElementById('quoteService').value=q.service_name||'No service';document.getElementById('quoteTotal').value=money(q.total);document.getElementById('quoteWorkflow').value=q.workflow_id?'Default workflow assigned':'No active workflow mapped';document.getElementById('quoteInfo').style.display='block';if(!document.getElementById('title').value)document.getElementById('title').value=q.title||q.request_title||'';}).catch(function(e){notify('error',e.message)})}
 function fmtTime(v){if(!v)return '';var p=String(v).split(':');if(p.length<2)return esc(v);var h=parseInt(p[0],10),m=p[1],s=h>=12?'PM':'AM';h=h%12;if(h===0)h=12;return h+':'+m+' '+s}
-function render(rows,p){if(!rows.length){body.innerHTML='<tr><td colspan="11" class="fd-job-empty">No jobs found.</td></tr>';return}var h='';rows.forEach(function(r,i){var schedule=fmtDate(r.start_date)+(r.start_time?' '+fmtTime(r.start_time):'');if(r.end_date||r.end_time)schedule+='<br><small>to '+fmtDate(r.end_date)+(r.end_time?' '+fmtTime(r.end_time):'')+'</small>';h+='<tr><td>'+Number((p.from||1)+i)+'</td><td><div class="fd-job-main"><strong>'+esc(r.job_no)+'</strong><small>'+esc(r.title)+'</small></div></td><td>'+esc(r.quote_no||'-')+'</td><td>'+esc(r.client_name||'-')+'</td><td>'+esc(r.service_name||'-')+'</td><td>'+esc(r.assignees||'Unassigned')+'</td><td>'+schedule+'</td><td><span class="fd-job-badge '+esc(r.priority)+'">'+esc(read(r.priority))+'</span></td><td>'+money(r.total)+'</td><td><span class="fd-job-badge '+esc(r.status)+'">'+esc(read(r.status))+'</span></td><td><div class="fd-job-row-actions"><a class="fd-job-icon" href="job-view?job_id='+Number(r.id)+'" title="View"><i class="bi bi-eye"></i></a><a class="fd-job-icon" href="job-form?job_id='+Number(r.id)+'" title="Edit"><i class="bi bi-pencil"></i></a><button class="fd-job-icon danger" data-action="cancel" data-id="'+Number(r.id)+'" data-status="'+esc(r.status)+'" title="Cancel"><i class="bi bi-x-circle"></i></button></div></td></tr>'});body.innerHTML=h}
-function load(){var fd=new FormData();fd.append('action','list');fd.append('page',state.page);fd.append('per_page',state.perPage);fd.append('search',state.search);fd.append('status',state.status);fd.append('from_date',state.from);fd.append('to_date',state.to);body.innerHTML='<tr><td colspan="11" class="fd-job-empty">Loading jobs...</td></tr>';req(fd).then(function(d){var p=d.pagination||{},s=d.summary||{};state.meta.currency=d.currency||state.meta.currency;render(d.jobs||[],p);document.getElementById('statTotal').textContent=Number(s.total||0);document.getElementById('statAssigned').textContent=Number(s.assigned||0);document.getElementById('statProgress').textContent=Number(s.in_progress||0);document.getElementById('statCompleted').textContent=Number(s.completed||0);document.getElementById('countText').textContent='Showing '+Number(p.from||0)+'-'+Number(p.to||0)+' of '+Number(p.total||0)+' jobs';document.getElementById('prevPage').disabled=state.page<=1;document.getElementById('nextPage').disabled=state.page>=Number(p.pages||1)}).catch(function(e){body.innerHTML='<tr><td colspan="11" class="fd-job-empty">'+esc(e.message)+'</td></tr>';notify('error',e.message)})}
+function render(rows,p){if(!rows.length){body.innerHTML='<tr><td colspan="11" class="fd-job-empty">No jobs found.</td></tr>';return}var h='';rows.forEach(function(r,i){var jobId=Number(r.id||0),schedule=fmtDate(r.start_date)+(r.start_time?' '+fmtTime(r.start_time):'');if(r.end_date||r.end_time)schedule+='<br><small>to '+fmtDate(r.end_date)+(r.end_time?' '+fmtTime(r.end_time):'')+'</small>';h+='<tr data-job-id="'+jobId+'" tabindex="0" aria-label="Open '+esc(r.job_no||'job')+'"><td>'+Number((p.from||1)+i)+'</td><td><div class="fd-job-main"><strong>'+esc(r.job_no)+'</strong><small>'+esc(r.title)+'</small></div></td><td>'+esc(r.quote_no||'-')+'</td><td>'+esc(r.client_name||'-')+'</td><td>'+esc(r.service_name||'-')+'</td><td>'+esc(r.assignees||'Unassigned')+'</td><td>'+schedule+'</td><td><span class="fd-job-badge '+esc(r.priority)+'">'+esc(read(r.priority))+'</span></td><td>'+money(r.total)+'</td><td><span class="fd-job-badge '+esc(r.status)+'">'+esc(read(r.status))+'</span></td><td><div class="fd-job-row-actions"><a class="fd-job-icon" href="job-form?job_id='+jobId+'" title="Edit" aria-label="Edit job"><i class="bi bi-pencil"></i></a><button class="fd-job-icon danger" data-action="cancel" data-id="'+jobId+'" data-status="'+esc(r.status)+'" title="Cancel" aria-label="Cancel job"><i class="bi bi-x-circle"></i></button></div></td></tr>'});body.innerHTML=h}
+function load(){var fd=new FormData();fd.append('action','list');fd.append('page',state.page);fd.append('per_page',state.perPage);fd.append('search',state.search);fd.append('status',state.status);fd.append('from_date',state.from);fd.append('to_date',state.to);body.innerHTML='<tr><td colspan="11" class="fd-job-empty">Loading jobs...</td></tr>';req(fd).then(function(d){var p=d.pagination||{},s=d.summary||{};state.meta.currency=d.currency||state.meta.currency;render(d.jobs||[],p);document.getElementById('statOverviewTotal').textContent=Number(s.total||0);document.getElementById('statOverviewAssigned').textContent=Number(s.assigned||0);document.getElementById('statOverviewProgress').textContent=Number(s.in_progress||0);document.getElementById('statOverviewCompleted').textContent=Number(s.completed||0);document.getElementById('statAssigned').textContent=Number(s.assigned||0);document.getElementById('statProgress').textContent=Number(s.in_progress||0);document.getElementById('statCompleted').textContent=Number(s.completed||0);document.getElementById('countText').textContent='Showing '+Number(p.from||0)+'-'+Number(p.to||0)+' of '+Number(p.total||0)+' jobs';document.getElementById('prevPage').disabled=state.page<=1;document.getElementById('nextPage').disabled=state.page>=Number(p.pages||1)}).catch(function(e){body.innerHTML='<tr><td colspan="11" class="fd-job-empty">'+esc(e.message)+'</td></tr>';notify('error',e.message)})}
 function updateAssignment(){var m=document.getElementById('assignmentMode').value;document.getElementById('singleUserWrap').style.display=m==='single_user'?'block':'none';document.getElementById('multiUsersWrap').style.display=m==='multiple_users'?'block':'none';document.getElementById('departmentWrap').style.display=m==='department'?'block':'none'}
 function resetForm(){form.reset();document.getElementById('jobId').value=0;document.getElementById('priority').value='normal';document.getElementById('status').value='active';document.getElementById('assignmentMode').value='single_user';document.getElementById('completionMode').value='primary_only';document.getElementById('quoteInfo').style.display='none';$('#quoteId,#singleUserId,#departmentId').val('').trigger('change.select2');$('#userIds').val(null).trigger('change');updateAssignment()}
 function openJob(id){resetForm();modal.classList.add('show');loadMeta(id,function(){if(id<=0){document.getElementById('modalTitle').textContent='Create Job from Approved Quotation';document.getElementById('saveText').textContent='Create & Assign Job';return}var fd=new FormData();fd.append('action','get');fd.append('job_id',id);req(fd).then(function(d){var r=d.job||{},a=d.assignments||[];applyMeta(d.meta||{});document.getElementById('modalTitle').textContent='Edit '+(r.job_no||'Job');document.getElementById('saveText').textContent='Update Job';document.getElementById('jobId').value=r.id||0;$('#quoteId').val(String(r.quote_id||'')).trigger('change.select2');document.getElementById('title').value=r.title||'';document.getElementById('description').value=r.description||'';document.getElementById('priority').value=r.priority||'normal';document.getElementById('status').value=r.status||'active';document.getElementById('startDate').value=r.start_date||'';document.getElementById('endDate').value=r.end_date||'';document.getElementById('completionMode').value=r.assignment_completion_mode||'primary_only';if(r.assignment_mode==='single_user'){document.getElementById('assignmentMode').value='single_user';var x=a.find(function(z){return z.user_id});$('#singleUserId').val(x?String(x.user_id):'').trigger('change.select2')}else{document.getElementById('assignmentMode').value='multiple_users';$('#userIds').val(a.filter(function(z){return z.user_id}).map(function(z){return String(z.user_id)})).trigger('change')}updateAssignment();quoteDetails(r.quote_id)}).catch(function(e){modal.classList.remove('show');notify('error',e.message)})})}
 form.addEventListener('submit',function(e){e.preventDefault();if(!form.reportValidity()){notify('warning','Complete the required job fields.');return}var m=document.getElementById('assignmentMode').value;if(m==='single_user'&&!document.getElementById('singleUserId').value){notify('warning','Select a service man.');return}if(m==='multiple_users'&&!($('#userIds').val()||[]).length){notify('warning','Select at least one service man.');return}if(m==='department'&&!document.getElementById('departmentId').value){notify('warning','Select a department.');return}if(document.getElementById('startDate').value&&document.getElementById('endDate').value&&document.getElementById('endDate').value<document.getElementById('startDate').value){notify('warning','End date cannot be before start date.');return}var fd=new FormData(form);fd.append('action','save');var b=document.getElementById('saveButton');loading(b,true);req(fd).then(function(d){modal.classList.remove('show');var n=d.notifications||{},msg=d.message;if(n.email_failed)msg+=' '+n.email_failed+' email notification(s) failed.';else if(n.email_sent)msg+=' '+n.email_sent+' email notification(s) sent.';notify(n.email_failed?'warning':'success',msg);load()}).catch(function(er){notify('error',er.message)}).finally(function(){loading(b,false)})})
 document.getElementById('quoteId').addEventListener('change',function(){quoteDetails(this.value)});document.getElementById('assignmentMode').addEventListener('change',updateAssignment);
-body.addEventListener('click',function(e){var b=e.target.closest('[data-action]');if(!b)return;if(b.dataset.action==='edit'){openJob(Number(b.dataset.id));return}if(b.dataset.action==='cancel'){if(['cancelled','closed','archived'].indexOf(b.dataset.status)!==-1){notify('warning','This job cannot be cancelled.');return}state.cancelId=Number(b.dataset.id);document.getElementById('cancelReason').value='';cancelModal.classList.add('show')}});
+body.addEventListener('click',function(e){var interactive=e.target.closest('a,button,input,select,textarea,label,[data-action]');if(interactive){var b=e.target.closest('[data-action]');if(!b)return;if(b.dataset.action==='edit'){openJob(Number(b.dataset.id));return}if(b.dataset.action==='cancel'){if(['cancelled','closed','archived'].indexOf(b.dataset.status)!==-1){notify('warning','This job cannot be cancelled.');return}state.cancelId=Number(b.dataset.id);document.getElementById('cancelReason').value='';cancelModal.classList.add('show')}return}var row=e.target.closest('tr[data-job-id]');if(row&&Number(row.dataset.jobId)>0){window.location.href='job-view?job_id='+Number(row.dataset.jobId)}});
+body.addEventListener('keydown',function(e){if(e.key!=='Enter'&&e.key!==' ')return;var row=e.target.closest('tr[data-job-id]');if(!row||e.target.closest('a,button,input,select,textarea'))return;e.preventDefault();window.location.href='job-view?job_id='+Number(row.dataset.jobId)});
 document.getElementById('confirmCancel').onclick=function(){var reason=document.getElementById('cancelReason').value.trim();if(!reason){notify('warning','Enter cancellation reason.');return}var fd=new FormData();fd.append('action','cancel');fd.append('job_id',state.cancelId);fd.append('reason',reason);var b=this;loading(b,true);req(fd).then(function(d){cancelModal.classList.remove('show');notify('success',d.message);load()}).catch(function(e){notify('error',e.message)}).finally(function(){loading(b,false)})};
 var addJobButton=document.getElementById('addJobButton');if(addJobButton)addJobButton.onclick=function(){openJob(0)};document.getElementById('refreshButton').onclick=load;document.getElementById('modalClose').onclick=function(){modal.classList.remove('show')};document.getElementById('cancelButton').onclick=function(){modal.classList.remove('show')};document.getElementById('cancelModalClose').onclick=function(){cancelModal.classList.remove('show')};document.getElementById('cancelBack').onclick=function(){cancelModal.classList.remove('show')};document.getElementById('toastClose').onclick=function(){toast.classList.remove('show')};
 document.getElementById('search').addEventListener('input',function(e){if(searchTimer)clearTimeout(searchTimer);searchTimer=setTimeout(function(){state.search=e.target.value.trim();state.page=1;load()},250)});document.getElementById('statusFilter').onchange=function(e){state.status=e.target.value;state.page=1;load()};document.getElementById('fromDate').onchange=function(e){state.from=e.target.value;state.page=1;load()};document.getElementById('toDate').onchange=function(e){state.to=e.target.value;state.page=1;load()};document.getElementById('perPage').onchange=function(e){state.perPage=Number(e.target.value||10);state.page=1;load()};document.getElementById('clearFilters').onclick=function(){document.getElementById('search').value='';document.getElementById('statusFilter').value='';document.getElementById('fromDate').value='';document.getElementById('toDate').value='';state.search=state.status=state.from=state.to='';state.page=1;load()};document.getElementById('prevPage').onclick=function(){if(state.page>1){state.page--;load()}};document.getElementById('nextPage').onclick=function(){state.page++;load()};

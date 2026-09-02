@@ -1,5 +1,5 @@
 <?php
-/* FieldPlx Invoices - Version 1.1.0 - 2026-08-28 */
+/* FieldPlx Invoices Manage Page - Version 2.0.0 - 2026-09-02 */
 require_once __DIR__ . '/includes/auth.php';
 
 $pageTitle='Invoices';
@@ -1144,6 +1144,61 @@ $invoiceCsrfToken=(string)$_SESSION['invoices_csrf_token'];
         @media(max-width:1199.98px){.fd-inv-search{width:100%;flex:1 1 100%}.fd-inv-spacer{display:none}}
         
         @media(max-width:767.98px){.fd-inv-page{padding:17px 13px 28px}.fd-inv-head{flex-direction:column}.fd-inv-actions{width:100%}.fd-inv-actions .fd-inv-btn{flex:1}.fd-inv-filter{flex:1 1 calc(50% - 8px);min-width:0}.fd-inv-footer{align-items:flex-start;flex-direction:column}}
+
+        /* ==========================================================
+           Invoices manage-page UI v2.0
+           Matches approved Customers / Requests / Quotations / Jobs.
+           ========================================================== */
+        .fd-inv-head{margin-bottom:18px}
+        .fd-inv-sub{font-size:11px}
+        .fd-inv-manage-summary{margin-bottom:17px}
+        .fd-inv-manage-summary .fd-inv-stat{
+            min-height:122px;padding:17px 20px;position:relative;
+            border:1px solid #dfe6ef;border-radius:12px;background:#fff;
+            box-shadow:0 3px 12px rgba(24,45,76,.035)
+        }
+        .fd-inv-stat-heading{color:#13213a;font-size:14px;line-height:1.2;font-weight:700}
+        .fd-inv-stat-sub{display:block;margin-top:3px;color:#7e8ba0;font-size:10px;line-height:1.25}
+        .fd-inv-stat-corner{position:absolute;top:15px;right:16px;color:#8190a5;font-size:14px}
+        .fd-inv-metric-line{min-height:58px;display:flex;align-items:flex-end;gap:9px;padding-top:13px}
+        .fd-inv-manage-summary .fd-inv-stat-value{
+            display:block;color:#07111f;font-size:29px;line-height:1;font-weight:700;letter-spacing:-.4px
+        }
+        .fd-inv-manage-summary .fd-inv-stat-value.money{font-size:25px;overflow-wrap:anywhere}
+        .fd-inv-overview-card{padding-top:15px!important}
+        .fd-inv-overview-list{margin:9px 0 0;padding:0;list-style:none;display:grid;gap:6px}
+        .fd-inv-overview-list li{
+            display:grid;grid-template-columns:8px minmax(0,1fr) auto;align-items:center;gap:7px;
+            color:#50627a;font-size:9px;line-height:1.15
+        }
+        .fd-inv-overview-list strong{max-width:135px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#19263c;font-size:9.5px;font-weight:700;text-align:right}
+        .fd-inv-overview-dot{width:6px;height:6px;border-radius:50%;background:#8796aa}
+        .fd-inv-overview-dot.navy{background:#8796aa}
+        .fd-inv-overview-dot.blue{background:#3f78ad}
+        .fd-inv-overview-dot.green{background:#5d971b}
+        .fd-inv-overview-dot.red{background:#e45b66}
+        .fd-inv-card{margin-top:0}
+        .fd-inv-toolbar{padding:13px 14px;background:#fff}
+        .fd-inv-search input,.fd-inv-filter{height:40px;font-size:10px}
+        .fd-inv-table th{padding:12px;background:#f7f9fb;color:#627188;font-size:9px}
+        .fd-inv-table td{padding:13px 10px;font-size:9.5px}
+        .fd-inv-table tbody tr[data-invoice-id]{cursor:pointer;transition:background .14s ease}
+        .fd-inv-table tbody tr[data-invoice-id]:hover{background:#f9fbf6}
+        .fd-inv-table tbody tr[data-invoice-id]:focus{outline:2px solid rgba(116,184,36,.28);outline-offset:-2px}
+        .fd-inv-icon{border:0;background:transparent}
+        .fd-inv-icon.collect{border:1px solid var(--fd-green)}
+        .fd-inv-footer{min-height:56px}
+        @media(max-width:1199.98px){.fd-inv-manage-summary .fd-inv-stat{min-height:122px}}
+        @media(max-width:767.98px){
+            .fd-inv-search{width:100%;flex:1 1 100%}
+            .fd-inv-spacer{display:none}
+        }
+        @media(max-width:575.98px){
+            .fd-inv-manage-summary .fd-inv-stat{min-height:118px;padding:15px 17px}
+            .fd-inv-stat-heading{font-size:13px}
+            .fd-inv-manage-summary .fd-inv-stat-value{font-size:27px}
+            .fd-inv-manage-summary .fd-inv-stat-value.money{font-size:23px}
+        }
     </style>
 </head>
 <body>
@@ -1160,15 +1215,48 @@ $invoiceCsrfToken=(string)$_SESSION['invoices_csrf_token'];
                         <p class="fd-inv-sub">View completed-job invoices, customer billing, collections and outstanding balances. Use the filters to quickly find paid, unpaid, partially paid or overdue invoices.</p>
                     </div>
                     <div class="fd-inv-actions">
+                        <a class="fd-inv-btn primary" href="add-invoice.php"><i class="bi bi-plus-lg"></i> Create Invoice</a>
                         <button type="button" class="fd-inv-btn" id="refreshButton"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
                     </div>
                 </section>
 
-                <section class="row g-3">
-                    <div class="col-xl-3 col-6"><article class="fd-inv-stat"><div class="fd-inv-stat-row"><span class="fd-inv-stat-icon"><i class="bi bi-receipt"></i></span><div><span class="fd-inv-stat-label">Total Invoices</span><strong class="fd-inv-stat-value" id="statInvoices">0</strong></div></div></article></div>
-                    <div class="col-xl-3 col-6"><article class="fd-inv-stat"><div class="fd-inv-stat-row"><span class="fd-inv-stat-icon"><i class="bi bi-currency-dollar"></i></span><div><span class="fd-inv-stat-label">Total Billed</span><strong class="fd-inv-stat-value" id="statBilled">0.00</strong></div></div></article></div>
-                    <div class="col-xl-3 col-6"><article class="fd-inv-stat"><div class="fd-inv-stat-row"><span class="fd-inv-stat-icon green"><i class="bi bi-check2-circle"></i></span><div><span class="fd-inv-stat-label">Collected</span><strong class="fd-inv-stat-value" id="statCollected">0.00</strong></div></div></article></div>
-                    <div class="col-xl-3 col-6"><article class="fd-inv-stat"><div class="fd-inv-stat-row"><span class="fd-inv-stat-icon orange"><i class="bi bi-hourglass-split"></i></span><div><span class="fd-inv-stat-label">Outstanding</span><strong class="fd-inv-stat-value" id="statOutstanding">0.00</strong><span class="fd-inv-subtext" id="statOverdue">0 overdue</span></div></div></article></div>
+                <section class="row g-3 fd-inv-manage-summary">
+                    <div class="col-xl-3 col-md-6">
+                        <article class="fd-inv-stat fd-inv-overview-card">
+                            <div class="fd-inv-stat-heading">Overview</div>
+                            <ul class="fd-inv-overview-list">
+                                <li><span class="fd-inv-overview-dot navy"></span><span>Total invoices</span><strong id="statOverviewInvoices">0</strong></li>
+                                <li><span class="fd-inv-overview-dot blue"></span><span>Total billed</span><strong id="statOverviewBilled">0.00</strong></li>
+                                <li><span class="fd-inv-overview-dot green"></span><span>Collected</span><strong id="statOverviewCollected">0.00</strong></li>
+                                <li><span class="fd-inv-overview-dot red"></span><span>Overdue invoices</span><strong id="statOverviewOverdue">0</strong></li>
+                            </ul>
+                        </article>
+                    </div>
+                    <div class="col-xl-3 col-md-6">
+                        <article class="fd-inv-stat">
+                            <span class="fd-inv-stat-corner"><i class="bi bi-arrow-up-right"></i></span>
+                            <div class="fd-inv-stat-heading">Total Billed</div>
+                            <span class="fd-inv-stat-sub">All invoice value</span>
+                            <div class="fd-inv-metric-line"><strong class="fd-inv-stat-value money" id="statBilled">0.00</strong></div>
+                        </article>
+                    </div>
+                    <div class="col-xl-3 col-md-6">
+                        <article class="fd-inv-stat">
+                            <span class="fd-inv-stat-corner"><i class="bi bi-arrow-up-right"></i></span>
+                            <div class="fd-inv-stat-heading">Collected</div>
+                            <span class="fd-inv-stat-sub">Payments received</span>
+                            <div class="fd-inv-metric-line"><strong class="fd-inv-stat-value money" id="statCollected">0.00</strong></div>
+                        </article>
+                    </div>
+                    <div class="col-xl-3 col-md-6">
+                        <article class="fd-inv-stat">
+                            <span class="fd-inv-stat-corner"><i class="bi bi-arrow-up-right"></i></span>
+                            <div class="fd-inv-stat-heading">Outstanding</div>
+                            <span class="fd-inv-stat-sub" id="statOverdue">0 overdue</span>
+                            <div class="fd-inv-metric-line"><strong class="fd-inv-stat-value money" id="statOutstanding">0.00</strong></div>
+                        </article>
+                    </div>
+                    <span id="statInvoices" style="display:none">0</span>
                 </section>
 
                 <section class="fd-inv-card">
@@ -1209,15 +1297,15 @@ $invoiceCsrfToken=(string)$_SESSION['invoices_csrf_token'];
                         <input class="fd-inv-filter date" type="date" id="fromDate" title="From date">
                         <input class="fd-inv-filter date" type="date" id="toDate" title="To date">
 
-                        <button type="button" class="fd-inv-clear" id="clearButton"><i class="bi bi-x-circle"></i> Clear</button>
-
-                        <span class="fd-inv-spacer"></span>
-
                         <select class="fd-inv-filter" id="perPage" style="min-width:86px">
                             <option value="10">10 rows</option>
                             <option value="25">25 rows</option>
                             <option value="50">50 rows</option>
                         </select>
+
+                        <span class="fd-inv-spacer"></span>
+
+                        <button type="button" class="fd-inv-clear" id="clearButton"><i class="bi bi-x-circle"></i> Clear</button>
                     </div>
 
                     <div class="fd-inv-table-wrap">
@@ -1308,11 +1396,21 @@ $invoiceCsrfToken=(string)$_SESSION['invoices_csrf_token'];
 
     function renderSummary(summary){
         summary=summary||{};
-        el('statInvoices').textContent=Number(summary.total_invoices||0).toLocaleString();
-        el('statBilled').textContent=money(summary.total_billed);
-        el('statCollected').textContent=money(summary.total_collected);
-        el('statOutstanding').textContent=money(summary.total_outstanding);
-        el('statOverdue').textContent=Number(summary.overdue_invoices||0)+' overdue';
+        var totalInvoices=Number(summary.total_invoices||0);
+        var totalBilled=money(summary.total_billed);
+        var totalCollected=money(summary.total_collected);
+        var totalOutstanding=money(summary.total_outstanding);
+        var overdueInvoices=Number(summary.overdue_invoices||0);
+
+        el('statInvoices').textContent=totalInvoices.toLocaleString();
+        el('statBilled').textContent=totalBilled;
+        el('statCollected').textContent=totalCollected;
+        el('statOutstanding').textContent=totalOutstanding;
+        el('statOverdue').textContent=overdueInvoices+' overdue';
+        el('statOverviewInvoices').textContent=totalInvoices.toLocaleString();
+        el('statOverviewBilled').textContent=totalBilled;
+        el('statOverviewCollected').textContent=totalCollected;
+        el('statOverviewOverdue').textContent=overdueInvoices.toLocaleString();
     }
 
     function renderRows(rows){
@@ -1333,7 +1431,7 @@ $invoiceCsrfToken=(string)$_SESSION['invoices_csrf_token'];
 
             var canCollect=Number(r.balance_due||0)>0.005&&['cancelled','archived','written_off'].indexOf(String(r.status||''))===-1;
 
-            html+='<tr>'
+            html+='<tr data-invoice-id="'+Number(r.id)+'" tabindex="0" role="link" aria-label="Open invoice '+esc(r.invoice_no||'')+'">'
                 +'<td class="center">'+(start+index+1)+'</td>'
                 +'<td><a class="fd-inv-main fd-inv-link" href="invoice-view?invoice_id='+Number(r.id)+'">'+esc(r.invoice_no||'-')+'</a><span class="fd-inv-subtext">Created '+esc(fmtDate(r.created_at))+'</span></td>'
                 +'<td><span class="fd-inv-main">'+esc(r.client_name||'-')+'</span>'+(r.client_company?'<span class="fd-inv-subtext">'+esc(r.client_company)+'</span>':'')+(contact?'<span class="fd-inv-subtext">'+esc(contact)+'</span>':'')+'</td>'
@@ -1346,7 +1444,6 @@ $invoiceCsrfToken=(string)$_SESSION['invoices_csrf_token'];
                 +'<td>'+badge(r.status)+'</td>'
                 +'<td>'+badge(r.payment_state)+'</td>'
                 +'<td class="center"><div class="fd-inv-actions-cell">'
-                    +'<a class="fd-inv-icon" href="invoice-view?invoice_id='+Number(r.id)+'" title="View Invoice"><i class="bi bi-eye"></i></a>'
                     +'<a class="fd-inv-icon" href="invoice-print?invoice_id='+Number(r.id)+'" target="_blank" rel="noopener" title="Print Invoice"><i class="bi bi-printer"></i></a>'
                     +(canCollect?'<a class="fd-inv-icon collect" href="invoice-view?invoice_id='+Number(r.id)+'&collect=1" title="Collect Payment"><i class="bi bi-cash-stack"></i></a>':'')
                 +'</div></td>'
@@ -1355,6 +1452,24 @@ $invoiceCsrfToken=(string)$_SESSION['invoices_csrf_token'];
 
         body.innerHTML=html;
     }
+
+    var invoiceRows=el('invoiceRows');
+    invoiceRows.addEventListener('click',function(event){
+        if(event.target.closest('a,button,input,select,textarea,label'))return;
+        var row=event.target.closest('tr[data-invoice-id]');
+        if(!row||!invoiceRows.contains(row))return;
+        var invoiceId=Number(row.getAttribute('data-invoice-id')||0);
+        if(invoiceId>0)window.location.href='invoice-view?invoice_id='+encodeURIComponent(invoiceId);
+    });
+    invoiceRows.addEventListener('keydown',function(event){
+        if(event.key!=='Enter'&&event.key!==' ')return;
+        if(event.target.closest('a,button,input,select,textarea,label'))return;
+        var row=event.target.closest('tr[data-invoice-id]');
+        if(!row||!invoiceRows.contains(row))return;
+        event.preventDefault();
+        var invoiceId=Number(row.getAttribute('data-invoice-id')||0);
+        if(invoiceId>0)window.location.href='invoice-view?invoice_id='+encodeURIComponent(invoiceId);
+    });
 
     function renderPagination(p){
         state.pagination=p||state.pagination;

@@ -1,5 +1,5 @@
 <?php
-/* FieldPlx Payments - Version 1.0.0 - 2026-08-28 */
+/* FieldPlx Payments - Version 1.1.0 - 2026-09-02 - Payment Ledger + Invoice/Customer Actions */
 require_once __DIR__ . '/includes/auth.php';
 
 $pageTitle = 'Payments';
@@ -148,6 +148,8 @@ if ($sessionBranchId > 0) $branchId = $sessionBranchId;
 $search = trim((string)(isset($_GET['search']) ? $_GET['search'] : ''));
 $status = trim((string)(isset($_GET['status']) ? $_GET['status'] : ''));
 $method = trim((string)(isset($_GET['method']) ? $_GET['method'] : ''));
+$channel = trim((string)(isset($_GET['channel']) ? $_GET['channel'] : ''));
+$paymentId = isset($_GET['payment_id']) ? (int)$_GET['payment_id'] : 0;
 $perPage = isset($_GET['per_page']) ? (int)$_GET['per_page'] : 25;
 if (!in_array($perPage, array(10, 25, 50, 100), true)) $perPage = 25;
 $page = max(1, isset($_GET['page']) ? (int)$_GET['page'] : 1);
@@ -207,6 +209,31 @@ $summary = array(
 );
 $statusOptions = array();
 $methodOptions = array();
+$channelOptions = array();
+$creditSummary = array('count' => 0, 'amount' => 0);
+
+if ($invoicesTableExists) {
+    $creditWhere = array("tenant_id = :tenant_id", "balance_due > 0", "status NOT IN ('cancelled','archived','written_off')");
+    $creditParams = array(':tenant_id' => $tenantId);
+    if ($branchId > 0 && fpPayColumnExists($pdo, 'invoices', 'branch_id')) {
+        $creditWhere[] = 'branch_id = :branch_id';
+        $creditParams[':branch_id'] = $branchId;
+    }
+    if (fpPayColumnExists($pdo, 'invoices', 'issue_date')) {
+        $creditWhere[] = 'issue_date BETWEEN :credit_from AND :credit_to';
+        $creditParams[':credit_from'] = $from;
+        $creditParams[':credit_to'] = $to;
+    }
+    $creditRows = fpPayRows(
+        $pdo,
+        "SELECT COUNT(*) AS credit_count, COALESCE(SUM(balance_due),0) AS credit_amount FROM invoices WHERE " . implode(' AND ', $creditWhere),
+        $creditParams
+    );
+    if (!empty($creditRows[0])) {
+        $creditSummary['count'] = (int)$creditRows[0]['credit_count'];
+        $creditSummary['amount'] = (float)$creditRows[0]['credit_amount'];
+    }
+}
 
 if ($paymentsTableExists) {
     $joins = '';
@@ -230,13 +257,20 @@ if ($paymentsTableExists) {
     $where = array("p.tenant_id = :tenant_id");
     $params = array(':tenant_id' => $tenantId);
 
+    if ($paymentId > 0) {
+        $where[] = 'p.id = :payment_id';
+        $params[':payment_id'] = $paymentId;
+    }
+
     $dateExpr = fpPayColumnExists($pdo, 'payments', 'received_at')
         ? "COALESCE(p.received_at, p.created_at)"
         : "p.created_at";
 
-    $where[] = "{$dateExpr} BETWEEN :from_date AND :to_date";
-    $params[':from_date'] = $from . ' 00:00:00';
-    $params[':to_date'] = $to . ' 23:59:59';
+    if ($paymentId <= 0) {
+        $where[] = "{$dateExpr} BETWEEN :from_date AND :to_date";
+        $params[':from_date'] = $from . ' 00:00:00';
+        $params[':to_date'] = $to . ' 23:59:59';
+    }
 
     if ($branchId > 0 && fpPayColumnExists($pdo, 'payments', 'branch_id')) {
         $where[] = 'p.branch_id = :branch_id';
@@ -253,6 +287,11 @@ if ($paymentsTableExists) {
         $params[':payment_method'] = $method;
     }
 
+    if ($channel !== '' && fpPayColumnExists($pdo, 'payments', 'payment_channel')) {
+        $where[] = 'p.payment_channel = :payment_channel';
+        $params[':payment_channel'] = $channel;
+    }
+
     if ($search !== '') {
         $searchParts = array();
         if (fpPayColumnExists($pdo, 'payments', 'payment_no')) $searchParts[] = 'p.payment_no LIKE :search';
@@ -261,6 +300,8 @@ if ($paymentsTableExists) {
             $searchParts[] = 'c.phone LIKE :search';
         }
         if ($invoicesTableExists) $searchParts[] = 'i.invoice_no LIKE :search';
+        if (fpPayColumnExists($pdo, 'payments', 'provider')) $searchParts[] = 'p.provider LIKE :search';
+        if (fpPayColumnExists($pdo, 'payments', 'provider_payment_id')) $searchParts[] = 'p.provider_payment_id LIKE :search';
         if ($searchParts) {
             $where[] = '(' . implode(' OR ', $searchParts) . ')';
             $params[':search'] = '%' . $search . '%';
@@ -307,6 +348,15 @@ if ($paymentsTableExists) {
         foreach ($methodRows as $r) $methodOptions[] = (string)$r['payment_method'];
     }
 
+    if (fpPayColumnExists($pdo, 'payments', 'payment_channel')) {
+        $channelRows = fpPayRows(
+            $pdo,
+            "SELECT DISTINCT payment_channel FROM payments WHERE tenant_id=:tenant_id AND payment_channel IS NOT NULL AND payment_channel<>'' ORDER BY payment_channel",
+            array(':tenant_id' => $tenantId)
+        );
+        foreach ($channelRows as $r) $channelOptions[] = (string)$r['payment_channel'];
+    }
+
     $totalPages = max(1, (int)ceil($totalRows / $perPage));
     if ($page > $totalPages) $page = $totalPages;
     $offset = ($page - 1) * $perPage;
@@ -318,10 +368,13 @@ if ($paymentsTableExists) {
     $amountExpr = fpPayColumnExists($pdo, 'payments', 'amount') ? "COALESCE(p.amount,0)" : "0";
     $receivedExpr = fpPayColumnExists($pdo, 'payments', 'received_at') ? "p.received_at" : "NULL";
     $createdExpr = fpPayColumnExists($pdo, 'payments', 'created_at') ? "p.created_at" : "NULL";
+    $providerExpr = fpPayColumnExists($pdo, 'payments', 'provider') ? "COALESCE(p.provider,'')" : "''";
+    $referenceExpr = fpPayColumnExists($pdo, 'payments', 'provider_payment_id') ? "COALESCE(p.provider_payment_id,'')" : "''";
+    $notesExpr = fpPayColumnExists($pdo, 'payments', 'notes') ? "COALESCE(p.notes,'')" : "''";
 
     $rows = fpPayRows(
         $pdo,
-        "SELECT p.id,
+        "SELECT p.id, p.client_id, p.invoice_id,
                 {$paymentNoExpr} AS payment_no,
                 {$amountExpr} AS amount,
                 {$methodExpr} AS payment_method,
@@ -329,6 +382,9 @@ if ($paymentsTableExists) {
                 {$statusExpr} AS status,
                 {$receivedExpr} AS received_at,
                 {$createdExpr} AS created_at,
+                {$providerExpr} AS provider,
+                {$referenceExpr} AS provider_payment_id,
+                {$notesExpr} AS notes,
                 {$selectClient},
                 {$selectInvoice},
                 {$selectBranch}
@@ -343,7 +399,7 @@ if ($paymentsTableExists) {
     if (isset($_GET['export']) && $_GET['export'] === 'csv') {
         $exportRows = fpPayRows(
             $pdo,
-            "SELECT p.id,
+            "SELECT p.id, p.client_id, p.invoice_id,
                     {$paymentNoExpr} AS payment_no,
                     {$amountExpr} AS amount,
                     {$methodExpr} AS payment_method,
@@ -351,6 +407,9 @@ if ($paymentsTableExists) {
                     {$statusExpr} AS status,
                     {$receivedExpr} AS received_at,
                     {$createdExpr} AS created_at,
+                    {$providerExpr} AS provider,
+                    {$referenceExpr} AS provider_payment_id,
+                    {$notesExpr} AS notes,
                     {$selectClient},
                     {$selectInvoice},
                     {$selectBranch}
@@ -365,7 +424,7 @@ if ($paymentsTableExists) {
         header('Content-Type: text/csv; charset=utf-8');
         header('Content-Disposition: attachment; filename="fieldplx-payments-' . $from . '-to-' . $to . '.csv"');
         $out = fopen('php://output', 'w');
-        fputcsv($out, array('S.No', 'Payment No', 'Date & Time', 'Customer', 'Phone', 'Invoice', 'Method', 'Channel', 'Amount', 'Status', 'Branch'));
+        fputcsv($out, array('S.No', 'Payment No', 'Date & Time', 'Customer', 'Phone', 'Invoice', 'Method', 'Channel', 'Provider', 'Reference', 'Amount', 'Status', 'Branch'));
         $s = 1;
         foreach ($exportRows as $r) {
             fputcsv($out, array(
@@ -377,6 +436,8 @@ if ($paymentsTableExists) {
                 $r['invoice_no'],
                 $r['payment_method'],
                 $r['payment_channel'],
+                $r['provider'],
+                $r['provider_payment_id'],
                 $r['amount'],
                 $r['status'],
                 $r['branch_name']
@@ -1258,12 +1319,13 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer { margin-left: var(--fieldplx-s
                 <section class="fr-head">
                     <div>
                         <h1 class="fr-title">Payments</h1>
-                        <p class="fr-sub">View and track customer payment collections by date, branch, status and payment method. All records are restricted to the current tenant and branch access.</p>
+                        <!-- <p class="fr-sub">View and track customer collections, including split Cash, Card and Online payment rows, with invoice and customer links. Credit remains on the invoice as outstanding balance until collected.</p> -->
                     </div>
                     <div class="fr-actions">
-                        <a class="fr-btn" href="reports.php"><i class="bi bi-bar-chart"></i> Reports</a>
+                        <a class="fr-btn" href="invoices.php"><i class="bi bi-receipt"></i> Invoices</a>
                         <a class="fr-btn" href="payments.php"><i class="bi bi-arrow-clockwise"></i> Reset</a>
-                        <a class="fr-btn primary" href="?<?= fpPayH(fpPayQueryString(array('export' => 'csv'))) ?>"><i class="bi bi-download"></i> Export CSV</a>
+                        <a class="fr-btn" href="?<?= fpPayH(fpPayQueryString(array('export' => 'csv'))) ?>"><i class="bi bi-download"></i> Export CSV</a>
+                        <!-- <a class="fr-btn primary" href="payments.php"><i class="bi bi-cash-stack"></i> Collect Payment</a> -->
                     </div>
                 </section>
 
@@ -1271,7 +1333,7 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer { margin-left: var(--fieldplx-s
                     <form class="fr-filter" method="get" action="payments.php">
                         <div class="fr-field" style="min-width:220px;flex:1 1 220px;">
                             <label>Search</label>
-                            <input class="fr-input" type="search" name="search" value="<?= fpPayH($search) ?>" placeholder="Payment no, customer, phone, invoice">
+                            <input class="fr-input" type="search" name="search" value="<?= fpPayH($search) ?>" placeholder="Payment no, customer, invoice, provider or reference">
                         </div>
 
                         <div class="fr-field">
@@ -1300,6 +1362,16 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer { margin-left: var(--fieldplx-s
                                 <option value="">All Methods</option>
                                 <?php foreach ($methodOptions as $option): ?>
                                     <option value="<?= fpPayH($option) ?>" <?= $method === $option ? 'selected' : '' ?>><?= fpPayH(ucwords(str_replace('_', ' ', $option))) ?></option>
+                                <?php endforeach; ?>
+                            </select>
+                        </div>
+
+                        <div class="fr-field">
+                            <label>Channel</label>
+                            <select class="fr-input" name="channel">
+                                <option value="">All Channels</option>
+                                <?php foreach ($channelOptions as $option): ?>
+                                    <option value="<?= fpPayH($option) ?>" <?= $channel === $option ? 'selected' : '' ?>><?= fpPayH(ucwords(str_replace('_', ' ', $option))) ?></option>
                                 <?php endforeach; ?>
                             </select>
                         </div>
@@ -1377,9 +1449,9 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer { margin-left: var(--fieldplx-s
                             <div class="fr-stat-row">
                                 <span class="fr-stat-icon"><i class="bi bi-hourglass-split"></i></span>
                                 <div>
-                                    <span class="fr-stat-label">Pending Payments</span>
-                                    <strong class="fr-stat-value"><?= (int)$summary['pending_count'] ?></strong>
-                                    <span class="fr-stat-note"><?= fpPayH(fpPayMoney($summary['pending_amount'], $symbol, $symbolPosition, $decimalPlaces)) ?> pending</span>
+                                    <span class="fr-stat-label">Credit / Outstanding</span>
+                                    <strong class="fr-stat-value"><?= fpPayH(fpPayMoney($creditSummary['amount'], $symbol, $symbolPosition, $decimalPlaces)) ?></strong>
+                                    <span class="fr-stat-note"><?= (int)$creditSummary['count'] ?> invoice<?= (int)$creditSummary['count'] === 1 ? '' : 's' ?> with balance due</span>
                                 </div>
                             </div>
                         </article>
@@ -1398,7 +1470,7 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer { margin-left: var(--fieldplx-s
                     </div>
 
                     <div class="fr-table-wrap">
-                        <table class="fr-table" style="min-width:1160px;">
+                        <table class="fr-table" style="min-width:1370px;">
                             <thead>
                                 <tr>
                                     <th>S.No</th>
@@ -1408,16 +1480,18 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer { margin-left: var(--fieldplx-s
                                     <th>Invoice</th>
                                     <th>Method</th>
                                     <th>Channel</th>
+                                    <th>Provider / Reference</th>
                                     <th>Amount</th>
                                     <th>Status</th>
                                     <th>Branch</th>
+                                    <th>Action</th>
                                 </tr>
                             </thead>
                             <tbody>
                             <?php if (!$paymentsTableExists): ?>
-                                <tr><td colspan="10" class="fr-empty">Payments table is not available.</td></tr>
+                                <tr><td colspan="12" class="fr-empty">Payments table is not available.</td></tr>
                             <?php elseif (!$rows): ?>
-                                <tr><td colspan="10" class="fr-empty">No payments found for the selected filters.</td></tr>
+                                <tr><td colspan="12" class="fr-empty">No payments found for the selected filters.</td></tr>
                             <?php else: ?>
                                 <?php $serial = (($page - 1) * $perPage) + 1; ?>
                                 <?php foreach ($rows as $row): ?>
@@ -1446,11 +1520,25 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer { margin-left: var(--fieldplx-s
                                         <td><?= fpPayH($row['invoice_no'] ?: '-') ?></td>
                                         <td><?= fpPayH($row['payment_method'] !== '' ? ucwords(str_replace('_', ' ', $row['payment_method'])) : '-') ?></td>
                                         <td><?= fpPayH($row['payment_channel'] !== '' ? ucwords(str_replace('_', ' ', $row['payment_channel'])) : '-') ?></td>
+                                        <td>
+                                            <span class="fr-name"><?= fpPayH($row['provider'] !== '' ? ucwords(str_replace('_', ' ', $row['provider'])) : '-') ?></span>
+                                            <?php if (!empty($row['provider_payment_id'])): ?><span class="fr-muted"><?= fpPayH($row['provider_payment_id']) ?></span><?php endif; ?>
+                                        </td>
                                         <td><span class="fr-name"><?= fpPayH(fpPayMoney($row['amount'], $symbol, $symbolPosition, $decimalPlaces)) ?></span></td>
                                         <td><span class="fr-badge <?= fpPayH($badgeClass) ?>"><?= fpPayH($row['status'] !== '' ? ucwords(str_replace('_', ' ', $row['status'])) : '-') ?></span></td>
                                         <td>
                                             <?= fpPayH($row['branch_name'] ?: '-') ?>
                                             <?php if (!empty($row['branch_code'])): ?><span class="fr-muted"><?= fpPayH($row['branch_code']) ?></span><?php endif; ?>
+                                        </td>
+                                        <td>
+                                            <div style="display:flex;gap:5px;align-items:center;">
+                                                <?php if (!empty($row['invoice_id'])): ?>
+                                                    <a class="fr-btn" style="min-height:30px;padding:0 9px;" href="invoice-view.php?invoice_id=<?= (int)$row['invoice_id'] ?>" title="View invoice"><i class="bi bi-receipt"></i></a>
+                                                <?php endif; ?>
+                                                <?php if (!empty($row['client_id'])): ?>
+                                                    <a class="fr-btn" style="min-height:30px;padding:0 9px;" href="client-view.php?client_id=<?= (int)$row['client_id'] ?>" title="View customer"><i class="bi bi-person"></i></a>
+                                                <?php endif; ?>
+                                            </div>
                                         </td>
                                     </tr>
                                 <?php endforeach; ?>

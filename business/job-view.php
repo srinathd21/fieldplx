@@ -1,4 +1,5 @@
 <?php
+/* FieldPlx Job View - Version 2.0.0 - Direct/Quotation + Recurring Job Card */
 require_once __DIR__ . '/includes/auth.php';
 
 $pageTitle = 'Job View';
@@ -1736,6 +1737,40 @@ $jobId = isset($_GET['job_id']) ? (int)$_GET['job_id'] : 0;
 @media(max-width:767.98px){.jv-head{flex-direction:column}.jv-actions{width:100%}.jv-actions .jv-btn{flex:1}.jv-details,.jv-schedule{grid-template-columns:1fr}.jv-detail.full{grid-column:auto}}
 @media(max-width:575.98px){.jv-summary{grid-template-columns:1fr}.jv-toast{top:72px;left:12px;right:12px;width:auto}}
 
+
+/* ==========================================================
+   Job View 2.0 - expanded job card
+   ========================================================== */
+.jv-source-pill{min-height:25px;padding:5px 8px;display:inline-flex;align-items:center;gap:5px;border-radius:6px;color:#5d971b;background:#f0f8e5;font-size:8.5px;font-weight:700}
+.jv-source-pill.quote{color:#123d70;background:#edf4fb}
+.jv-source-pill i{font-size:10px}
+.jv-card-head-actions{display:flex;align-items:center;gap:7px}
+.jv-count{min-width:24px;height:24px;padding:0 7px;display:inline-flex;align-items:center;justify-content:center;border-radius:999px;color:#5d971b;background:#f0f8e5;font-size:8px;font-weight:700}
+.jv-schedule-list{display:grid;gap:10px}
+.jv-schedule-plan{padding:12px;border:1px solid #e7ecf1;border-radius:10px;background:#fff}
+.jv-schedule-plan-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:10px}
+.jv-schedule-plan-title{display:flex;align-items:center;gap:8px;color:#17233b;font-size:10.5px;font-weight:700}
+.jv-schedule-plan-title span{width:25px;height:25px;display:inline-grid;place-items:center;border-radius:7px;color:#5d971b;background:#f0f8e5;font-size:9px}
+.jv-repeat-badge{padding:4px 7px;border-radius:6px;color:#123d70;background:#edf4fb;font-size:7.8px;font-weight:700;white-space:nowrap}
+.jv-schedule-plan-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.jv-mini{padding:8px 9px;border:1px solid #edf1f4;border-radius:7px;background:#fbfcfd;min-width:0}
+.jv-mini label{display:block;margin-bottom:4px;color:#8793a5;font-size:7.5px;font-weight:700;text-transform:uppercase}
+.jv-mini strong{display:block;color:#34465f;font-size:9px;line-height:1.45;overflow-wrap:anywhere}
+.jv-mini.full{grid-column:1/-1}
+.jv-team-chips{display:flex;flex-wrap:wrap;gap:5px}
+.jv-team-chip{padding:4px 7px;display:inline-flex;align-items:center;gap:4px;border:1px solid #dcebc8;border-radius:999px;color:#536476;background:#f9fcf4;font-size:8px;font-weight:600}
+.jv-team-chip i{color:#74b824;font-size:8px}
+.jv-billing-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}
+.jv-billing-box{min-height:70px;padding:10px;border:1px solid #e9edf2;border-radius:8px;background:#fbfcfd}
+.jv-billing-box span,.jv-billing-box strong{display:block}.jv-billing-box span{margin-bottom:5px;color:#8793a5;font-size:7.8px;font-weight:700;text-transform:uppercase}.jv-billing-box strong{color:#263750;font-size:10px;line-height:1.45}.jv-billing-box strong.money{color:#123d70;font-size:13px}
+.jv-auto-pay{margin-top:10px;padding:10px 11px;display:flex;align-items:center;gap:9px;border:1px solid #dcebc8;border-radius:8px;background:#f9fcf4;color:#536476;font-size:9px}.jv-auto-pay i{width:28px;height:28px;display:grid;place-items:center;border-radius:8px;color:#5d971b;background:#eef8df;font-size:13px}.jv-auto-pay strong{display:block;color:#31425b;font-size:9.5px}.jv-auto-pay small{display:block;margin-top:2px;color:#7c899a;font-size:8px}
+.jv-attachments{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}
+.jv-file{min-height:72px;padding:9px;display:flex;align-items:center;gap:9px;border:1px solid #e9edf2;border-radius:8px;color:inherit;background:#fff;text-decoration:none!important}.jv-file:hover{border-color:#cfe3ae;background:#f9fcf4}.jv-file-preview{width:43px;height:43px;flex:0 0 43px;overflow:hidden;display:grid;place-items:center;border-radius:8px;color:#5d971b;background:#f0f8e5;font-size:17px}.jv-file-preview img{width:100%;height:100%;object-fit:cover}.jv-file-copy{min-width:0}.jv-file-copy strong{display:block;overflow:hidden;color:#263750;font-size:8.8px;text-overflow:ellipsis;white-space:nowrap}.jv-file-copy small{display:block;margin-top:4px;color:#8793a5;font-size:7.7px}
+.jv-checklists{display:flex;flex-wrap:wrap;gap:7px}.jv-checklist{padding:8px 10px;display:inline-flex;align-items:center;gap:7px;border:1px solid #dcebc8;border-radius:8px;color:#43546c;background:#f9fcf4;font-size:8.5px;font-weight:600}.jv-checklist i{color:#74b824;font-size:11px}.jv-checklist small{color:#8793a5;font-size:7.5px;font-weight:500}
+.jv-source-details{display:grid;gap:8px}.jv-source-row{padding:9px 10px;display:flex;justify-content:space-between;gap:12px;border:1px solid #edf0f4;border-radius:8px;background:#fff}.jv-source-row span{color:#8793a5;font-size:8px;font-weight:700;text-transform:uppercase}.jv-source-row strong{color:#34465f;font-size:9px;text-align:right;overflow-wrap:anywhere}
+@media(max-width:1199.98px){.jv-schedule-plan-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.jv-attachments{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:767.98px){.jv-schedule-plan-grid,.jv-billing-grid,.jv-attachments{grid-template-columns:1fr}.jv-mini.full{grid-column:auto}.jv-schedule-plan-head{align-items:center}}
+
     </style>
 </head>
 <body>
@@ -1753,7 +1788,7 @@ $jobId = isset($_GET['job_id']) ? (int)$_GET['job_id'] : 0;
                             <h1 class="jv-title" id="pageTitle">Job Card</h1>
                             <span class="jv-badge scheduled" id="pageStatus">Loading</span>
                         </div>
-                        <p class="jv-sub" id="pageSubtitle">View complete job card, schedule, quotation, customer and assigned employee details.</p>
+                        <p class="jv-sub" id="pageSubtitle">View direct or quotation jobs with schedules, billing, attachments, checklists and assigned employees.</p>
                     </div>
 
                     <div class="jv-actions">
@@ -1773,7 +1808,7 @@ $jobId = isset($_GET['job_id']) ? (int)$_GET['job_id'] : 0;
                 <div id="jobContent" style="display:none">
                     <section class="jv-summary">
                         <article class="jv-stat"><span class="jv-stat-label">Customer</span><strong class="jv-stat-value" id="summaryCustomer">-</strong></article>
-                        <article class="jv-stat"><span class="jv-stat-label">Approved Quotation</span><strong class="jv-stat-value" id="summaryQuote">-</strong></article>
+                        <article class="jv-stat"><span class="jv-stat-label">Job Source</span><strong class="jv-stat-value" id="summarySource">-</strong></article>
                         <article class="jv-stat"><span class="jv-stat-label">Service</span><strong class="jv-stat-value" id="summaryService">-</strong></article>
                         <article class="jv-stat"><span class="jv-stat-label">Job Total</span><strong class="jv-stat-value money" id="summaryTotal">-</strong></article>
                     </section>
@@ -1781,20 +1816,33 @@ $jobId = isset($_GET['job_id']) ? (int)$_GET['job_id'] : 0;
                     <div class="jv-grid">
                         <div class="jv-stack">
                             <section class="jv-card">
-                                <div class="jv-card-head"><div><h2>Job Details</h2><small>Operational job card information</small></div></div>
+                                <div class="jv-card-head">
+                                    <div><h2>Job Details</h2><small>Operational job card information</small></div>
+                                    <span class="jv-source-pill" id="jobSourceBadge"><i class="bi bi-briefcase"></i><span id="jobSourceBadgeText">Direct Job</span></span>
+                                </div>
                                 <div class="jv-card-body">
                                     <div class="jv-details">
                                         <div class="jv-detail"><span class="label">Job Number</span><span class="value" id="jobNo">-</span></div>
                                         <div class="jv-detail"><span class="label">Status</span><span class="value" id="statusText">-</span></div>
                                         <div class="jv-detail"><span class="label">Job Title</span><span class="value" id="jobTitle">-</span></div>
+                                        <div class="jv-detail"><span class="label">Job Type</span><span class="value" id="jobType">-</span></div>
                                         <div class="jv-detail"><span class="label">Priority</span><span class="value" id="priority">-</span></div>
                                         <div class="jv-detail"><span class="label">Assignment Mode</span><span class="value" id="assignmentMode">-</span></div>
                                         <div class="jv-detail"><span class="label">Completion Rule</span><span class="value" id="completionMode">-</span></div>
                                         <div class="jv-detail"><span class="label">Branch</span><span class="value" id="branchName">-</span></div>
                                         <div class="jv-detail"><span class="label">Workflow</span><span class="value" id="workflowName">-</span></div>
+                                        <div class="jv-detail"><span class="label">Request / Enquiry</span><span class="value" id="requestNoMain">-</span></div>
                                         <div class="jv-detail full"><span class="label">Work Instructions</span><span class="value" id="description">-</span></div>
                                     </div>
                                 </div>
+                            </section>
+
+                            <section class="jv-card">
+                                <div class="jv-card-head">
+                                    <div><h2>Job Schedules & Visits</h2><small>One-off and recurring schedule definitions</small></div>
+                                    <div class="jv-card-head-actions"><span class="jv-count" id="scheduleCount">0</span></div>
+                                </div>
+                                <div class="jv-card-body"><div class="jv-schedule-list" id="schedulePlans"><div class="jv-empty">No schedule plans.</div></div></div>
                             </section>
 
                             <section class="jv-card">
@@ -1806,35 +1854,58 @@ $jobId = isset($_GET['job_id']) ? (int)$_GET['job_id'] : 0;
                                     </table>
                                 </div>
                             </section>
+
+                            <section class="jv-card">
+                                <div class="jv-card-head"><div><h2>Attach Files & Photos</h2><small>Common files and photos linked to this job</small></div><span class="jv-count" id="attachmentCount">0</span></div>
+                                <div class="jv-card-body"><div class="jv-attachments" id="attachmentList"><div class="jv-empty">No files or photos attached.</div></div></div>
+                            </section>
                         </div>
 
                         <aside class="jv-stack">
                             <section class="jv-card">
-                                <div class="jv-card-head"><div><h2>Schedule</h2><small>Scheduled start and end time</small></div></div>
+                                <div class="jv-card-head"><div><h2>Schedule Overview</h2><small>Overall job start and end</small></div></div>
                                 <div class="jv-card-body"><div class="jv-schedule"><div class="jv-schedule-box"><span>Start</span><strong id="scheduleStart">-</strong></div><div class="jv-schedule-box"><span>End</span><strong id="scheduleEnd">-</strong></div></div></div>
                             </section>
 
                             <section class="jv-card">
-                                <div class="jv-card-head"><div><h2>Customer & Quotation</h2><small>Linked approved quotation and customer contact</small></div></div>
-                                <div class="jv-card-body"><div class="jv-details">
-                                    <div class="jv-detail"><span class="label">Customer</span><span class="value" id="clientName">-</span></div>
-                                    <div class="jv-detail"><span class="label">Customer Email</span><span class="value" id="clientEmail">-</span></div>
-                                    <div class="jv-detail"><span class="label">Customer Phone</span><span class="value" id="clientPhone">-</span></div>
-                                    <div class="jv-detail"><span class="label">Quotation No.</span><span class="value" id="quoteNo">-</span></div>
-                                    <div class="jv-detail"><span class="label">Service</span><span class="value" id="serviceName">-</span></div>
-                                    <div class="jv-detail"><span class="label">Enquiry No.</span><span class="value" id="requestNo">-</span></div>
+                                <div class="jv-card-head"><div><h2>Customer & Job Source</h2><small>Direct job or approved quotation context</small></div></div>
+                                <div class="jv-card-body"><div class="jv-source-details">
+                                    <div class="jv-source-row"><span>Customer</span><strong id="clientName">-</strong></div>
+                                    <div class="jv-source-row"><span>Email</span><strong id="clientEmail">-</strong></div>
+                                    <div class="jv-source-row"><span>Phone</span><strong id="clientPhone">-</strong></div>
+                                    <div class="jv-source-row"><span>Source</span><strong id="sourceTypeText">-</strong></div>
+                                    <div class="jv-source-row" id="quoteSourceRow"><span>Quotation No.</span><strong id="quoteNo">-</strong></div>
+                                    <div class="jv-source-row"><span>Service</span><strong id="serviceName">-</strong></div>
+                                    <div class="jv-source-row"><span>Enquiry No.</span><strong id="requestNo">-</strong></div>
                                 </div></div>
                             </section>
 
                             <section class="jv-card">
-                                <div class="jv-card-head"><div><h2>Email Notification</h2><small>Customer and assigned workforce</small></div></div>
+                                <div class="jv-card-head"><div><h2>Billing & Automatic Payments</h2><small>Invoice plan for scheduled work</small></div></div>
                                 <div class="jv-card-body">
-                                    <div class="jv-email-note" id="emailNote"><strong>Resend Email</strong><br>The resend option is available only while this job is in Scheduled status.</div>
+                                    <div class="jv-billing-grid">
+                                        <div class="jv-billing-box"><span>Billing Type</span><strong id="billingType">-</strong></div>
+                                        <div class="jv-billing-box"><span>Total Invoices</span><strong id="totalInvoices">-</strong></div>
+                                        <div class="jv-billing-box"><span>Fixed Amount</span><strong class="money" id="fixedInvoiceAmount">-</strong></div>
+                                        <div class="jv-billing-box"><span>First</span><strong id="firstInvoiceDate">-</strong></div>
+                                        <div class="jv-billing-box"><span>Last</span><strong id="lastInvoiceDate">-</strong></div>
+                                    </div>
+                                    <div class="jv-auto-pay"><i class="bi bi-credit-card-2-front"></i><div><strong id="automaticPayments">Automatic payments disabled</strong><small id="automaticPaymentsHint">Invoices require normal collection.</small></div></div>
                                 </div>
+                            </section>
+
+                            <section class="jv-card">
+                                <div class="jv-card-head"><div><h2>Capture On-site Details</h2><small>Attached custom-built checklists</small></div><span class="jv-count" id="checklistCount">0</span></div>
+                                <div class="jv-card-body"><div class="jv-checklists" id="checklistList"><div class="jv-empty">No checklist attached.</div></div></div>
+                            </section>
+
+                            <section class="jv-card">
+                                <div class="jv-card-head"><div><h2>Email Notification</h2><small>Customer and assigned workforce</small></div></div>
+                                <div class="jv-card-body"><div class="jv-email-note" id="emailNote"><strong>Resend Email</strong><br>The resend option is available only while this job is in Scheduled status.</div></div>
                             </section>
                         </aside>
                     </div>
-                </div>
+                </div>                </div>
             </div>
         </div>
     </main>
@@ -1864,8 +1935,17 @@ function money(v,c){var a=Number(v||0),p=parseInt((c||{}).decimal_places,10);if(
 function notify(type,msg){var t=el('toast'),m=el('toastMessage');if(!t||!m)return;if(toastTimer)clearTimeout(toastTimer);t.className='jv-toast '+(type||'')+' show';m.textContent=msg||'Notification';toastTimer=setTimeout(function(){t.classList.remove('show')},4500)}
 function parseResponse(r){return r.text().then(function(raw){var d,s=String(raw||'').trim();try{d=s?JSON.parse(s):{}}catch(e){throw new Error(s.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim()||'Invalid server response.')}if(!r.ok||!d.success)throw new Error(d.message||('Request failed with HTTP '+r.status+'.'));return d})}
 function request(action){var fd=new FormData();fd.append('action',action);fd.append('job_id',jobId);fd.append('csrf_token',csrfToken);return fetch(apiUrl,{method:'POST',body:fd,credentials:'same-origin',cache:'no-store',headers:{'X-Requested-With':'XMLHttpRequest','Accept':'application/json'}}).then(parseResponse)}
+function userMap(meta){var map={};var users=(meta&&Array.isArray(meta.users))?meta.users:[];users.forEach(function(u){map[Number(u.id)]=u});return map}
 function renderAssignments(rows){var body=el('assignmentRows');text('assignmentCount',rows.length+(rows.length===1?' employee':' employees'));if(!rows.length){body.innerHTML='<tr><td colspan="6" class="jv-empty">No assigned employees.</td></tr>';return}var h=[];rows.forEach(function(r,i){h.push('<tr><td>'+(i+1)+'</td><td><div class="jv-person"><strong>'+esc(r.user_name||'Employee')+'</strong><small>'+esc(r.department_id?'Department ID '+r.department_id:'Assigned user')+'</small></div></td><td>'+esc(r.email||'-')+'</td><td>'+esc(title(r.assignment_role))+'</td><td>'+(Number(r.is_primary_responsible||0)===1?'<span class="jv-primary">Primary</span>':'-')+'</td><td>'+esc(title(r.status))+'</td></tr>')});body.innerHTML=h.join('')}
-function render(data){var j=data.job||{},a=Array.isArray(data.assignments)?data.assignments:[],c=data.currency||((data.meta||{}).currency)||{};currentJob=j;text('pageTitle',j.job_no?'Job '+j.job_no:'Job Card');var badge=el('pageStatus');badge.className='jv-badge '+(j.status||'scheduled');badge.textContent=title(j.status);text('pageSubtitle',j.title||'View complete job card details.');text('summaryCustomer',j.client_name);text('summaryQuote',j.quote_no);text('summaryService',j.service_name,'No service');text('summaryTotal',money(j.total,c));text('jobNo',j.job_no);text('statusText',title(j.status));text('jobTitle',j.title);text('priority',title(j.priority));text('assignmentMode',title(j.assignment_mode));text('completionMode',title(j.assignment_completion_mode));text('branchName',j.branch_name);text('workflowName',j.workflow_name,'No active workflow mapped');text('description',j.description,'No work instructions');text('scheduleStart',schedule(j.start_date,j.start_time));text('scheduleEnd',schedule(j.end_date,j.end_time));text('clientName',j.client_name);text('clientEmail',j.client_email);text('clientPhone',j.client_phone);text('quoteNo',j.quote_no);text('serviceName',j.service_name,'No service');text('requestNo',j.request_no,'-');renderAssignments(a);var edit=el('editButton');edit.href='job-form?job_id='+Number(j.id||jobId);var resend=el('resendEmailButton');if(Number(j.can_resend_email||0)===1&&String(j.status||'').toLowerCase()==='scheduled'){resend.style.display='inline-flex';text('emailNote','Email can be resent to the customer and all currently assigned employees while this job remains Scheduled.')}else{resend.style.display='none';text('emailNote','Resend Email is available only when the job status is Scheduled.')}el('loadingState').style.display='none';el('errorState').style.display='none';el('jobContent').style.display='block'}
+function repeatText(s){var type=String(s.repeat_type||'none');if(type==='none')return 'One-off';var every=Math.max(1,Number(s.repeat_interval||1));var label='Every '+every+' '+(type==='daily'?'day':type==='weekly'?'week':type==='monthly'?'month':'year')+(every===1?'':'s');if(type==='weekly'&&Array.isArray(s.weekly_days)&&s.weekly_days.length)label+=' · '+s.weekly_days.map(function(d){return title(d)}).join(', ');return label}
+function endsText(s){var mode=String(s.end_mode||'');if(String(s.repeat_type||'none')==='none')return 'After this visit';if(mode==='on_date')return 'Ends on '+fmtDate(s.repeat_end_date);if(mode==='after_occurrences')return 'Ends after '+Number(s.repeat_occurrences||0)+' visit'+(Number(s.repeat_occurrences||0)===1?'':'s');if(mode==='after_duration')return 'Ends after '+Number(s.end_after_value||0)+' '+title(s.end_after_unit||'');return '-'}
+function scheduleTeam(s,map){var ids=Array.isArray(s.assignee_ids)?s.assignee_ids:[];if(!ids.length)return '<span class="jv-team-chip"><i class="bi bi-people"></i>Default job team</span>';return ids.map(function(id){var u=map[Number(id)]||{};return '<span class="jv-team-chip"><i class="bi bi-person-check"></i>'+esc(u.name||('Employee #'+id))+'</span>'}).join('')}
+function renderSchedules(rows,meta){var box=el('schedulePlans');text('scheduleCount',rows.length);if(!rows.length){box.innerHTML='<div class="jv-empty">No expanded schedule plans found.</div>';return}var map=userMap(meta),h=[];rows.forEach(function(s,i){var badge=String(s.repeat_type||'none')==='none'?'One-off':title(s.repeat_type);h.push('<article class="jv-schedule-plan"><div class="jv-schedule-plan-head"><div class="jv-schedule-plan-title"><span>'+(i+1)+'</span>Schedule '+(i+1)+'</div><span class="jv-repeat-badge">'+esc(badge)+'</span></div><div class="jv-schedule-plan-grid"><div class="jv-mini"><label>Start</label><strong>'+esc(schedule(s.start_date,s.start_time))+'</strong></div><div class="jv-mini"><label>End</label><strong>'+esc(schedule(s.end_date,s.end_time))+'</strong></div><div class="jv-mini"><label>Repeats</label><strong>'+esc(repeatText(s))+'</strong></div><div class="jv-mini"><label>Ends</label><strong>'+esc(endsText(s))+'</strong></div><div class="jv-mini full"><label>Team Members</label><div class="jv-team-chips">'+scheduleTeam(s,map)+'</div></div><div class="jv-mini full"><label>Visit Instructions</label><strong>'+esc(s.instructions||'No visit-specific instructions.')+'</strong></div></div></article>')});box.innerHTML=h.join('')}
+function renderBilling(b,c){b=b||{};var type=String(b.billing_type||'');text('billingType',type==='visit_based'?'Visit based':type==='fixed_price'?'Fixed price':'-');text('totalInvoices',b.total_invoices||0);text('firstInvoiceDate',fmtDate(b.first_invoice_date));text('lastInvoiceDate',fmtDate(b.last_invoice_date));text('fixedInvoiceAmount',type==='fixed_price'?money(b.fixed_invoice_amount,c):'-');var enabled=Number(b.automatic_payments_enabled||0)===1;text('automaticPayments',enabled?'Automatic payments enabled':'Automatic payments disabled');text('automaticPaymentsHint',enabled?'Automatic collection is enabled for this billing plan.':'Invoices require normal collection.')}
+function fileSize(v){var n=Number(v||0);if(!n)return '';if(n<1024)return n+' B';if(n<1048576)return (n/1024).toFixed(1)+' KB';return (n/1048576).toFixed(1)+' MB'}
+function renderAttachments(rows){var box=el('attachmentList');text('attachmentCount',rows.length);if(!rows.length){box.innerHTML='<div class="jv-empty">No files or photos attached.</div>';return}var h=[];rows.forEach(function(r){var mime=String(r.file_mime||''),isImg=mime.indexOf('image/')===0,path=String(r.file_path||'#'),preview=isImg?'<img src="'+esc(path)+'" alt="">':'<i class="bi bi-paperclip"></i>';h.push('<a class="jv-file" href="'+esc(path)+'" target="_blank" rel="noopener"><span class="jv-file-preview">'+preview+'</span><span class="jv-file-copy"><strong>'+esc(r.file_name||'Attachment')+'</strong><small>'+esc(fileSize(r.file_size)||title(r.attachment_type||'file'))+'</small></span></a>')});box.innerHTML=h.join('')}
+function renderChecklists(ids,meta){var box=el('checklistList');ids=Array.isArray(ids)?ids:[];text('checklistCount',ids.length);if(!ids.length){box.innerHTML='<div class="jv-empty">No checklist attached.</div>';return}var templates=(meta&&Array.isArray(meta.checklist_templates))?meta.checklist_templates:[],map={};templates.forEach(function(t){map[Number(t.id)]=t});box.innerHTML=ids.map(function(id){var t=map[Number(id)]||{};return '<div class="jv-checklist"><i class="bi bi-list-check"></i><span>'+esc(t.name||('Checklist #'+id))+'<small>'+esc((Number(t.item_count||0))+' items')+'</small></span></div>'}).join('')}
+function render(data){var j=data.job||{},a=Array.isArray(data.assignments)?data.assignments:[],schedules=Array.isArray(data.schedules)?data.schedules:[],attachments=Array.isArray(data.attachments)?data.attachments:[],checklists=Array.isArray(data.checklist_template_ids)?data.checklist_template_ids:[],meta=data.meta||{},c=data.currency||meta.currency||{},billing=data.billing||{};currentJob=j;var hasQuote=Number(j.quote_id||0)>0&&String(j.quote_no||'').trim()!=='';var sourceText=hasQuote?('Quotation '+j.quote_no):'Direct Job';text('pageTitle',j.job_no?'Job '+j.job_no:'Job Card');var badge=el('pageStatus');badge.className='jv-badge '+(j.status||'scheduled');badge.textContent=title(j.status);text('pageSubtitle',(j.title||'Job')+' · '+sourceText+' · '+title(j.job_type||'one_off'));text('summaryCustomer',j.client_name);text('summarySource',sourceText);text('summaryService',j.service_name,'No service');text('summaryTotal',money(j.total,c));text('jobNo',j.job_no);text('statusText',title(j.status));text('jobTitle',j.title);text('jobType',title(j.job_type||'one_off'));text('priority',title(j.priority));text('assignmentMode',title(j.assignment_mode));text('completionMode',title(j.assignment_completion_mode));text('branchName',j.branch_name);text('workflowName',j.workflow_name,'No active workflow mapped');text('description',j.description,'No work instructions');text('requestNoMain',j.request_no,'-');text('scheduleStart',schedule(j.start_date,j.start_time));text('scheduleEnd',schedule(j.end_date,j.end_time));text('clientName',j.client_name);text('clientEmail',j.client_email);text('clientPhone',j.client_phone);text('sourceTypeText',hasQuote?'Approved Quotation':'Direct Job');text('quoteNo',j.quote_no,'-');text('serviceName',j.service_name,'No service');text('requestNo',j.request_no,'-');var sourceBadge=el('jobSourceBadge');if(sourceBadge){sourceBadge.className='jv-source-pill'+(hasQuote?' quote':'');sourceBadge.querySelector('i').className=hasQuote?'bi bi-file-earmark-check':'bi bi-briefcase'}text('jobSourceBadgeText',hasQuote?'Quotation Job':'Direct Job');var qr=el('quoteSourceRow');if(qr)qr.style.display=hasQuote?'flex':'none';renderAssignments(a);renderSchedules(schedules,meta);renderBilling(billing,c);renderAttachments(attachments);renderChecklists(checklists,meta);var edit=el('editButton');edit.href='job-form.php?job_id='+Number(j.id||jobId);var resend=el('resendEmailButton');if(Number(j.can_resend_email||0)===1&&String(j.status||'').toLowerCase()==='scheduled'){resend.style.display='inline-flex';text('emailNote','Email can be resent to the customer and all currently assigned employees while this job remains Scheduled.')}else{resend.style.display='none';text('emailNote','Resend Email is available only when the job status is Scheduled.')}el('loadingState').style.display='none';el('errorState').style.display='none';el('jobContent').style.display='block'}
 function load(){return request('get').then(render).catch(function(e){console.error('FieldPlx job view error:',e);el('loadingState').style.display='none';el('jobContent').style.display='none';el('errorState').style.display='flex';text('errorMessage',e.message||'Unable to load job.');notify('error',e.message)})}
 function resend(){var b=el('resendEmailButton');if(!b||b.disabled)return;b.disabled=true;b.classList.add('loading');text('resendEmailText','Sending...');request('resend_email').then(function(d){var n=d.notifications||{};var msg=d.message||'Job email resent successfully.';if(Number(n.email_failed||0)>0)msg+=' '+Number(n.email_failed)+' email(s) failed.';if(Number(n.email_skipped||0)>0)msg+=' '+Number(n.email_skipped)+' email(s) skipped.';notify('success',msg);text('emailNote','Last resend completed: '+Number(n.email_sent||0)+' sent, '+Number(n.email_failed||0)+' failed, '+Number(n.email_skipped||0)+' skipped.');return request('get').then(render)}).catch(function(e){console.error('FieldPlx resend email error:',e);notify('error',e.message||'Unable to resend email.')}).finally(function(){b.disabled=false;b.classList.remove('loading');text('resendEmailText','Resend Email')})}
 function init(){if(jobId<=0){el('loadingState').style.display='none';el('errorState').style.display='flex';text('errorMessage','Invalid job ID.');return}var b=el('resendEmailButton');if(b)b.addEventListener('click',resend);load()}

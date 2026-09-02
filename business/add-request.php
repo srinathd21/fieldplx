@@ -1,4 +1,5 @@
 <?php
+/* FieldPlx Add Service Request - Version 1.1.0 - 2026-09-02 - Auto client from ?client_id= */
 require_once __DIR__ . '/includes/auth.php';
 
 $pageTitle = 'Add Service Request';
@@ -4530,6 +4531,8 @@ a:active{
 (function(){
 'use strict';
 var csrfToken=<?= json_encode($addRequestCsrfToken) ?>, form=document.getElementById('addRequestForm'),saveButton=document.getElementById('saveButton'),toast=document.getElementById('toast'),toastMsg=document.getElementById('toastMsg'),toastTimer=null;
+var urlParams=new URLSearchParams(window.location.search);
+var preselectedClientId=Math.max(0,parseInt(urlParams.get('client_id')||'0',10)||0);
 var meta={clients:[],branches:[],services:[],catalog:[],users:[],teams:[],currency:{symbol:'',symbol_position:'before',currency_code:''},smtp_configured:false};
 var cart=[],dirty=false,submitting=false;
 function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;')}
@@ -4541,7 +4544,17 @@ function options(rows,first){var h='<option value="">'+esc(first)+'</option>';(r
 function money(n){n=Number(n||0);var s=n.toFixed(Number(meta.currency.decimal_places||2));return meta.currency.symbol_position==='after'?s+' '+(meta.currency.symbol||''):(meta.currency.symbol||'')+s}
 function initSelect2(){$('.fd-select2').select2({width:'100%',minimumResultsForSearch:6});$('#multipleUserIds').select2({width:'100%',closeOnSelect:false,placeholder:'Select Employees',templateResult:function(item){if(!item.id)return item.text;var selected=$('#multipleUserIds').val()||[],checked=selected.indexOf(String(item.id))!==-1;var w=$('<span class="fd-ar-select2-option'+(checked?' selected':'')+'"><span class="fd-ar-select2-check"><i class="bi bi-check"></i></span><span></span></span>');w.find('span:last').text(item.text);return w}})}
 function setMeta(m){meta=m||meta;$('#clientId').html(options(meta.clients,'Select Client')).trigger('change.select2');$('#branchId').html(options(meta.branches,'No Branch')).trigger('change.select2');$('#serviceId').html(options(meta.services,'Select Service')).trigger('change.select2');$('#individualUserId').html(options(meta.users,'Select Employee')).trigger('change.select2');$('#teamId').html(options(meta.teams,'Select Team')).trigger('change.select2');var mh='';(meta.users||[]).forEach(function(x){mh+='<option value="'+Number(x.id)+'">'+esc(x.name)+(x.job_title?' - '+esc(x.job_title):'')+'</option>'});$('#multipleUserIds').html(mh).trigger('change');var ch='<option value="">Search product / service / material / fee / discount</option>';(meta.catalog||[]).forEach(function(x){ch+='<option value="'+Number(x.id)+'">'+esc(x.name)+' · '+esc(x.item_type)+' · '+money(x.unit_price)+'</option>'});$('#catalogItem').html(ch).trigger('change.select2');document.getElementById('currencyBadge').textContent=(meta.currency.currency_code||'')+' '+(meta.currency.symbol||'');document.getElementById('smtpHint').textContent=meta.smtp_configured?'Tenant SMTP configured. Selected employees can receive email.':'No active tenant SMTP. Email is skipped; in-app notification still works.';renderCart()}
-function loadMeta(){var fd=new FormData();fd.append('action','meta');req(fd).then(function(d){setMeta(d.meta||{})}).catch(function(e){notify('error',e.message)})}
+function applyPreselectedClient(){
+    if(preselectedClientId<=0)return;
+    var client=(meta.clients||[]).find(function(x){return Number(x.id)===Number(preselectedClientId)});
+    if(!client){notify('warning','The selected customer is not available.');return;}
+    $('#clientId').val(String(preselectedClientId)).trigger('change.select2');
+    if(client.branch_id && $('#branchId option[value=\"'+Number(client.branch_id)+'\"]').length){
+        $('#branchId').val(String(client.branch_id)).trigger('change.select2');
+    }
+    loadLocations(preselectedClientId);
+}
+function loadMeta(){var fd=new FormData();fd.append('action','meta');req(fd).then(function(d){setMeta(d.meta||{});applyPreselectedClient()}).catch(function(e){notify('error',e.message)})}
 function loadLocations(id){if(!id){$('#locationId').html('<option value="">Select Client First</option>').trigger('change.select2');return}var fd=new FormData();fd.append('action','locations');fd.append('client_id',id);req(fd).then(function(d){$('#locationId').html(options(d.locations||[],'No Location / Not Confirmed')).trigger('change.select2')}).catch(function(e){notify('error',e.message)})}
 function mode(){var x=document.querySelector('input[name="assignment_mode"]:checked');return x?x.value:'individual'}
 function updateAssignmentMode(){var m=mode();document.getElementById('individualWrap').classList.toggle('show',m==='individual');document.getElementById('teamWrap').classList.toggle('show',m==='team');document.getElementById('multipleWrap').classList.toggle('show',m==='multiple')}
