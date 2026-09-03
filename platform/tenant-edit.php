@@ -135,6 +135,23 @@ if (!$tenant) {
     exit('Tenant not found.');
 }
 
+
+/* Tenant administrator */
+$adminStmt = $pdo->prepare("
+    SELECT
+        u.id, u.first_name, u.last_name, u.email, u.role_id, u.status,
+        r.name AS role_name, r.is_admin
+    FROM users u
+    LEFT JOIN roles r ON r.id = u.role_id AND r.tenant_id = u.tenant_id
+    WHERE u.tenant_id = :tenant_id
+      AND u.is_tenant_admin = 1
+      AND u.deleted_at IS NULL
+    ORDER BY u.id ASC
+    LIMIT 1
+");
+$adminStmt->execute(array(':tenant_id' => $tenantId));
+$tenantAdmin = $adminStmt->fetch();
+
 /*
 |--------------------------------------------------------------------------
 | Dropdown data
@@ -179,6 +196,35 @@ $currencies = $currencyStmt->fetchAll();
 $currentPlanId = !empty($tenant['subscription_plan_id'])
     ? (int) $tenant['subscription_plan_id']
     : 0;
+
+
+$adminPermissionSummary = array('required' => 0, 'granted' => 0, 'missing' => 0);
+if ($tenantAdmin && $currentPlanId > 0 && !empty($tenantAdmin['role_id'])) {
+    $permissionSummaryStmt = $pdo->prepare("
+        SELECT
+            COUNT(DISTINCT p.id) AS required_permissions,
+            COUNT(DISTINCT CASE WHEN rp.access_type = 'allow' THEN p.id END) AS granted_permissions
+        FROM plan_modules pm
+        INNER JOIN modules m ON m.id = pm.module_id AND m.is_active = 1 AND m.is_sidebar_item = 1
+        INNER JOIN permissions p ON p.module_id = m.id
+        LEFT JOIN role_permissions rp
+            ON rp.tenant_id = :tenant_id
+           AND rp.role_id = :role_id
+           AND rp.permission_id = p.id
+        WHERE pm.plan_id = :plan_id AND pm.is_enabled = 1
+    ");
+    $permissionSummaryStmt->execute(array(
+        ':tenant_id' => $tenantId,
+        ':role_id' => (int) $tenantAdmin['role_id'],
+        ':plan_id' => $currentPlanId
+    ));
+    $summary = $permissionSummaryStmt->fetch();
+    if ($summary) {
+        $adminPermissionSummary['required'] = (int) $summary['required_permissions'];
+        $adminPermissionSummary['granted'] = (int) $summary['granted_permissions'];
+        $adminPermissionSummary['missing'] = max(0, $adminPermissionSummary['required'] - $adminPermissionSummary['granted']);
+    }
+}
 
 $planStmt = $pdo->prepare("
     SELECT
@@ -997,6 +1043,19 @@ $dateFormats = array(
     .tenant-edit-actions{width:100%}
     .tenant-edit-actions .tenant-back-button{flex:1}
 }
+
+
+/* Tenant administrator access card */
+.tenant-admin-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.tenant-admin-stat{padding:10px;border:1px solid #e4def1;border-radius:10px;background:#fbf9ff}
+.tenant-admin-stat span{display:block;color:#8c849e;font-size:8px}
+.tenant-admin-stat strong{display:block;margin-top:3px;color:#2f2940;font-size:17px}
+.tenant-admin-check{margin-top:11px;padding:10px;border:1px solid #e3daf8;border-radius:10px;background:#f8f5ff}
+.tenant-admin-check label{display:flex;align-items:flex-start;gap:8px;margin:0;color:#443c58;font-size:9px;font-weight:700;cursor:pointer}
+.tenant-admin-check small{display:block;margin:4px 0 0 24px;color:#8c849e;font-size:8px;line-height:1.45}
+.tenant-admin-warning{padding:10px;border:1px solid #fde68a;border-radius:9px;background:#fffbeb;color:#92400e;font-size:9px;line-height:1.5}
+@media(max-width:575.98px){.tenant-admin-grid{grid-template-columns:1fr}}
+
 </style>
 </head>
 
@@ -1610,6 +1669,58 @@ $dateFormats = array(
             </div>
 
             <aside class="tenant-form-column tenant-side-column">
+
+                <!-- Business Administrator -->
+                <section class="tenant-form-card">
+                    <div class="tenant-form-card-header">
+                        <span class="tenant-form-card-icon"><i class="bi bi-shield-lock"></i></span>
+                        <span>
+                            <h3 class="tenant-form-card-title">Business Administrator</h3>
+                            <span class="tenant-form-card-subtitle">Login identity, email delivery and plan permissions</span>
+                        </span>
+                    </div>
+                    <div class="tenant-form-card-body">
+                        <?php if ($tenantAdmin): ?>
+                            <input type="hidden" name="admin_user_id" value="<?= (int) $tenantAdmin['id']; ?>">
+                            <div class="tenant-form-grid" style="grid-template-columns:1fr;">
+                                <div class="tenant-field">
+                                    <label for="adminName">Administrator Name <span class="required">*</span></label>
+                                    <input type="text" class="tenant-input" id="adminName" name="admin_name" maxlength="240" required value="<?= tenantEditEscape(trim((string) $tenantAdmin['first_name'] . ' ' . (string) $tenantAdmin['last_name'])); ?>">
+                                </div>
+                                <div class="tenant-field">
+                                    <label for="adminEmail">Administrator Login Email <span class="required">*</span></label>
+                                    <input type="email" class="tenant-input" id="adminEmail" name="admin_email" maxlength="190" required value="<?= tenantEditEscape($tenantAdmin['email']); ?>">
+                                    <div class="tenant-field-note">Changing the administrator name or email will automatically generate a new temporary password and send updated login details.</div>
+                                </div>
+                            </div>
+
+                            <div class="tenant-admin-grid" style="margin-top:12px;">
+                                <div class="tenant-admin-stat"><span>Plan Permissions</span><strong><?= (int) $adminPermissionSummary['required']; ?></strong></div>
+                                <div class="tenant-admin-stat"><span>Enabled Permissions</span><strong><?= (int) $adminPermissionSummary['granted']; ?></strong></div>
+                                <div class="tenant-admin-stat"><span>Missing Permissions</span><strong><?= (int) $adminPermissionSummary['missing']; ?></strong></div>
+                                <div class="tenant-admin-stat"><span>Admin Role</span><strong style="font-size:12px;padding-top:4px;"><?= tenantEditEscape(!empty($tenantAdmin['role_name']) ? $tenantAdmin['role_name'] : 'Not assigned'); ?></strong></div>
+                            </div>
+
+                            <div class="tenant-admin-check">
+                                <label>
+                                    <input type="checkbox" name="enable_missing_permissions" value="1" <?= $adminPermissionSummary['missing'] > 0 ? 'checked' : ''; ?>>
+                                    Enable all missing permissions allowed by the selected plan
+                                </label>
+                                <small>Only permissions belonging to active sidebar modules enabled in this tenant's plan are granted.</small>
+                            </div>
+
+                            <div class="tenant-admin-check">
+                                <label>
+                                    <input type="checkbox" name="resend_admin_email" value="1">
+                                    Reset temporary password and resend administrator login email
+                                </label>
+                                <small>A new temporary password is generated. The existing password cannot be retrieved because only its hash is stored.</small>
+                            </div>
+                        <?php else: ?>
+                            <div class="tenant-admin-warning"><i class="bi bi-exclamation-triangle"></i> No tenant administrator user is currently assigned. Create or promote an administrator before permissions and login email can be managed here.</div>
+                        <?php endif; ?>
+                    </div>
+                </section>
 
                 <!-- Subscription -->
                 <section class="tenant-form-card">
@@ -2245,7 +2356,7 @@ $dateFormats = array(
                             result.data.redirect ||
                             'tenant-view.php?id=<?= (int) $tenantId; ?>';
                     },
-                    650
+                    1600
                 );
             })
             .catch(function (error) {
