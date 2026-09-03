@@ -1,6 +1,6 @@
 <?php
 /**
- * FieldPlx API - Create Tenant
+ * FieldPlx API - Create Tenant + Administrator Provisioning
  * Endpoint: /platform/api/tenant-save.php
  * PHP 7.2+
  */
@@ -221,6 +221,218 @@ function tenantApiUpload(
 
 /*
 |--------------------------------------------------------------------------
+| Tenant Administrator Provisioning Helpers
+|--------------------------------------------------------------------------
+*/
+
+function tenantApiGenerateTemporaryPassword(
+    int $length = 14
+): string {
+    if ($length < 12) {
+        $length = 12;
+    }
+
+    $upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+    $lower = 'abcdefghijkmnopqrstuvwxyz';
+    $digits = '23456789';
+    $special = '!@#$%';
+    $all = $upper . $lower . $digits . $special;
+
+    $characters = array(
+        $upper[random_int(0, strlen($upper) - 1)],
+        $lower[random_int(0, strlen($lower) - 1)],
+        $digits[random_int(0, strlen($digits) - 1)],
+        $special[random_int(0, strlen($special) - 1)]
+    );
+
+    while (count($characters) < $length) {
+        $characters[] =
+            $all[random_int(0, strlen($all) - 1)];
+    }
+
+    for ($i = count($characters) - 1; $i > 0; $i--) {
+        $j = random_int(0, $i);
+        $tmp = $characters[$i];
+        $characters[$i] = $characters[$j];
+        $characters[$j] = $tmp;
+    }
+
+    return implode('', $characters);
+}
+
+function tenantApiAdminNameParts(
+    string $adminName
+): array {
+    $adminName = preg_replace(
+        '/\\s+/',
+        ' ',
+        trim($adminName)
+    );
+
+    if (!is_string($adminName) || $adminName === '') {
+        return array('Administrator', null);
+    }
+
+    $parts = explode(' ', $adminName, 2);
+    $firstName = substr((string)$parts[0], 0, 120);
+    $lastName = isset($parts[1])
+        ? trim(substr((string)$parts[1], 0, 120))
+        : '';
+
+    return array(
+        $firstName !== '' ? $firstName : 'Administrator',
+        $lastName !== '' ? $lastName : null
+    );
+}
+
+function tenantApiBusinessLoginUrl(): string
+{
+    if (
+        !isset($_SERVER['HTTP_HOST']) ||
+        trim((string)$_SERVER['HTTP_HOST']) === ''
+    ) {
+        return '';
+    }
+
+    $scheme =
+        isset($_SERVER['HTTPS']) &&
+        $_SERVER['HTTPS'] !== '' &&
+        strtolower((string)$_SERVER['HTTPS']) !== 'off'
+            ? 'https'
+            : 'http';
+
+    $scriptName = isset($_SERVER['SCRIPT_NAME'])
+        ? str_replace('\\\\', '/', (string)$_SERVER['SCRIPT_NAME'])
+        : '';
+
+    $projectBase = '';
+    $platformPos = strrpos($scriptName, '/platform/');
+
+    if ($platformPos !== false) {
+        $projectBase = substr($scriptName, 0, $platformPos);
+    }
+
+    return
+        $scheme .
+        '://' .
+        trim((string)$_SERVER['HTTP_HOST']) .
+        rtrim($projectBase, '/') .
+        '/business/login.php';
+}
+
+function tenantApiCreateAdministrator(
+    PDO $pdo,
+    int $tenantId,
+    string $adminName,
+    string $email,
+    ?string $phone,
+    string $temporaryPassword
+): array {
+    $nameParts = tenantApiAdminNameParts($adminName);
+    $firstName = $nameParts[0];
+    $lastName = $nameParts[1];
+
+    $roleStmt = $pdo->prepare("\n        INSERT INTO roles (\n            tenant_id,\n            name,\n            code,\n            description,\n            is_admin,\n            is_system_role,\n            status\n        ) VALUES (\n            :tenant_id,\n            'Administrator',\n            'ADMINISTRATOR',\n            'Primary tenant business administrator',\n            1,\n            1,\n            'active'\n        )\n    ");
+
+    $roleStmt->execute(array(
+        ':tenant_id' => $tenantId
+    ));
+
+    $roleId = (int)$pdo->lastInsertId();
+
+    $passwordHash = password_hash(
+        $temporaryPassword,
+        PASSWORD_DEFAULT
+    );
+
+    if ($passwordHash === false) {
+        throw new RuntimeException(
+            'Unable to secure the tenant administrator password.'
+        );
+    }
+
+    $userStmt = $pdo->prepare("\n        INSERT INTO users (\n            tenant_id,\n            branch_id,\n            department_id,\n            role_id,\n            employee_code,\n            first_name,\n            last_name,\n            email,\n            phone,\n            alternate_phone,\n            password_hash,\n            avatar_path,\n            job_title,\n            labor_rate,\n            is_bookable,\n            is_field_worker,\n            is_tenant_admin,\n            status\n        ) VALUES (\n            :tenant_id,\n            NULL,\n            NULL,\n            :role_id,\n            NULL,\n            :first_name,\n            :last_name,\n            :email,\n            :phone,\n            NULL,\n            :password_hash,\n            NULL,\n            'Administrator',\n            NULL,\n            0,\n            0,\n            1,\n            'active'\n        )\n    ");
+
+    $userStmt->execute(array(
+        ':tenant_id' => $tenantId,
+        ':role_id' => $roleId,
+        ':first_name' => $firstName,
+        ':last_name' => $lastName,
+        ':email' => strtolower($email),
+        ':phone' => $phone,
+        ':password_hash' => $passwordHash
+    ));
+
+    return array(
+        'role_id' => $roleId,
+        'user_id' => (int)$pdo->lastInsertId(),
+        'name' => trim(
+            $firstName .
+            ($lastName !== null ? ' ' . $lastName : '')
+        ),
+        'email' => strtolower($email)
+    );
+}
+
+function tenantApiEnableAdministratorPlanPermissions(
+    PDO $pdo,
+    int $tenantId,
+    int $roleId,
+    int $planId
+): int {
+    if ($planId <= 0) {
+        return 0;
+    }
+
+    /*
+     * Keep the standard permission master complete for every plan-enabled
+     * sidebar module. This mirrors the Roles page standard actions.
+     */
+    $definitions = array(
+        array('view', '.view', 'View '),
+        array('create', '.create', 'Create in '),
+        array('update', '.update', 'Update '),
+        array('delete', '.delete', 'Delete/archive in '),
+        array('approve', '.approve', 'Approve in '),
+        array('export', '.export', 'Export from ')
+    );
+
+    $permissionStmt = $pdo->prepare("\n        INSERT IGNORE INTO permissions (\n            module_id,\n            action_code,\n            permission_code,\n            description\n        )\n        SELECT\n            m.id,\n            :action_code,\n            CONCAT(m.module_code, :permission_suffix),\n            CONCAT(:description_prefix, m.module_name)\n        FROM plan_modules pm\n        INNER JOIN modules m\n            ON m.id = pm.module_id\n        WHERE pm.plan_id = :plan_id\n          AND pm.is_enabled = 1\n          AND m.is_active = 1\n          AND m.is_sidebar_item = 1\n    ");
+
+    foreach ($definitions as $definition) {
+        $permissionStmt->execute(array(
+            ':action_code' => $definition[0],
+            ':permission_suffix' => $definition[1],
+            ':description_prefix' => $definition[2],
+            ':plan_id' => $planId
+        ));
+    }
+
+    /*
+     * Administrator receives every permission that exists for modules in
+     * the selected plan, including custom actions beyond the standard six.
+     */
+    $grantStmt = $pdo->prepare("\n        INSERT INTO role_permissions (\n            tenant_id,\n            role_id,\n            permission_id,\n            access_type\n        )\n        SELECT\n            :tenant_id,\n            :role_id,\n            p.id,\n            'allow'\n        FROM permissions p\n        INNER JOIN modules m\n            ON m.id = p.module_id\n        INNER JOIN plan_modules pm\n            ON pm.module_id = m.id\n           AND pm.plan_id = :plan_id\n           AND pm.is_enabled = 1\n        WHERE m.is_active = 1\n          AND m.is_sidebar_item = 1\n        ON DUPLICATE KEY UPDATE\n            access_type = 'allow'\n    ");
+
+    $grantStmt->execute(array(
+        ':tenant_id' => $tenantId,
+        ':role_id' => $roleId,
+        ':plan_id' => $planId
+    ));
+
+    $countStmt = $pdo->prepare("\n        SELECT COUNT(*)\n        FROM role_permissions rp\n        INNER JOIN permissions p\n            ON p.id = rp.permission_id\n        INNER JOIN modules m\n            ON m.id = p.module_id\n        INNER JOIN plan_modules pm\n            ON pm.module_id = m.id\n           AND pm.plan_id = :plan_id\n           AND pm.is_enabled = 1\n        WHERE rp.tenant_id = :tenant_id\n          AND rp.role_id = :role_id\n          AND rp.access_type = 'allow'\n          AND m.is_active = 1\n          AND m.is_sidebar_item = 1\n    ");
+
+    $countStmt->execute(array(
+        ':plan_id' => $planId,
+        ':tenant_id' => $tenantId,
+        ':role_id' => $roleId
+    ));
+
+    return (int)$countStmt->fetchColumn();
+}
+
+/*
+|--------------------------------------------------------------------------
 | SMTP / Welcome Email Helpers
 |--------------------------------------------------------------------------
 */
@@ -397,7 +609,8 @@ function tenantApiEscapeEmail(
 function tenantApiBuildWelcomeEmail(
     array $tenant,
     ?array $plan,
-    array $subscription
+    array $subscription,
+    array $admin
 ): array {
     $platformName = 'FieldPlx';
 
@@ -460,29 +673,18 @@ function tenantApiBuildWelcomeEmail(
             )
             : '';
 
-    $portalUrl = '';
+    $portalUrl = tenantApiBusinessLoginUrl();
 
-    if (
-        isset($_SERVER['HTTP_HOST']) &&
-        $_SERVER['HTTP_HOST'] !== ''
-    ) {
-        $scheme =
-            (
-                isset($_SERVER['HTTPS']) &&
-                $_SERVER['HTTPS'] !== '' &&
-                strtolower(
-                    (string) $_SERVER['HTTPS']
-                ) !== 'off'
-            )
-                ? 'https'
-                : 'http';
-
-        $portalUrl =
-            $scheme .
-            '://' .
-            $_SERVER['HTTP_HOST'] .
-            '/';
-    }
+    $adminName = trim(
+        (string)($admin['name'] ?? 'Administrator')
+    );
+    $adminEmail = strtolower(
+        trim((string)($admin['email'] ?? ''))
+    );
+    $temporaryPassword =
+        (string)($admin['temporary_password'] ?? '');
+    $permissionCount =
+        (int)($admin['permission_count'] ?? 0);
 
     $safeTenantName =
         tenantApiEscapeEmail($tenantName);
@@ -507,6 +709,15 @@ function tenantApiBuildWelcomeEmail(
 
     $safePortalUrl =
         tenantApiEscapeEmail($portalUrl);
+
+    $safeAdminName =
+        tenantApiEscapeEmail($adminName);
+    $safeAdminEmail =
+        tenantApiEscapeEmail($adminEmail);
+    $safeTemporaryPassword =
+        tenantApiEscapeEmail($temporaryPassword);
+    $safePermissionCount =
+        tenantApiEscapeEmail((string)$permissionCount);
 
     $subject =
         'Welcome to ' .
@@ -659,7 +870,7 @@ function tenantApiBuildWelcomeEmail(
         font-size:18px;
         font-weight:800;
     ">
-        Hello ' . $safeTenantName . ',
+        Hello ' . $safeAdminName . ',
     </div>
 
     <div style="
@@ -816,6 +1027,57 @@ function tenantApiBuildWelcomeEmail(
         </table>
     </div>
 
+    <div style="
+        margin-top:18px;
+        padding:18px;
+        border:1px solid #cfc2f7;
+        border-radius:12px;
+        background:#f7f3ff;
+    ">
+        <div style="
+            margin-bottom:10px;
+            color:#6d28d9;
+            font-size:12px;
+            font-weight:800;
+            text-transform:uppercase;
+            letter-spacing:.5px;
+        ">
+            Business Administrator Login
+        </div>
+
+        <table width="100%" cellpadding="0" cellspacing="0" border="0">
+            <tr>
+                <td style="padding:9px 0;color:#7c738d;font-size:13px;">Login Email</td>
+                <td style="padding:9px 0;color:#211c32;text-align:right;font-size:13px;font-weight:700;">
+                    ' . $safeAdminEmail . '
+                </td>
+            </tr>
+            <tr>
+                <td style="padding:9px 0;color:#7c738d;font-size:13px;">Tenant Code</td>
+                <td style="padding:9px 0;color:#211c32;text-align:right;font-size:13px;font-weight:700;">
+                    ' . $safeTenantCode . '
+                </td>
+            </tr>
+            <tr>
+                <td style="padding:9px 0;color:#7c738d;font-size:13px;">Temporary Password</td>
+                <td style="padding:9px 0;color:#211c32;text-align:right;font-size:14px;font-weight:800;letter-spacing:.5px;">
+                    ' . $safeTemporaryPassword . '
+                </td>
+            </tr>
+            <tr>
+                <td style="padding:9px 0;color:#7c738d;font-size:13px;">Permissions Enabled</td>
+                <td style="padding:9px 0;color:#211c32;text-align:right;font-size:13px;font-weight:700;">
+                    ' . $safePermissionCount . '
+                </td>
+            </tr>
+        </table>
+
+        <div style="margin-top:10px;color:#6f677d;font-size:12px;line-height:1.65;">
+            Use either the Tenant Code or Login Email with the temporary password.
+            Please change this password from My Profile after the first login.
+        </div>
+    </div>
+
     ' . $portalButton . '
 
     <div style="
@@ -831,10 +1093,10 @@ function tenantApiBuildWelcomeEmail(
             Next steps
         </strong>
         <br>
-        1. Configure your branches and departments.<br>
-        2. Create tenant users and assign roles.<br>
-        3. Add customers and service locations.<br>
-        4. Configure workflows, services and notifications.
+        1. Sign in using the administrator credentials above.<br>
+        2. Change the temporary password from My Profile.<br>
+        3. Configure branches, departments and employees.<br>
+        4. Add customers, services and operational workflows.
     </div>
 
     <div style="
@@ -858,7 +1120,7 @@ function tenantApiBuildWelcomeEmail(
     line-height:1.7;
 ">
     This is an automated message from FieldPlx.
-    Please do not share sensitive account information by email.
+    This email contains a temporary password; store it securely and change it after first login.
 </td>
 </tr>
 
@@ -881,12 +1143,17 @@ function tenantApiBuildWelcomeEmail(
         "Status: " . $status . "\n" .
         "Subscription Start: " . $startDate . "\n" .
         "Subscription Expiry: " . $expiryDate . "\n" .
+        "\nBusiness Administrator Login\n" .
+        "Login Email: " . $adminEmail . "\n" .
+        "Tenant Code: " . $tenantCode . "\n" .
+        "Temporary Password: " . $temporaryPassword . "\n" .
+        "Permissions Enabled: " . $permissionCount . "\n" .
         (
             $trialEndDate !== ''
                 ? "Trial End: " . $trialEndDate . "\n"
                 : ''
         ) .
-        "\nYou can now configure branches, users, roles, customers and workflows.\n";
+        "\nSign in and change the temporary password from My Profile, then configure your workspace.\n";
 
     if ($portalUrl !== '') {
         $text .=
@@ -907,7 +1174,8 @@ function tenantApiSendWelcomeEmail(
     string $recipient,
     array $tenant,
     ?array $plan,
-    array $subscription
+    array $subscription,
+    array $admin
 ): array {
     if (
         $recipient === '' ||
@@ -1086,16 +1354,15 @@ function tenantApiSendWelcomeEmail(
 
         $mail->addAddress(
             $recipient,
-            (string) $tenant[
-                'display_name'
-            ]
+            (string)($admin['name'] ?? $tenant['display_name'])
         );
 
         $template =
             tenantApiBuildWelcomeEmail(
                 $tenant,
                 $plan,
-                $subscription
+                $subscription,
+                $admin
             );
 
         $mail->isHTML(true);
@@ -1177,7 +1444,8 @@ $registrationNumber =
     tenantApiPost('registration_number');
 $taxNumber = tenantApiPost('tax_number');
 
-$email = tenantApiPost('email');
+$adminName = tenantApiPost('admin_name');
+$email = strtolower(tenantApiPost('email'));
 $phone = tenantApiPost('phone');
 $alternatePhone =
     tenantApiPost('alternate_phone');
@@ -1299,6 +1567,17 @@ if (
     );
 }
 
+if (
+    $adminName === '' ||
+    strlen($adminName) > 190
+) {
+    tenantApiResponse(
+        422,
+        false,
+        'Business administrator name is required and must be 190 characters or less.'
+    );
+}
+
 if ($countryId <= 0) {
     tenantApiResponse(
         422,
@@ -1355,7 +1634,7 @@ if (
 }
 
 if (
-    $email !== '' &&
+    $email === '' ||
     !filter_var(
         $email,
         FILTER_VALIDATE_EMAIL
@@ -1364,7 +1643,7 @@ if (
     tenantApiResponse(
         422,
         false,
-        'Enter a valid email address.'
+        'A valid business administrator email address is required.'
     );
 }
 
@@ -1550,6 +1829,9 @@ if ($duplicateStmt->fetchColumn()) {
 
 $logoPath = null;
 $invoiceLogoPath = null;
+$temporaryPassword = tenantApiGenerateTemporaryPassword(14);
+$administrator = null;
+$permissionCount = 0;
 
 try {
     $logoPath =
@@ -1706,6 +1988,28 @@ try {
     $tenantId =
         (int) $pdo->lastInsertId();
 
+    /*
+     * Every tenant receives one primary business administrator login.
+     * The plaintext temporary password exists only for this request/email;
+     * only its password_hash is stored in the users table.
+     */
+    $administrator = tenantApiCreateAdministrator(
+        $pdo,
+        $tenantId,
+        $adminName,
+        $email,
+        tenantApiNullable($phone),
+        $temporaryPassword
+    );
+
+    $permissionCount =
+        tenantApiEnableAdministratorPlanPermissions(
+            $pdo,
+            $tenantId,
+            (int)$administrator['role_id'],
+            $planId
+        );
+
     $subscriptionId = null;
 
     if (
@@ -1813,41 +2117,46 @@ try {
     |
     */
 
-    $emailResult = array(
-        'sent' => false,
-        'message' => 'Tenant email address was not provided.'
-    );
-
-    if ($email !== '') {
-        $emailResult =
-            tenantApiSendWelcomeEmail(
-                $pdo,
-                $email,
-                array(
-                    'tenant_id' =>
-                        $tenantId,
-                    'tenant_code' =>
-                        $tenantCode,
-                    'legal_name' =>
-                        $legalName,
-                    'display_name' =>
-                        $displayName,
-                    'status' =>
-                        $status
-                ),
-                $plan,
-                array(
-                    'subscription_id' =>
-                        $subscriptionId,
-                    'start_date' =>
-                        $subscriptionStart,
-                    'expiry_date' =>
-                        $subscriptionExpiry,
-                    'trial_end_date' =>
-                        $trialEndDate
-                )
-            );
-    }
+    $emailResult =
+        tenantApiSendWelcomeEmail(
+            $pdo,
+            $email,
+            array(
+                'tenant_id' =>
+                    $tenantId,
+                'tenant_code' =>
+                    $tenantCode,
+                'legal_name' =>
+                    $legalName,
+                'display_name' =>
+                    $displayName,
+                'status' =>
+                    $status
+            ),
+            $plan,
+            array(
+                'subscription_id' =>
+                    $subscriptionId,
+                'start_date' =>
+                    $subscriptionStart,
+                'expiry_date' =>
+                    $subscriptionExpiry,
+                'trial_end_date' =>
+                    $trialEndDate
+            ),
+            array(
+                'user_id' =>
+                    (int)$administrator['user_id'],
+                'name' =>
+                    (string)$administrator['name'],
+                'email' =>
+                    (string)$administrator['email'],
+                'temporary_password' =>
+                    $temporaryPassword,
+                'permission_count' =>
+                    $permissionCount
+            )
+        );
 
     /*
      * Rotate token after successful creation.
@@ -1858,17 +2167,15 @@ try {
     $successMessage =
         'Tenant created successfully.';
 
-    if ($email !== '') {
-        if ($emailResult['sent']) {
-            $successMessage .=
-                ' Welcome email sent to ' .
-                $email .
-                '.';
-        } else {
-            $successMessage .=
-                ' ' .
-                $emailResult['message'];
-        }
+    if ($emailResult['sent']) {
+        $successMessage .=
+            ' Administrator login created and welcome email sent to ' .
+            $email .
+            '.';
+    } else {
+        $successMessage .=
+            ' Administrator login was created, but ' .
+            $emailResult['message'];
     }
 
     tenantApiResponse(
@@ -1882,6 +2189,20 @@ try {
                 $tenantCode,
             'subscription_id' =>
                 $subscriptionId,
+            'admin_user_id' =>
+                (int)$administrator['user_id'],
+            'admin_role_id' =>
+                (int)$administrator['role_id'],
+            'admin_name' =>
+                (string)$administrator['name'],
+            'admin_login_id' =>
+                (string)$administrator['email'],
+            'temporary_password' =>
+                $temporaryPassword,
+            'permissions_enabled' =>
+                $permissionCount,
+            'login_url' =>
+                tenantApiBusinessLoginUrl(),
             'email_sent' =>
                 (bool) $emailResult['sent'],
             'email_message' =>

@@ -13,6 +13,356 @@ if (empty($_SESSION['quotations_csrf_token'])) {
 }
 
 $csrfToken = (string) $_SESSION['quotations_csrf_token'];
+
+/*
+|--------------------------------------------------------------------------
+| Quotations page statistics
+|--------------------------------------------------------------------------
+| Statistics are loaded directly on this page from the database.
+| No separate statistics API request is used.
+|--------------------------------------------------------------------------
+*/
+$quotationStats = array(
+  'draft' => 0,
+  'awaiting_response' => 0,
+  'changes_requested' => 0,
+  'approved' => 0,
+  'new_quotes_30' => 0,
+  'previous_new_quotes_30' => 0,
+  'converted_quote_cohort_30' => 0,
+  'conversion_rate_30' => 0.0,
+  'previous_conversion_rate_30' => 0.0,
+  'conversion_rate_change_percent' => 0.0,
+  'sent_30' => 0,
+  'previous_sent_30' => 0,
+  'sent_amount_30' => 0.0,
+  'previous_sent_amount_30' => 0.0,
+  'sent_change_percent' => 0.0,
+  'converted_30' => 0,
+  'previous_converted_30' => 0,
+  'converted_amount_30' => 0.0,
+  'previous_converted_amount_30' => 0.0,
+  'converted_change_percent' => 0.0,
+  'total_quotes' => 0
+);
+
+$quotationPeriods = array(
+  'previous_label' => '',
+  'current_label' => ''
+);
+
+$quotationConvertedQuotes = array();
+$quotationCurrency = array(
+  'currency_code' => 'INR',
+  'currency_name' => 'Indian Rupee',
+  'symbol' => '₹',
+  'symbol_position' => 'before',
+  'decimal_places' => 2,
+  'decimal_separator' => '.',
+  'thousand_separator' => ','
+);
+
+function quotationPercentChange($current, $previous)
+{
+  $current = (float) $current;
+  $previous = (float) $previous;
+
+  if (abs($previous) < 0.0000001) {
+    return $current > 0 ? 100.0 : 0.0;
+  }
+
+  return (($current - $previous) / abs($previous)) * 100.0;
+}
+
+function quotationMoney($value, $currency)
+{
+  $amount = (float) $value;
+  $places = isset($currency['decimal_places']) ? (int) $currency['decimal_places'] : 2;
+  $decimalSeparator = isset($currency['decimal_separator']) && $currency['decimal_separator'] !== ''
+    ? (string) $currency['decimal_separator']
+    : '.';
+  $thousandSeparator = isset($currency['thousand_separator'])
+    ? (string) $currency['thousand_separator']
+    : ',';
+  $symbol = isset($currency['symbol']) ? (string) $currency['symbol'] : '';
+  $formatted = number_format($amount, $places, $decimalSeparator, $thousandSeparator);
+
+  if (isset($currency['symbol_position']) && $currency['symbol_position'] === 'after') {
+    return $formatted . ($symbol !== '' ? ' ' . $symbol : '');
+  }
+
+  return $symbol . $formatted;
+}
+
+function quotationTrendClass($value)
+{
+  $value = (float) $value;
+  if ($value > 0) {
+    return ' up';
+  }
+  if ($value < 0) {
+    return ' down';
+  }
+  return '';
+}
+
+function quotationTrendText($value)
+{
+  $value = (float) $value;
+  $prefix = $value > 0 ? '↑ ' : ($value < 0 ? '↓ ' : '');
+  return $prefix . number_format(abs($value), 0) . '%';
+}
+
+try {
+  $tenantId = isset($_SESSION['tenant_id']) ? (int) $_SESSION['tenant_id'] : 0;
+  $branchId = isset($_SESSION['branch_id']) ? (int) $_SESSION['branch_id'] : 0;
+
+  if ((!isset($pdo) || !($pdo instanceof PDO)) && isset($db) && $db instanceof PDO) {
+    $pdo = $db;
+  }
+
+  if ($tenantId > 0 && isset($pdo) && $pdo instanceof PDO) {
+    $currencyStmt = $pdo->prepare(
+      "SELECT
+          c.currency_code,
+          c.currency_name,
+          c.symbol,
+          c.symbol_position,
+          c.decimal_places,
+          c.decimal_separator,
+          c.thousand_separator
+       FROM tenants t
+       LEFT JOIN branches b
+         ON b.id = :branch_id
+        AND b.tenant_id = t.id
+       LEFT JOIN currencies c
+         ON c.id = COALESCE(b.currency_id, t.currency_id)
+       WHERE t.id = :tenant_id
+       LIMIT 1"
+    );
+    $currencyStmt->execute(array(
+      ':branch_id' => $branchId > 0 ? $branchId : -1,
+      ':tenant_id' => $tenantId
+    ));
+    $currencyRow = $currencyStmt->fetch(PDO::FETCH_ASSOC);
+    if ($currencyRow && !empty($currencyRow['currency_code'])) {
+      $quotationCurrency = $currencyRow;
+      $quotationCurrency['decimal_places'] = (int) $quotationCurrency['decimal_places'];
+    }
+
+    $currentStart = date('Y-m-d', strtotime('-29 days'));
+    $currentEnd = date('Y-m-d');
+    $previousStart = date('Y-m-d', strtotime('-59 days'));
+    $previousEnd = date('Y-m-d', strtotime('-30 days'));
+
+    $quotationPeriods['previous_label'] = date('M j', strtotime($previousStart)) . ' - ' . date('M j', strtotime($previousEnd));
+    $quotationPeriods['current_label'] = date('M j', strtotime($currentStart)) . ' - ' . date('M j', strtotime($currentEnd));
+
+    $overviewStmt = $pdo->prepare(
+      "SELECT
+          COUNT(*) AS total_quotes,
+          SUM(status = 'draft') AS draft,
+          SUM(status IN ('sent','viewed')) AS awaiting_response,
+          SUM(status = 'changes_requested') AS changes_requested,
+          SUM(status = 'approved') AS approved
+       FROM quotes
+       WHERE tenant_id = :tenant_id"
+    );
+    $overviewStmt->execute(array(':tenant_id' => $tenantId));
+    $overview = $overviewStmt->fetch(PDO::FETCH_ASSOC) ?: array();
+
+    $quotePeriodStmt = $pdo->prepare(
+      "SELECT
+          SUM(DATE(created_at) BETWEEN :current_start AND :current_end) AS new_quotes_30,
+          SUM(DATE(created_at) BETWEEN :previous_start AND :previous_end) AS previous_new_quotes_30
+       FROM quotes
+       WHERE tenant_id = :tenant_id"
+    );
+    $quotePeriodStmt->execute(array(
+      ':current_start' => $currentStart,
+      ':current_end' => $currentEnd,
+      ':previous_start' => $previousStart,
+      ':previous_end' => $previousEnd,
+      ':tenant_id' => $tenantId
+    ));
+    $quotePeriods = $quotePeriodStmt->fetch(PDO::FETCH_ASSOC) ?: array();
+
+    $sentStmt = $pdo->prepare(
+      "SELECT
+          SUM(sent_at IS NOT NULL AND DATE(sent_at) BETWEEN :current_start AND :current_end) AS sent_30,
+          SUM(CASE WHEN sent_at IS NOT NULL AND DATE(sent_at) BETWEEN :current_start2 AND :current_end2 THEN total ELSE 0 END) AS sent_amount_30,
+          SUM(sent_at IS NOT NULL AND DATE(sent_at) BETWEEN :previous_start AND :previous_end) AS previous_sent_30,
+          SUM(CASE WHEN sent_at IS NOT NULL AND DATE(sent_at) BETWEEN :previous_start2 AND :previous_end2 THEN total ELSE 0 END) AS previous_sent_amount_30
+       FROM quotes
+       WHERE tenant_id = :tenant_id"
+    );
+    $sentStmt->execute(array(
+      ':current_start' => $currentStart,
+      ':current_end' => $currentEnd,
+      ':current_start2' => $currentStart,
+      ':current_end2' => $currentEnd,
+      ':previous_start' => $previousStart,
+      ':previous_end' => $previousEnd,
+      ':previous_start2' => $previousStart,
+      ':previous_end2' => $previousEnd,
+      ':tenant_id' => $tenantId
+    ));
+    $sent = $sentStmt->fetch(PDO::FETCH_ASSOC) ?: array();
+
+    $convertedCurrentStmt = $pdo->prepare(
+      "SELECT
+          COUNT(*) AS converted_30,
+          COALESCE(SUM(q.total), 0) AS converted_amount_30
+       FROM quotes q
+       WHERE q.tenant_id = :tenant_id
+         AND EXISTS (
+           SELECT 1
+           FROM jobs j
+           WHERE j.tenant_id = q.tenant_id
+             AND j.quote_id = q.id
+             AND j.deleted_at IS NULL
+             AND j.status NOT IN ('cancelled','archived')
+             AND DATE(j.created_at) BETWEEN :start_date AND :end_date
+         )"
+    );
+    $convertedCurrentStmt->execute(array(
+      ':tenant_id' => $tenantId,
+      ':start_date' => $currentStart,
+      ':end_date' => $currentEnd
+    ));
+    $convertedCurrent = $convertedCurrentStmt->fetch(PDO::FETCH_ASSOC) ?: array();
+
+    $convertedPreviousStmt = $pdo->prepare(
+      "SELECT
+          COUNT(*) AS converted_30,
+          COALESCE(SUM(q.total), 0) AS converted_amount_30
+       FROM quotes q
+       WHERE q.tenant_id = :tenant_id
+         AND EXISTS (
+           SELECT 1
+           FROM jobs j
+           WHERE j.tenant_id = q.tenant_id
+             AND j.quote_id = q.id
+             AND j.deleted_at IS NULL
+             AND j.status NOT IN ('cancelled','archived')
+             AND DATE(j.created_at) BETWEEN :start_date AND :end_date
+         )"
+    );
+    $convertedPreviousStmt->execute(array(
+      ':tenant_id' => $tenantId,
+      ':start_date' => $previousStart,
+      ':end_date' => $previousEnd
+    ));
+    $convertedPrevious = $convertedPreviousStmt->fetch(PDO::FETCH_ASSOC) ?: array();
+
+    $cohortCurrentStmt = $pdo->prepare(
+      "SELECT COUNT(*)
+       FROM quotes q
+       WHERE q.tenant_id = :tenant_id
+         AND DATE(q.created_at) BETWEEN :start_date AND :end_date
+         AND EXISTS (
+           SELECT 1
+           FROM jobs j
+           WHERE j.tenant_id = q.tenant_id
+             AND j.quote_id = q.id
+             AND j.deleted_at IS NULL
+             AND j.status NOT IN ('cancelled','archived')
+         )"
+    );
+    $cohortCurrentStmt->execute(array(
+      ':tenant_id' => $tenantId,
+      ':start_date' => $currentStart,
+      ':end_date' => $currentEnd
+    ));
+    $convertedQuoteCohort30 = (int) $cohortCurrentStmt->fetchColumn();
+
+    $cohortPreviousStmt = $pdo->prepare(
+      "SELECT COUNT(*)
+       FROM quotes q
+       WHERE q.tenant_id = :tenant_id
+         AND DATE(q.created_at) BETWEEN :start_date AND :end_date
+         AND EXISTS (
+           SELECT 1
+           FROM jobs j
+           WHERE j.tenant_id = q.tenant_id
+             AND j.quote_id = q.id
+             AND j.deleted_at IS NULL
+             AND j.status NOT IN ('cancelled','archived')
+         )"
+    );
+    $cohortPreviousStmt->execute(array(
+      ':tenant_id' => $tenantId,
+      ':start_date' => $previousStart,
+      ':end_date' => $previousEnd
+    ));
+    $convertedQuoteCohortPrevious = (int) $cohortPreviousStmt->fetchColumn();
+
+    $newQuotes30 = isset($quotePeriods['new_quotes_30']) ? (int) $quotePeriods['new_quotes_30'] : 0;
+    $previousNewQuotes30 = isset($quotePeriods['previous_new_quotes_30']) ? (int) $quotePeriods['previous_new_quotes_30'] : 0;
+    $conversionRate30 = $newQuotes30 > 0 ? ($convertedQuoteCohort30 / $newQuotes30) * 100.0 : 0.0;
+    $previousConversionRate30 = $previousNewQuotes30 > 0 ? ($convertedQuoteCohortPrevious / $previousNewQuotes30) * 100.0 : 0.0;
+    $sent30 = isset($sent['sent_30']) ? (int) $sent['sent_30'] : 0;
+    $previousSent30 = isset($sent['previous_sent_30']) ? (int) $sent['previous_sent_30'] : 0;
+    $converted30 = isset($convertedCurrent['converted_30']) ? (int) $convertedCurrent['converted_30'] : 0;
+    $previousConverted30 = isset($convertedPrevious['converted_30']) ? (int) $convertedPrevious['converted_30'] : 0;
+
+    $quotationStats = array(
+      'draft' => isset($overview['draft']) ? (int) $overview['draft'] : 0,
+      'awaiting_response' => isset($overview['awaiting_response']) ? (int) $overview['awaiting_response'] : 0,
+      'changes_requested' => isset($overview['changes_requested']) ? (int) $overview['changes_requested'] : 0,
+      'approved' => isset($overview['approved']) ? (int) $overview['approved'] : 0,
+      'new_quotes_30' => $newQuotes30,
+      'previous_new_quotes_30' => $previousNewQuotes30,
+      'converted_quote_cohort_30' => $convertedQuoteCohort30,
+      'conversion_rate_30' => round($conversionRate30, 2),
+      'previous_conversion_rate_30' => round($previousConversionRate30, 2),
+      'conversion_rate_change_percent' => round(quotationPercentChange($conversionRate30, $previousConversionRate30), 2),
+      'sent_30' => $sent30,
+      'previous_sent_30' => $previousSent30,
+      'sent_amount_30' => isset($sent['sent_amount_30']) ? (float) $sent['sent_amount_30'] : 0.0,
+      'previous_sent_amount_30' => isset($sent['previous_sent_amount_30']) ? (float) $sent['previous_sent_amount_30'] : 0.0,
+      'sent_change_percent' => round(quotationPercentChange($sent30, $previousSent30), 2),
+      'converted_30' => $converted30,
+      'previous_converted_30' => $previousConverted30,
+      'converted_amount_30' => isset($convertedCurrent['converted_amount_30']) ? (float) $convertedCurrent['converted_amount_30'] : 0.0,
+      'previous_converted_amount_30' => isset($convertedPrevious['converted_amount_30']) ? (float) $convertedPrevious['converted_amount_30'] : 0.0,
+      'converted_change_percent' => round(quotationPercentChange($converted30, $previousConverted30), 2),
+      'total_quotes' => isset($overview['total_quotes']) ? (int) $overview['total_quotes'] : 0
+    );
+
+    $convertedListStmt = $pdo->prepare(
+      "SELECT
+          q.id AS quote_id,
+          q.quote_no,
+          q.title AS quote_title,
+          c.display_name AS client_name,
+          MIN(j.id) AS job_id,
+          SUBSTRING_INDEX(GROUP_CONCAT(j.job_no ORDER BY j.created_at ASC, j.id ASC SEPARATOR '||'), '||', 1) AS job_no
+       FROM quotes q
+       INNER JOIN clients c
+         ON c.id = q.client_id
+        AND c.tenant_id = q.tenant_id
+       INNER JOIN jobs j
+         ON j.quote_id = q.id
+        AND j.tenant_id = q.tenant_id
+        AND j.deleted_at IS NULL
+        AND j.status NOT IN ('cancelled','archived')
+       WHERE q.tenant_id = :tenant_id
+         AND DATE(q.created_at) BETWEEN :start_date AND :end_date
+       GROUP BY q.id, q.quote_no, q.title, c.display_name
+       ORDER BY q.created_at DESC, q.id DESC
+       LIMIT 20"
+    );
+    $convertedListStmt->execute(array(
+      ':tenant_id' => $tenantId,
+      ':start_date' => $currentStart,
+      ':end_date' => $currentEnd
+    ));
+    $quotationConvertedQuotes = $convertedListStmt->fetchAll(PDO::FETCH_ASSOC);
+  }
+} catch (Throwable $e) {
+  error_log('FieldPlx quotations page stats error: ' . $e->getMessage());
+}
 ?>
 
 <!DOCTYPE html>
@@ -5690,48 +6040,84 @@ $csrfToken = (string) $_SESSION['quotations_csrf_token'];
       margin-bottom: 16px
     }
 
+    .fq-summary > div { display:flex; }
+    .fq-summary .fq-stat { width:100%; }
+
     .fq-stat {
-      min-height: 112px;
-      padding: 18px 20px;
+      position: relative;
+      min-height: 120px;
+      height: 120px;
+      padding: 14px 20px;
       border: 1px solid #dfe6ef;
       border-radius: 12px;
       background: #fff;
       box-shadow: 0 3px 12px rgba(24, 45, 76, .035)
     }
+    .fq-stat-heading{display:flex;align-items:center;gap:7px;color:#506784;font-size:13px;line-height:1.2;font-weight:400}
+    .fq-stat-sub{display:block;min-height:13px;margin-top:2px;color:#98a3b2;font-size:9px;line-height:1.25;font-weight:400}
+    .fq-overview-card{padding:10px 18px}
+    .fq-overview-card .fq-stat-heading{color:#0b1933;font-weight:700}
+    .fq-overview-list{margin:4px 0 0;padding:0;display:grid;grid-template-columns:1fr;row-gap:0;list-style:none}
+    .fq-overview-list li{min-height:11px;display:flex;align-items:center;gap:6px;min-width:0;color:#42556f;font-size:8.1px;line-height:1.1}
+    .fq-overview-list li span:nth-child(2){min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .fq-overview-list strong{margin-left:auto;color:#0b1933;font-size:8.7px;font-weight:700}
+    .fq-overview-dot{width:6px;height:6px;flex:0 0 6px;border-radius:50%;background:#5b9ee6}
+    .fq-overview-dot.blue{background:#42a5e8}.fq-overview-dot.navy{background:#123d70}.fq-overview-dot.green{background:#5d971b}.fq-overview-dot.lime{background:#96c945}.fq-overview-dot.orange{background:#d6aa2c}.fq-overview-dot.red{background:#e45b66}.fq-overview-dot.gray{background:#98a3b3}.fq-overview-dot.purple{background:#7f72c7}.fq-overview-dot.teal{background:#3d9d91}
+    .fq-metric-card{display:flex;align-items:center;gap:18px}
+    .fq-metric-icon{width:58px;height:58px;flex:0 0 58px;display:grid;place-items:center;border-radius:16px;color:#fff;background:#123f73;font-size:25px}
+    .fq-metric-content{min-width:0;flex:1;display:flex;flex-direction:column;justify-content:center}
+    .fq-metric-body{margin-top:3px;display:flex;align-items:flex-end}
+    .fq-metric-line{display:flex;align-items:baseline;gap:8px}
+    .fq-metric-value{color:#020b16;font-size:31px;line-height:1;font-weight:700;letter-spacing:-.5px}
+    .fq-four-card{position:relative;display:flex;flex-direction:column;justify-content:flex-start;overflow:hidden}
+    .fq-four-card .fq-stat-heading{color:#0b1933;font-size:14px;font-weight:700}
+    .fq-four-card .fq-stat-sub{font-size:10px;color:#718096}
+    .fq-four-card .fq-metric-body{margin-top:auto;padding-top:10px;display:block}
+    .fq-four-card .fq-metric-value{font-size:28px}
+    .fq-four-card .fq-metric-line{position:static;align-items:center}
+    .fq-four-card .fq-stat-corner{position:absolute;top:14px;right:15px;color:#52627a;font-size:13px;line-height:1}
+    .fq-stat-amount{display:block;margin-top:5px;color:#52627a;font-size:10px;line-height:1.2}
+    .fq-overview-list.four{margin-top:7px;row-gap:3px}
+    .fq-overview-list.four li{min-height:14px;font-size:9px}
+    .fq-overview-list.four strong{font-size:9px}
+    /* Keep the 30-day comparison tooltip fully inside each stat card. */
+    .fq-four-card .fq-trend-tooltip{left:auto;right:14px;top:8px;bottom:auto;width:210px;max-width:calc(100% - 28px);transform:translateY(5px)}
+    .fq-four-card .fq-trend-tooltip::after{left:auto;right:34px;bottom:-6px;transform:rotate(45deg)}
+    .fq-four-card .fq-trend:hover .fq-trend-tooltip,.fq-four-card .fq-trend:focus .fq-trend-tooltip,.fq-four-card .fq-trend:focus-visible .fq-trend-tooltip{transform:translateY(0)}
+    @media(max-width:1199.98px){.fq-four-card .fq-trend-tooltip{right:12px;max-width:calc(100% - 24px)}}
+    @media(max-width:575.98px){.fq-four-card{min-height:120px!important;height:120px!important}.fq-four-card .fq-metric-body{padding-top:8px}}
+    .fq-trend{min-height:20px;padding:3px 7px;display:inline-flex;align-items:center;justify-content:center;border-radius:999px;color:#66758a;background:#eef2f6;font-size:9px;line-height:1;font-weight:700;cursor:help}
+    .fq-trend.up{color:#4e8617;background:#eef7e6}.fq-trend.down{color:#b9444d;background:#fff0f1}
+    .fq-trend-tooltip{width:210px;position:absolute;left:50%;top:8px;bottom:auto;z-index:180;padding:10px 12px;border:1px solid #e5eaf1;border-radius:10px;background:#fff;box-shadow:0 12px 28px rgba(0,17,49,.15);color:#33445f;opacity:0;visibility:hidden;transform:translate(-50%,5px);pointer-events:none;transition:.16s ease}
+    .fq-trend-tooltip::after{position:absolute;left:50%;bottom:-6px;width:11px;height:11px;border-right:1px solid #e5eaf1;border-bottom:1px solid #e5eaf1;background:#fff;content:"";transform:translateX(-50%) rotate(45deg)}
+    .fq-trend:hover .fq-trend-tooltip,.fq-trend:focus .fq-trend-tooltip,.fq-trend:focus-visible .fq-trend-tooltip{opacity:1;visibility:visible;transform:translate(-50%,0)}
+    .fq-trend-tooltip-title{display:block;margin-bottom:7px;color:#506784;font-size:9px;font-weight:700;text-align:left}
+    .fq-trend-tooltip-row{display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:19px;color:#52627a;font-size:9px;font-weight:400;white-space:nowrap}
+    .fq-trend-tooltip-row strong{color:#0b1933;font-size:9px;font-weight:700}
+    .fq-stat-info{width:17px;height:17px;padding:0;display:inline-grid;place-items:center;border:0;border-radius:50%;color:#6f7b90;background:transparent;cursor:pointer;font-size:12px}
+    .fq-stat-info:hover,.fq-stat-info:focus{color:#123d70;background:#eef3f8;outline:0}
+    .fq-stat-popup{width:min(390px,calc(100vw - 32px));position:absolute;top:58px;right:16px;z-index:120;display:none;overflow:hidden;border:1px solid #dfe6ef;border-radius:10px;background:#fff;box-shadow:0 16px 38px rgba(0,17,49,.16)}
+    .fq-stat-popup.show{display:block}
+    .fq-stat-popup-head{padding:11px 12px;border-bottom:1px solid #edf1f5;background:#fbfcfd}
+    .fq-stat-popup-head strong{display:block;color:#0b1933;font-size:10.5px}.fq-stat-popup-head small{display:block;margin-top:3px;color:#7d899b;font-size:8.5px;line-height:1.4}
+    .fq-stat-popup-summary{padding:10px 12px;display:grid;grid-template-columns:repeat(3,1fr);gap:7px;border-bottom:1px solid #edf1f5}
+    .fq-stat-popup-summary div{padding:8px;border-radius:7px;background:#f7f9fb}.fq-stat-popup-summary span,.fq-stat-popup-summary strong{display:block}.fq-stat-popup-summary span{color:#8190a4;font-size:7.8px}.fq-stat-popup-summary strong{margin-top:3px;color:#0b1933;font-size:13px}
+    .fq-converted-list{max-height:210px;overflow:auto;padding:5px 0}.fq-converted-row{padding:8px 12px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:10px;border-bottom:1px solid #f2f4f7}.fq-converted-row:last-child{border-bottom:0}.fq-converted-row strong,.fq-converted-row small{display:block}.fq-converted-row strong{color:#20324a;font-size:9px}.fq-converted-row small{margin-top:2px;color:#8995a7;font-size:8px}.fq-converted-job{align-self:center;color:#5d971b;font-size:8.5px;font-weight:700;white-space:nowrap}.fq-popup-empty{padding:18px 12px;color:#8995a7;font-size:9px;text-align:center}
+    @media(max-width:1199.98px){.fq-stat{min-height:120px;height:120px}.fq-overview-list{grid-template-columns:1fr}}
+    @media(max-width:767.98px){.fq-stat{min-height:112px;height:112px;padding:13px 17px}.fq-metric-card{gap:15px}.fq-metric-icon{width:54px;height:54px;flex-basis:54px;border-radius:15px;font-size:24px}.fq-metric-value{font-size:29px}.fq-overview-card{height:auto;min-height:120px;padding:10px 17px}.fq-overview-list{grid-template-columns:1fr}.fq-stat-popup{right:8px;left:8px;width:auto}.fq-trend-tooltip{top:7px;width:min(210px,calc(100% - 24px))}}
+    @media(max-width:767.98px){.fq-four-card .fq-trend-tooltip{left:12px;right:12px;top:7px;width:auto;max-width:none}}
+    @media(max-width:575.98px){.fq-overview-card{min-height:120px}.fq-overview-list{grid-template-columns:1fr}.fq-overview-list li{min-height:11px}}
 
-    .fq-stat-row {
-      min-height: 72px;
-      display: flex;
-      align-items: center;
-      gap: 18px
-    }
-
-    .fq-stat-icon {
-      width: 58px;
-      height: 58px;
-      flex: 0 0 58px;
-      display: grid;
-      place-items: center;
-      border-radius: 16px;
-      background: #123f73;
-      color: #fff;
-      font-size: 25px
-    }
-
-    .fq-stat-label {
-      display: block;
-      margin-bottom: 8px;
-      color: #506784;
-      font-size: 13px
-    }
-
-    .fq-stat-value {
-      display: block;
-      color: #020b16;
-      font-size: 31px;
-      line-height: 1;
-      font-weight: 700
-    }
+    .fq-empty-onboarding{display:none;min-height:440px;align-items:center;justify-content:center;padding:45px 18px 70px;text-align:center}
+    .fq-empty-onboarding.show{display:flex}
+    .fq-empty-inner{width:min(560px,100%);margin:auto}
+    .fq-empty-inner h2{margin:0;color:#0b1933;font-size:25px;line-height:1.2;font-weight:700}
+    .fq-empty-inner p{max-width:500px;margin:12px auto 25px;color:#63758c;font-size:12px;line-height:1.55}
+    .fq-empty-create-card{width:210px;height:202px;margin:0 auto;padding:20px 16px;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;border:1px solid #dfe6ef;border-radius:10px;color:#0b1933;background:#fff;box-shadow:0 4px 16px rgba(24,45,76,.045);text-decoration:none;transition:.18s ease}
+    .fq-empty-create-card:hover{border-color:#bcd996;color:#0b1933;background:#fbfdf8;transform:translateY(-2px);box-shadow:0 10px 24px rgba(24,45,76,.08)}
+    .fq-empty-create-card strong{display:block;font-size:14px;font-weight:700}
+    .fq-empty-plus{width:52px;height:52px;margin-top:43px;display:grid;place-items:center;border-radius:50%;color:#fff;background:linear-gradient(135deg,#7fc92d,#5d971b);font-size:27px;line-height:1}
+    @media(max-width:575.98px){.fq-empty-onboarding{min-height:360px;padding:35px 12px 55px}.fq-empty-inner h2{font-size:21px}.fq-empty-inner p{font-size:11px}.fq-empty-create-card{width:190px;height:185px}.fq-empty-plus{margin-top:36px}}
 
     .fq-card {
       overflow: hidden
@@ -6061,36 +6447,97 @@ $csrfToken = (string) $_SESSION['quotations_csrf_token'];
                   class="bi bi-arrow-clockwise"></i> Refresh</button><a class="fq-btn primary"
                 href="add-quotation"><i class="bi bi-plus-lg"></i> Add Quotation</a></div>
           </section>
+          <div id="quotationDataView">
           <section class="row g-3 fq-summary">
-            <div class="col-xl-3 col-6">
-              <article class="fq-stat">
-                <div class="fq-stat-row"><span class="fq-stat-icon"><i class="bi bi-receipt"></i></span>
-                  <div><span class="fq-stat-label">Total Quotes</span><strong class="fq-stat-value"
-                      id="statTotal">0</strong></div>
-                </div>
+            <div class="col-xl-3 col-md-6">
+              <article class="fq-stat fq-overview-card fq-four-card">
+                <div class="fq-stat-heading">Overview</div>
+                <ul class="fq-overview-list four">
+                  <li><span class="fq-overview-dot gray"></span><span>Draft</span><strong id="statDraft"><?= (int) $quotationStats['draft'] ?></strong></li>
+                  <li><span class="fq-overview-dot orange"></span><span>Awaiting response</span><strong id="statAwaitingResponse"><?= (int) $quotationStats['awaiting_response'] ?></strong></li>
+                  <li><span class="fq-overview-dot red"></span><span>Changes requested</span><strong id="statChangesRequested"><?= (int) $quotationStats['changes_requested'] ?></strong></li>
+                  <li><span class="fq-overview-dot green"></span><span>Approved</span><strong id="statApproved"><?= (int) $quotationStats['approved'] ?></strong></li>
+                </ul>
               </article>
             </div>
-            <div class="col-xl-3 col-6">
-              <article class="fq-stat">
-                <div class="fq-stat-row"><span class="fq-stat-icon"><i class="bi bi-pencil-square"></i></span>
-                  <div><span class="fq-stat-label">Draft</span><strong class="fq-stat-value" id="statDraft">0</strong>
+
+            <div class="col-xl-3 col-md-6">
+              <article class="fq-stat fq-four-card" id="conversionCard">
+                <span class="fq-stat-corner"><i class="bi bi-arrow-up-right"></i></span>
+                <div class="fq-stat-heading">Conversion rate <button type="button" class="fq-stat-info" id="conversionInfoButton" aria-label="Show quotation conversion details"><i class="bi bi-info-circle"></i></button></div>
+                <span class="fq-stat-sub">Past 30 days</span>
+                <div class="fq-metric-body">
+                  <div class="fq-metric-line">
+                    <strong class="fq-metric-value" id="statConversionRate"><?= number_format((float) $quotationStats['conversion_rate_30'], 0) ?>%</strong>
+                    <span class="fq-trend<?= quotationTrendClass($quotationStats['conversion_rate_change_percent']) ?>" id="conversionTrend" tabindex="0"><?= htmlspecialchars(quotationTrendText($quotationStats['conversion_rate_change_percent']), ENT_QUOTES, 'UTF-8') ?>
+                      <span class="fq-trend-tooltip">
+                        <span class="fq-trend-tooltip-title">Conversion rate</span>
+                        <span class="fq-trend-tooltip-row"><span id="conversionPriorLabel"><?= htmlspecialchars($quotationPeriods['previous_label'], ENT_QUOTES, 'UTF-8') ?></span><strong id="conversionPriorCount"><?= number_format((float) $quotationStats['previous_conversion_rate_30'], 0) ?>%</strong></span>
+                        <span class="fq-trend-tooltip-row"><span id="conversionCurrentLabel"><?= htmlspecialchars($quotationPeriods['current_label'], ENT_QUOTES, 'UTF-8') ?></span><strong id="conversionCurrentCount"><?= number_format((float) $quotationStats['conversion_rate_30'], 0) ?>%</strong></span>
+                      </span>
+                    </span>
+                  </div>
+                </div>
+                <div class="fq-stat-popup" id="conversionPopup">
+                  <div class="fq-stat-popup-head"><strong>Quotation → Job Card conversion</strong><small>Uses actual Job Cards linked through jobs.quote_id.</small></div>
+                  <div class="fq-stat-popup-summary"><div><span>New quotes</span><strong id="popupQuoteCount"><?= (int) $quotationStats['new_quotes_30'] ?></strong></div><div><span>Converted</span><strong id="popupConvertedCount"><?= (int) $quotationStats['converted_quote_cohort_30'] ?></strong></div><div><span>Rate</span><strong id="popupConversionRate"><?= number_format((float) $quotationStats['conversion_rate_30'], 1) ?>%</strong></div></div>
+                  <div class="fq-converted-list" id="convertedQuoteList">
+                    <?php if (empty($quotationConvertedQuotes)): ?>
+                      <div class="fq-popup-empty">No quotations created in the past 30 days have been converted to a Job Card.</div>
+                    <?php else: ?>
+                      <?php foreach ($quotationConvertedQuotes as $convertedQuote): ?>
+                        <div class="fq-converted-row">
+                          <div>
+                            <strong><?= htmlspecialchars(($convertedQuote['quote_no'] ?: 'Quotation') . ' · ' . ($convertedQuote['client_name'] ?: '-'), ENT_QUOTES, 'UTF-8') ?></strong>
+                            <small><?= htmlspecialchars($convertedQuote['quote_title'] ?: '-', ENT_QUOTES, 'UTF-8') ?></small>
+                          </div>
+                          <span class="fq-converted-job"><?= htmlspecialchars($convertedQuote['job_no'] ?: ('Job #' . (int) $convertedQuote['job_id']), ENT_QUOTES, 'UTF-8') ?></span>
+                        </div>
+                      <?php endforeach; ?>
+                    <?php endif; ?>
                   </div>
                 </div>
               </article>
             </div>
-            <div class="col-xl-3 col-6">
-              <article class="fq-stat">
-                <div class="fq-stat-row"><span class="fq-stat-icon"><i class="bi bi-send"></i></span>
-                  <div><span class="fq-stat-label">Sent / Viewed</span><strong class="fq-stat-value"
-                      id="statSent">0</strong></div>
+
+            <div class="col-xl-3 col-md-6">
+              <article class="fq-stat fq-four-card">
+                <span class="fq-stat-corner"><i class="bi bi-arrow-up-right"></i></span>
+                <div class="fq-stat-heading">Sent</div>
+                <span class="fq-stat-sub">Past 30 days</span>
+                <div class="fq-metric-body">
+                  <div class="fq-metric-line">
+                    <strong class="fq-metric-value" id="statSent30"><?= (int) $quotationStats['sent_30'] ?></strong>
+                    <span class="fq-trend<?= quotationTrendClass($quotationStats['sent_change_percent']) ?>" id="sentTrend" tabindex="0"><?= htmlspecialchars(quotationTrendText($quotationStats['sent_change_percent']), ENT_QUOTES, 'UTF-8') ?>
+                      <span class="fq-trend-tooltip">
+                        <span class="fq-trend-tooltip-title">Sent</span>
+                        <span class="fq-trend-tooltip-row"><span id="sentPriorLabel"><?= htmlspecialchars($quotationPeriods['previous_label'], ENT_QUOTES, 'UTF-8') ?></span><strong id="sentPriorCount"><?= (int) $quotationStats['previous_sent_30'] ?></strong></span>
+                        <span class="fq-trend-tooltip-row"><span id="sentCurrentLabel"><?= htmlspecialchars($quotationPeriods['current_label'], ENT_QUOTES, 'UTF-8') ?></span><strong id="sentCurrentCount"><?= (int) $quotationStats['sent_30'] ?></strong></span>
+                      </span>
+                    </span>
+                  </div>
+                  <span class="fq-stat-amount" id="statSentAmount"><?= htmlspecialchars(quotationMoney($quotationStats['sent_amount_30'], $quotationCurrency), ENT_QUOTES, 'UTF-8') ?></span>
                 </div>
               </article>
             </div>
-            <div class="col-xl-3 col-6">
-              <article class="fq-stat">
-                <div class="fq-stat-row"><span class="fq-stat-icon"><i class="bi bi-check2-circle"></i></span>
-                  <div><span class="fq-stat-label">Approved</span><strong class="fq-stat-value"
-                      id="statApproved">0</strong></div>
+
+            <div class="col-xl-3 col-md-6">
+              <article class="fq-stat fq-four-card">
+                <span class="fq-stat-corner"><i class="bi bi-arrow-up-right"></i></span>
+                <div class="fq-stat-heading">Converted</div>
+                <span class="fq-stat-sub">Past 30 days</span>
+                <div class="fq-metric-body">
+                  <div class="fq-metric-line">
+                    <strong class="fq-metric-value" id="statConverted30"><?= (int) $quotationStats['converted_30'] ?></strong>
+                    <span class="fq-trend<?= quotationTrendClass($quotationStats['converted_change_percent']) ?>" id="convertedTrend" tabindex="0"><?= htmlspecialchars(quotationTrendText($quotationStats['converted_change_percent']), ENT_QUOTES, 'UTF-8') ?>
+                      <span class="fq-trend-tooltip">
+                        <span class="fq-trend-tooltip-title">Converted</span>
+                        <span class="fq-trend-tooltip-row"><span id="convertedPriorLabel"><?= htmlspecialchars($quotationPeriods['previous_label'], ENT_QUOTES, 'UTF-8') ?></span><strong id="convertedPriorCount"><?= (int) $quotationStats['previous_converted_30'] ?></strong></span>
+                        <span class="fq-trend-tooltip-row"><span id="convertedCurrentLabel"><?= htmlspecialchars($quotationPeriods['current_label'], ENT_QUOTES, 'UTF-8') ?></span><strong id="convertedCurrentCount"><?= (int) $quotationStats['converted_30'] ?></strong></span>
+                      </span>
+                    </span>
+                  </div>
+                  <span class="fq-stat-amount" id="statConvertedAmount"><?= htmlspecialchars(quotationMoney($quotationStats['converted_amount_30'], $quotationCurrency), ENT_QUOTES, 'UTF-8') ?></span>
                 </div>
               </article>
             </div>
@@ -6151,6 +6598,17 @@ $csrfToken = (string) $_SESSION['quotations_csrf_token'];
               <div class="fq-pagination-actions"><button type="button" class="fq-btn" id="prevPage"><i
                     class="bi bi-chevron-left"></i></button><button type="button" class="fq-btn" id="nextPage"><i
                     class="bi bi-chevron-right"></i></button></div>
+            </div>
+          </section>
+          </div>
+          <section class="fq-empty-onboarding" id="quotationEmptyState" aria-live="polite">
+            <div class="fq-empty-inner">
+              <h2>Manage quotations</h2>
+              <p>Create your first customer quotation and move approved work smoothly into the job workflow.</p>
+              <a class="fq-empty-create-card" href="add-quotation">
+                <strong>Create a Quotation</strong>
+                <span class="fq-empty-plus"><i class="bi bi-plus-lg"></i></span>
+              </a>
             </div>
           </section>
         </div>
@@ -6369,6 +6827,74 @@ $csrfToken = (string) $_SESSION['quotations_csrf_token'];
         body.innerHTML = html.join('');
       }
 
+      function formatPeriodDate(date) {
+        return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+      }
+
+      function getTrendPeriods() {
+        var currentEnd = new Date();
+        currentEnd.setHours(0, 0, 0, 0);
+        var currentStart = new Date(currentEnd);
+        currentStart.setDate(currentStart.getDate() - 29);
+        var previousEnd = new Date(currentStart);
+        previousEnd.setDate(previousEnd.getDate() - 1);
+        var previousStart = new Date(previousEnd);
+        previousStart.setDate(previousStart.getDate() - 29);
+        return {
+          current: formatPeriodDate(currentStart) + ' - ' + formatPeriodDate(currentEnd),
+          previous: formatPeriodDate(previousStart) + ' - ' + formatPeriodDate(previousEnd)
+        };
+      }
+
+      function updateTrend(id, change, currentValue, previousValue, options) {
+        var node = el(id); if (!node) return;
+        var n = Number(change || 0), symbol = n > 0 ? '↑ ' : (n < 0 ? '↓ ' : '');
+        var tooltip = node.querySelector('.fq-trend-tooltip');
+        var textNode = null;
+        for (var i = 0; i < node.childNodes.length; i++) {
+          if (node.childNodes[i].nodeType === 3) { textNode = node.childNodes[i]; break; }
+        }
+        if (!textNode) { textNode = document.createTextNode(''); node.insertBefore(textNode, node.firstChild); }
+        textNode.nodeValue = symbol + Math.abs(n).toFixed(0) + '%';
+        node.className = 'fq-trend' + (n > 0 ? ' up' : (n < 0 ? ' down' : ''));
+
+        var periods = getTrendPeriods();
+        var prefix = options && options.prefix ? options.prefix : '';
+        var suffix = options && options.suffix ? options.suffix : '';
+        var trendMap = {
+          conversionTrend: ['conversionPriorLabel', 'conversionCurrentLabel', 'conversionPriorCount', 'conversionCurrentCount'],
+          sentTrend: ['sentPriorLabel', 'sentCurrentLabel', 'sentPriorCount', 'sentCurrentCount'],
+          convertedTrend: ['convertedPriorLabel', 'convertedCurrentLabel', 'convertedPriorCount', 'convertedCurrentCount'],
+          newQuotesTrend: ['newQuotesPriorLabel', 'newQuotesCurrentLabel', 'newQuotesPriorCount', 'newQuotesCurrentCount']
+        };
+        var ids = trendMap[id] || trendMap.newQuotesTrend;
+        var priorLabel = el(ids[0]);
+        var currentLabel = el(ids[1]);
+        var priorCount = el(ids[2]);
+        var currentCount = el(ids[3]);
+        if (priorLabel) priorLabel.textContent = periods.previous;
+        if (currentLabel) currentLabel.textContent = periods.current;
+        if (priorCount) priorCount.textContent = prefix + Number(previousValue || 0).toFixed(options && options.decimals != null ? options.decimals : 0) + suffix;
+        if (currentCount) currentCount.textContent = prefix + Number(currentValue || 0).toFixed(options && options.decimals != null ? options.decimals : 0) + suffix;
+        if (tooltip) tooltip.setAttribute('aria-hidden', 'true');
+      }
+
+      function renderConvertedQuotes(items) {
+        var list = el('convertedQuoteList'); if (!list) return;
+        if (!items.length) { list.innerHTML = '<div class="fq-popup-empty">No quotations created in the past 30 days have been converted to a Job Card.</div>'; return; }
+        var html=[]; items.forEach(function(item){ html.push('<div class="fq-converted-row"><div><strong>'+esc(item.quote_no||'Quotation')+' · '+esc(item.client_name||'-')+'</strong><small>'+esc(item.quote_title||'-')+'</small></div><span class="fq-converted-job">'+esc(item.job_no||('Job #'+Number(item.job_id||0)))+'</span></div>'); });
+        list.innerHTML=html.join('');
+      }
+
+      function closeConversionPopup(){var popup=el('conversionPopup');if(popup)popup.classList.remove('show');}
+
+      function setQuotationEmptyState(isEmpty) {
+        var dataView = el('quotationDataView');
+        var emptyState = el('quotationEmptyState');
+        if (dataView) dataView.style.display = isEmpty ? 'none' : '';
+        if (emptyState) emptyState.classList.toggle('show', !!isEmpty);
+      }
+
       function loadQuotations() {
         var body = el('quoteRows');
 
@@ -6394,12 +6920,7 @@ $csrfToken = (string) $_SESSION['quotations_csrf_token'];
             var rows = Array.isArray(data.quotations) ? data.quotations : [];
             var currency = data.currency || {};
             var pagination = data.pagination || {};
-            var summary = data.summary || {};
-
-            setText('statTotal', Number(summary.total || 0));
-            setText('statDraft', Number(summary.draft || 0));
-            setText('statSent', Number(summary.sent_viewed || 0));
-            setText('statApproved', Number(summary.approved || 0));
+            setQuotationEmptyState(<?= (int) $quotationStats['total_quotes'] ?> <= 0);
 
             renderRows(rows, pagination, currency);
 
@@ -6427,6 +6948,7 @@ $csrfToken = (string) $_SESSION['quotations_csrf_token'];
           })
           .catch(function (error) {
             console.error('FieldPlx quotations API error:', error);
+            setQuotationEmptyState(false);
 
             body.innerHTML =
               '<tr><td colspan="12" class="fq-empty">' +
@@ -6511,9 +7033,19 @@ $csrfToken = (string) $_SESSION['quotations_csrf_token'];
           });
         }
 
+        var conversionInfoButton = el('conversionInfoButton');
+        var conversionPopup = el('conversionPopup');
+        var conversionCard = el('conversionCard');
+        if (conversionInfoButton && conversionPopup && conversionCard) {
+          conversionInfoButton.addEventListener('click', function(event){event.stopPropagation();conversionPopup.classList.toggle('show');});
+          conversionInfoButton.addEventListener('mouseenter', function(){conversionPopup.classList.add('show');});
+          conversionCard.addEventListener('mouseleave', closeConversionPopup);
+          document.addEventListener('click', function(event){if(!conversionCard.contains(event.target))closeConversionPopup();});
+        }
+
         if (refreshButton) {
           refreshButton.addEventListener('click', function () {
-            loadQuotations();
+            window.location.reload();
           });
         }
 

@@ -1,6 +1,6 @@
 <?php
 /**
- * FieldPlx Platform - Add Tenant
+ * FieldPlx Platform - Add Tenant + Administrator Login
  * PHP 7.2+
  * PDO
  */
@@ -720,6 +720,132 @@ function tenantAddEscape($value)
             color: #92400e;
         }
 
+        .tenant-credentials-card {
+            display: none;
+            overflow: hidden;
+            border: 1px solid #bfe8d2;
+            border-radius: 14px;
+            background: #ffffff;
+            box-shadow: 0 8px 24px rgba(5, 150, 105, .08);
+        }
+
+        .tenant-credentials-card.show {
+            display: block;
+        }
+
+        .tenant-credentials-header {
+            padding: 13px 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            border-bottom: 1px solid #d9f3e5;
+            background: #ecfdf5;
+        }
+
+        .tenant-credentials-header i {
+            color: #059669;
+            font-size: 18px;
+        }
+
+        .tenant-credentials-header strong {
+            display: block;
+            color: #065f46;
+            font-size: 12px;
+        }
+
+        .tenant-credentials-header span {
+            display: block;
+            margin-top: 2px;
+            color: #4f7b6b;
+            font-size: 8px;
+        }
+
+        .tenant-credentials-body {
+            padding: 15px;
+        }
+
+        .tenant-credential-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 10px;
+        }
+
+        .tenant-credential-item {
+            min-width: 0;
+            padding: 10px 11px;
+            border: 1px solid #e4e9ee;
+            border-radius: 9px;
+            background: #fbfcfd;
+        }
+
+        .tenant-credential-item.full {
+            grid-column: 1 / -1;
+        }
+
+        .tenant-credential-label {
+            display: block;
+            color: #8a94a3;
+            font-size: 8px;
+        }
+
+        .tenant-credential-value {
+            margin-top: 4px;
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            color: #1f2937;
+            font-size: 11px;
+            font-weight: 700;
+            word-break: break-word;
+        }
+
+        .tenant-credential-password {
+            color: #6d28d9;
+            letter-spacing: .5px;
+        }
+
+        .tenant-copy-button {
+            min-width: 30px;
+            height: 28px;
+            margin-left: auto;
+            border: 1px solid #d8cef8;
+            border-radius: 7px;
+            background: #f6f2ff;
+            color: #6d28d9;
+        }
+
+        .tenant-credentials-note {
+            margin-top: 11px;
+            padding: 9px 10px;
+            border-radius: 8px;
+            background: #fff8e7;
+            color: #85651a;
+            font-size: 8px;
+            line-height: 1.55;
+        }
+
+        .tenant-credentials-actions {
+            margin-top: 12px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }
+
+        .tenant-credentials-actions a {
+            min-height: 34px;
+            padding: 7px 11px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            border: 1px solid #dcd5ef;
+            border-radius: 8px;
+            background: #ffffff;
+            color: #50496a;
+            font-size: 9px;
+            font-weight: 700;
+        }
+
         .tenant-loading {
             width: 13px;
             height: 13px;
@@ -786,7 +912,8 @@ function tenantAddEscape($value)
 
             .tenant-form-grid,
             .tenant-form-grid.three,
-            .tenant-side-column {
+            .tenant-side-column,
+            .tenant-credential-grid {
                 grid-template-columns: 1fr;
             }
         }
@@ -860,6 +987,52 @@ function tenantAddEscape($value)
                     id="tenantAlert"
                     role="alert"
                 ></div>
+
+                <section class="tenant-credentials-card" id="tenantCredentialsCard" aria-live="polite">
+                    <div class="tenant-credentials-header">
+                        <i class="bi bi-shield-check"></i>
+                        <div>
+                            <strong>Tenant Administrator Created</strong>
+                            <span>These credentials are shown only in this creation response. Copy them before leaving this page.</span>
+                        </div>
+                    </div>
+                    <div class="tenant-credentials-body">
+                        <div class="tenant-credential-grid">
+                            <div class="tenant-credential-item">
+                                <span class="tenant-credential-label">Tenant Code</span>
+                                <span class="tenant-credential-value" id="createdTenantCode">—</span>
+                            </div>
+                            <div class="tenant-credential-item">
+                                <span class="tenant-credential-label">Administrator Login Email</span>
+                                <span class="tenant-credential-value" id="createdAdminLogin">—</span>
+                            </div>
+                            <div class="tenant-credential-item full">
+                                <span class="tenant-credential-label">Temporary Password</span>
+                                <span class="tenant-credential-value tenant-credential-password">
+                                    <span id="createdAdminPassword">—</span>
+                                    <button type="button" class="tenant-copy-button" id="copyAdminPassword" title="Copy temporary password">
+                                        <i class="bi bi-copy"></i>
+                                    </button>
+                                </span>
+                            </div>
+                            <div class="tenant-credential-item">
+                                <span class="tenant-credential-label">Administrator User ID</span>
+                                <span class="tenant-credential-value" id="createdAdminUserId">—</span>
+                            </div>
+                            <div class="tenant-credential-item">
+                                <span class="tenant-credential-label">Plan Permissions Enabled</span>
+                                <span class="tenant-credential-value" id="createdPermissionCount">0</span>
+                            </div>
+                        </div>
+                        <div class="tenant-credentials-note" id="createdEmailStatus">
+                            Welcome email status will appear here.
+                        </div>
+                        <div class="tenant-credentials-actions">
+                            <a href="tenants.php"><i class="bi bi-buildings"></i>Go to Tenants</a>
+                            <a href="#" id="openBusinessLogin" target="_blank" rel="noopener"><i class="bi bi-box-arrow-up-right"></i>Open Business Login</a>
+                        </div>
+                    </div>
+                </section>
 
                 <form
                     id="tenantAddForm"
@@ -1024,7 +1197,7 @@ function tenantAddEscape($value)
                                         </h3>
 
                                         <span class="tenant-form-card-subtitle">
-                                            Business communication information
+                                            Primary administrator login and business communication information
                                         </span>
                                     </span>
                                 </div>
@@ -1033,8 +1206,29 @@ function tenantAddEscape($value)
                                     <div class="tenant-form-grid">
 
                                         <div class="tenant-field">
+                                            <label for="adminName">
+                                                Business Admin Name
+                                                <span class="required">*</span>
+                                            </label>
+
+                                            <input
+                                                type="text"
+                                                class="tenant-input"
+                                                id="adminName"
+                                                name="admin_name"
+                                                maxlength="190"
+                                                placeholder="Administrator full name"
+                                                required
+                                            >
+                                            <div class="tenant-field-note">
+                                                This person becomes the primary administrator for the new business.
+                                            </div>
+                                        </div>
+
+                                        <div class="tenant-field">
                                             <label for="email">
-                                                Email
+                                                Business Admin Email
+                                                <span class="required">*</span>
                                             </label>
 
                                             <input
@@ -1044,7 +1238,11 @@ function tenantAddEscape($value)
                                                 name="email"
                                                 maxlength="190"
                                                 placeholder="admin@company.com"
+                                                required
                                             >
+                                            <div class="tenant-field-note">
+                                                Used as the business login ID and receives the temporary password by email.
+                                            </div>
                                         </div>
 
                                         <div class="tenant-field">
@@ -1713,6 +1911,16 @@ function tenantAddEscape($value)
     var saveButton = document.getElementById('saveTenantButton');
     var saveText = document.getElementById('saveTenantText');
 
+    var credentialsCard = document.getElementById('tenantCredentialsCard');
+    var createdTenantCode = document.getElementById('createdTenantCode');
+    var createdAdminLogin = document.getElementById('createdAdminLogin');
+    var createdAdminPassword = document.getElementById('createdAdminPassword');
+    var createdAdminUserId = document.getElementById('createdAdminUserId');
+    var createdPermissionCount = document.getElementById('createdPermissionCount');
+    var createdEmailStatus = document.getElementById('createdEmailStatus');
+    var copyAdminPassword = document.getElementById('copyAdminPassword');
+    var openBusinessLogin = document.getElementById('openBusinessLogin');
+
     var countrySelect = document.getElementById('countryId');
     var currencySelect = document.getElementById('currencyId');
     var timezoneInput = document.getElementById('timezone');
@@ -2014,6 +2222,69 @@ function tenantAddEscape($value)
 
     updatePlanPreview();
 
+    function copyText(value) {
+        value = String(value || '');
+        if (value === '') {
+            return;
+        }
+
+        if (
+            navigator.clipboard &&
+            typeof navigator.clipboard.writeText === 'function'
+        ) {
+            navigator.clipboard.writeText(value).catch(function () {});
+            return;
+        }
+
+        var textarea = document.createElement('textarea');
+        textarea.value = value;
+        textarea.setAttribute('readonly', 'readonly');
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        try {
+            document.execCommand('copy');
+        } catch (ignore) {}
+        document.body.removeChild(textarea);
+    }
+
+    if (copyAdminPassword) {
+        copyAdminPassword.addEventListener('click', function () {
+            copyText(createdAdminPassword.textContent);
+            copyAdminPassword.innerHTML = '<i class="bi bi-check2"></i>';
+            window.setTimeout(function () {
+                copyAdminPassword.innerHTML = '<i class="bi bi-copy"></i>';
+            }, 1200);
+        });
+    }
+
+    function showCreatedCredentials(data) {
+        createdTenantCode.textContent = data.tenant_code || '—';
+        createdAdminLogin.textContent = data.admin_login_id || '—';
+        createdAdminPassword.textContent = data.temporary_password || '—';
+        createdAdminUserId.textContent = data.admin_user_id || '—';
+        createdPermissionCount.textContent =
+            String(data.permissions_enabled || 0);
+
+        createdEmailStatus.textContent = data.email_sent
+            ? 'Welcome email with login ID and temporary password was sent successfully.'
+            : (data.email_message || 'Welcome email could not be sent. Copy the credentials above now.');
+
+        if (data.login_url) {
+            openBusinessLogin.href = data.login_url;
+            openBusinessLogin.style.display = 'inline-flex';
+        } else {
+            openBusinessLogin.style.display = 'none';
+        }
+
+        credentialsCard.classList.add('show');
+        credentialsCard.scrollIntoView({
+            behavior: 'smooth',
+            block: 'start'
+        });
+    }
+
     /*
     |--------------------------------------------------------------------------
     | Submit to separate API
@@ -2077,19 +2348,16 @@ function tenantAddEscape($value)
                 }
 
                 showAlert(
-                    'success',
+                    result.data.email_sent ? 'success' : 'warning',
                     result.data.message ||
-                    'Tenant created successfully.'
+                    'Tenant and administrator created successfully.'
                 );
 
-                window.setTimeout(
-                    function () {
-                        window.location.href =
-                            result.data.redirect ||
-                            'tenants.php';
-                    },
-                    700
-                );
+                showCreatedCredentials(result.data);
+
+                saveButton.disabled = true;
+                saveButton.classList.remove('loading');
+                saveText.textContent = 'Tenant Created';
             })
             .catch(function (error) {
                 showAlert(

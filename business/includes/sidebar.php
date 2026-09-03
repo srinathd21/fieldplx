@@ -826,7 +826,7 @@ $quickCreateDefinitions = array(
     'invoice' => array(
         'module_codes' => array('invoices'),
         'label' => 'Invoice',
-        'url' => 'invoice-form.php',
+        'url' => 'add-invoice.php',
         'icon' => 'bi bi-receipt',
         'tone' => 'invoice'
     )
