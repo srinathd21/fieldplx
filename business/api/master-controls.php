@@ -1111,11 +1111,11 @@ try {
         }
 
         if (!is_numeric($unitCostRaw) || (float)$unitCostRaw < 0) {
-            mcResponse(422,false,'Unit cost must be a valid non-negative amount.');
+            mcResponse(422,false,'Internal service cost must be a valid non-negative amount.');
         }
 
         if (!is_numeric($unitPriceRaw) || (float)$unitPriceRaw < 0) {
-            mcResponse(422,false,'Unit price must be a valid non-negative amount.');
+            mcResponse(422,false,'Customer service price must be a valid non-negative amount.');
         }
 
         if (!in_array($status,array('active','inactive','archived'),true)) {

@@ -2,67 +2,112 @@
 require_once __DIR__ . '/includes/auth.php';
 require_once __DIR__ . '/includes/db.php';
 
-$pageTitle = 'Employees';
+$pageTitle = 'Add Employee';
 $activePage = 'employees';
 
-if (session_status() === PHP_SESSION_NONE) { session_start(); }
-if (empty($_SESSION['employees_csrf_token'])) { $_SESSION['employees_csrf_token'] = bin2hex(random_bytes(32)); }
-$employeesCsrfToken = (string)$_SESSION['employees_csrf_token'];
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+if (empty($_SESSION['employees_csrf_token'])) {
+    $_SESSION['employees_csrf_token'] = bin2hex(random_bytes(32));
+}
+$employeesCsrfToken = (string) $_SESSION['employees_csrf_token'];
 
-/*
- * Labour Rate currency follows the logged-in tenant currency master.
- * No currency symbol is hardcoded in this page.
- */
 $tenantId = !empty($_SESSION['tenant_id'])
-    ? (int)$_SESSION['tenant_id']
-    : (!empty($_SESSION['business_id']) ? (int)$_SESSION['business_id'] : 0);
+    ? (int) $_SESSION['tenant_id']
+    : (!empty($_SESSION['business_id']) ? (int) $_SESSION['business_id'] : 0);
+$defaultBranchId = !empty($_SESSION['branch_id']) ? (int) $_SESSION['branch_id'] : 0;
 
 $tenantCurrencySymbol = '';
 $tenantCurrencyCode = '';
 $tenantCurrencyPosition = 'before';
+$tenantName = 'FieldPlx';
+$branches = array();
+$departments = array();
+$roles = array();
 
 if ($tenantId > 0 && isset($pdo) && $pdo instanceof PDO) {
     try {
-        $currencyStmt = $pdo->prepare(
+        $tenantStmt = $pdo->prepare(
             "SELECT
+                t.display_name,
+                t.legal_name,
                 c.currency_code,
                 c.symbol,
                 c.symbol_position
              FROM tenants t
-             INNER JOIN currencies c ON c.id = t.currency_id
+             LEFT JOIN currencies c ON c.id = t.currency_id
              WHERE t.id = :tenant_id
                AND t.deleted_at IS NULL
              LIMIT 1"
         );
-        $currencyStmt->execute(array(':tenant_id' => $tenantId));
-        $currencyRow = $currencyStmt->fetch(PDO::FETCH_ASSOC);
-
-        if ($currencyRow) {
-            $tenantCurrencyCode = trim((string)$currencyRow['currency_code']);
-            $tenantCurrencySymbol = trim((string)$currencyRow['symbol']);
-            $tenantCurrencyPosition = isset($currencyRow['symbol_position'])
-                && (string)$currencyRow['symbol_position'] === 'after'
-                    ? 'after'
-                    : 'before';
+        $tenantStmt->execute(array(':tenant_id' => $tenantId));
+        $tenantRow = $tenantStmt->fetch(PDO::FETCH_ASSOC);
+        if ($tenantRow) {
+            $tenantName = trim((string) $tenantRow['display_name']);
+            if ($tenantName === '') {
+                $tenantName = trim((string) $tenantRow['legal_name']);
+            }
+            if ($tenantName === '') {
+                $tenantName = 'FieldPlx';
+            }
+            $tenantCurrencyCode = trim((string) $tenantRow['currency_code']);
+            $tenantCurrencySymbol = trim((string) $tenantRow['symbol']);
+            $tenantCurrencyPosition = isset($tenantRow['symbol_position']) && (string) $tenantRow['symbol_position'] === 'after'
+                ? 'after'
+                : 'before';
         }
-    } catch (Throwable $currencyError) {
-        error_log('FieldPlx Employees tenant currency: ' . $currencyError->getMessage());
+
+        $branchStmt = $pdo->prepare(
+            "SELECT id,name,branch_code
+             FROM branches
+             WHERE tenant_id = :tenant_id
+               AND status = 'active'
+             ORDER BY is_head_office DESC,name ASC"
+        );
+        $branchStmt->execute(array(':tenant_id' => $tenantId));
+        $branches = $branchStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $departmentStmt = $pdo->prepare(
+            "SELECT id,branch_id,name,code
+             FROM departments
+             WHERE tenant_id = :tenant_id
+               AND status = 'active'
+             ORDER BY name ASC"
+        );
+        $departmentStmt->execute(array(':tenant_id' => $tenantId));
+        $departments = $departmentStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $roleStmt = $pdo->prepare(
+            "SELECT id,name,code,is_admin
+             FROM roles
+             WHERE tenant_id = :tenant_id
+               AND status = 'active'
+             ORDER BY is_admin DESC,name ASC"
+        );
+        $roleStmt->execute(array(':tenant_id' => $tenantId));
+        $roles = $roleStmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $employeeAddLoadError) {
+        error_log('FieldPlx Add Employee page data: ' . $employeeAddLoadError->getMessage());
     }
 }
 
-/* If a master row has no symbol, still use its tenant currency code rather than a hardcoded currency. */
 if ($tenantCurrencySymbol === '') {
     $tenantCurrencySymbol = $tenantCurrencyCode;
 }
-?>
 
+function employeeAddEscape($value)
+{
+    return htmlspecialchars((string) $value, ENT_QUOTES, 'UTF-8');
+}
+?>
 <!DOCTYPE html>
 <html lang="en">
 
 <head>
     <meta charset="utf-8" />
     <meta content="width=device-width, initial-scale=1" name="viewport" />
-    <title>Employees - FieldPlx</title>
+    <title>Add Employee - FieldPlx</title>
     <?php require_once __DIR__ . '/includes/links.php'; ?>
     <style>
         :root {
@@ -2619,278 +2664,69 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer {
 }
 
     
-/* Employees page - FieldPlx manage template */
-.fd-employees-header{
-  display:flex;
-  align-items:flex-start;
-  justify-content:space-between;
-  gap:18px;
-  margin-bottom:18px;
-}
-.fd-employees-title{
-  margin:0 0 6px;
-  color:var(--fd-text);
-  font-size:21px;
-  line-height:1.15;
-  font-weight:700;
-}
-.fd-employees-subtitle{
-  margin:0;
-  color:var(--fd-muted);
-  font-size:11px;
-  line-height:1.5;
-}
-.fd-employees-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.fd-employee-btn{
-  min-height:39px;
-  padding:0 13px;
-  display:inline-flex;
-  align-items:center;
-  justify-content:center;
-  gap:7px;
-  border:1px solid var(--fd-border);
-  border-radius:8px;
-  background:#fff;
-  color:#43546c;
-  font-size:10px;
-  font-weight:700;
-  line-height:1;
-  cursor:pointer;
-  text-decoration:none;
-  transition:border-color .16s ease,background .16s ease,color .16s ease,box-shadow .16s ease;
-}
-.fd-employee-btn:hover{border-color:#cfe3ae;background:#f9fcf4;color:var(--fd-green-dark)}
-.fd-employee-btn.primary{
-  border-color:var(--fd-green);
-  background:linear-gradient(90deg,#7fc92d,#68aa1d);
-  color:#fff;
-  box-shadow:0 5px 14px rgba(104,170,29,.16);
-}
-.fd-employee-btn.primary:hover{border-color:var(--fd-green-dark);background:linear-gradient(90deg,#74b824,#5d971b);color:#fff}
-.fd-employee-btn.danger{border-color:#ffd5d9;color:#b9444d}
-.fd-employee-btn:disabled{opacity:.55;cursor:not-allowed}
-.fd-employee-loader{width:13px;height:13px;display:none;border:2px dotted currentColor;border-radius:50%;animation:eSpin .75s linear infinite}
-.fd-employee-btn.loading .fd-employee-loader{display:inline-block}
-@keyframes eSpin{to{transform:rotate(360deg)}}
-
-/* Customers-style summary cards */
-.fd-employee-summary{margin-bottom:18px}
-.fd-employee-summary-card{
-  width:100%;
-  min-height:134px;
-  padding:15px 18px;
-  position:relative;
-  overflow:visible;
-  border:1px solid #dfe6ef;
-  border-radius:12px;
-  background:#fff;
-  box-shadow:0 3px 12px rgba(24,45,76,.035);
-}
-.fd-employee-overview-title,
-.fd-employee-metric-title{
-  display:block;
-  color:#506784;
-  font-size:15px;
-  line-height:1.25;
-  font-weight:400;
-}
-.fd-employee-overview-list{
-  margin-top:10px;
-  display:grid;
-  gap:6px;
-}
-.fd-employee-overview-row{
-  min-height:18px;
-  display:grid;
-  grid-template-columns:7px minmax(0,1fr) auto;
-  align-items:center;
-  gap:8px;
-  color:#66758a;
-  font-size:9.5px;
-}
-.fd-employee-overview-row strong{
-  color:#0b1933;
-  font-size:10px;
-  font-weight:700;
-}
-.fd-employee-overview-dot{
-  width:7px;
-  height:7px;
-  border-radius:50%;
-  background:#123d70;
-}
-.fd-employee-overview-dot.green{background:#74b824}
-.fd-employee-overview-dot.soft{background:#96c945}
-.fd-employee-overview-dot.muted{background:#9aa6b6}
-.fd-employee-metric-arrow{
-  position:absolute;
-  top:15px;
-  right:16px;
-  color:#8090a6;
-  font-size:15px;
-  line-height:1;
-}
-.fd-employee-metric-period{
-  display:block;
-  margin-top:4px;
-  color:#96a1b0;
-  font-size:9px;
-  line-height:1.35;
-}
-.fd-employee-metric-number{
-  min-height:67px;
-  display:flex;
-  align-items:flex-end;
-  padding-top:10px;
-}
-.fd-employee-metric-value{
-  display:block;
-  color:#020b16;
-  font-size:31px;
-  line-height:1;
-  font-weight:700;
-  letter-spacing:-.5px;
+/* Employees page */
+.fd-employees-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px}.fd-employees-title{margin:0 0 7px;color:var(--fd-text);font-size:21px;font-weight:700}.fd-employees-subtitle{margin:0;color:var(--fd-muted);font-size:11px}.fd-employees-actions{display:flex;gap:8px}.fd-employee-btn{min-height:39px;padding:0 13px;display:inline-flex;align-items:center;justify-content:center;gap:7px;border:1px solid var(--fd-border);border-radius:8px;background:#fff;color:#43546c;font-size:10px;font-weight:700;cursor:pointer}.fd-employee-btn.primary{border-color:var(--fd-green);background:linear-gradient(90deg,#7fc92d,#68aa1d);color:#fff}.fd-employee-btn:hover{border-color:#cfe3ae;background:#f9fcf4;color:var(--fd-green-dark)}.fd-employee-btn.primary:hover{background:linear-gradient(90deg,#74b824,#5d971b);color:#fff}.fd-employee-btn.danger{border-color:#ffd5d9;color:#b9444d}.fd-employee-loader{width:13px;height:13px;display:none;border:2px dotted currentColor;border-radius:50%;animation:eSpin .75s linear infinite}.fd-employee-btn.loading .fd-employee-loader{display:inline-block}@keyframes eSpin{to{transform:rotate(360deg)}}
+.fd-employee-stat{min-height:112px;padding:18px 20px;border:1px solid #dfe6ef;border-radius:12px;background:#fff;box-shadow:0 3px 12px rgba(24,45,76,.035)}.fd-employee-stat-row{min-height:72px;display:flex;align-items:center;gap:18px}.fd-employee-stat-icon{width:58px;height:58px;flex:0 0 58px;display:grid;place-items:center;border-radius:16px;background:#123f73;color:#fff;font-size:25px}.fd-employee-stat-label{display:block;margin-bottom:8px;color:#506784;font-size:13px}.fd-employee-stat-value{display:block;color:#020b16;font-size:31px;line-height:1;font-weight:700}.fd-employees-card{overflow:hidden}.fd-employees-toolbar{padding:13px 14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;border-bottom:1px solid var(--fd-border);background:#fbfcfd}.fd-employee-search{width:270px;position:relative}.fd-employee-search i{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#8a96a7}.fd-employee-search input,.fd-employee-filter{height:39px;border:1px solid #dde4ec;border-radius:8px;background:#fff;color:#33445f;font-size:10px;outline:0}.fd-employee-search input{width:100%;padding:8px 11px 8px 34px}.fd-employee-filter{min-width:140px;padding:8px 10px}.fd-employee-toolbar-spacer{margin-left:auto}.fd-employee-table-wrap{
+  overflow-x:auto;
+  overflow-y:hidden;
+  scrollbar-width:thin;
+  scrollbar-color:#9aa0a6 transparent;
 }
 
-.fd-employees-card{
-  overflow:hidden;
-  border-radius:10px;
-  border:1px solid var(--fd-border);
-  background:#fff;
-  box-shadow:0 4px 14px rgba(31,43,88,.045);
+.fd-employee-table-wrap::-webkit-scrollbar{
+  height:3px !important;
+  max-height:3px !important;
 }
-.fd-employees-toolbar{
-  padding:12px 14px;
-  display:flex;
-  align-items:center;
-  gap:8px;
-  flex-wrap:wrap;
-  border-bottom:1px solid var(--fd-border);
-  background:#fff;
-}
-.fd-employee-search{width:285px;position:relative}
-.fd-employee-search i{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:#8a96a7;font-size:12px;pointer-events:none}
-.fd-employee-search input,.fd-employee-filter{
-  height:39px;
-  border:1px solid #dde4ec;
-  border-radius:8px;
-  background:#fff;
-  color:#33445f;
-  font-size:10px;
-  outline:0;
-  transition:border-color .16s ease,box-shadow .16s ease;
-}
-.fd-employee-search input{width:100%;padding:8px 11px 8px 34px}
-.fd-employee-filter{min-width:140px;padding:8px 10px}
-.fd-employee-search input:focus,.fd-employee-filter:focus{border-color:#bcd88f;box-shadow:0 0 0 3px rgba(116,184,36,.10)}
-.fd-employee-toolbar-spacer{margin-left:auto}
-.fd-employee-table-wrap{overflow-x:auto;overflow-y:hidden;scrollbar-width:thin;scrollbar-color:#9aa0a6 transparent}
-.fd-employee-table-wrap::-webkit-scrollbar{height:3px!important;max-height:3px!important}
-.fd-employee-table-wrap::-webkit-scrollbar-track{height:3px!important;background:transparent!important}
-.fd-employee-table-wrap::-webkit-scrollbar-thumb{min-width:20px;height:3px!important;border:0!important;border-radius:999px!important;background:#9aa0a6!important}
-.fd-employee-table-wrap::-webkit-scrollbar-button{width:0!important;height:0!important;display:none!important}
-.fd-employee-table-wrap::-webkit-scrollbar-corner{background:transparent!important}
-.fd-employee-table{width:100%;min-width:1180px;border-collapse:collapse;white-space:nowrap}
-.fd-employee-table th{
-  padding:10px 12px;
-  border-bottom:1px solid var(--fd-border);
-  background:#f8fafc;
-  color:#65738a;
-  font-size:9px;
-  font-weight:600;
-  text-transform:uppercase;
-}
-.fd-employee-table td{
-  padding:11px 12px;
-  border-bottom:1px solid #f1f3f7;
-  color:#33445f;
-  font-size:9.5px;
-  vertical-align:middle;
-}
-.fd-employee-table tbody tr{transition:background .14s ease}
-.fd-employee-table tbody tr:hover{background:#fbfdf8}
-.fd-employee-person{display:flex;align-items:center;gap:10px}
-.fd-employee-avatar{width:34px;height:34px;flex:0 0 34px;display:grid;place-items:center;border-radius:50%;background:linear-gradient(135deg,#fff,#e8f3d9);border:1px solid #dce8cf;color:var(--fd-navy);font-size:10px;font-weight:700;overflow:hidden}
-.fd-employee-avatar img{width:100%;height:100%;object-fit:cover}
-.fd-employee-person strong,.fd-employee-person small{display:block}
-.fd-employee-person strong{color:#17263e;font-size:10px;font-weight:700}
-.fd-employee-person small{margin-top:2px;color:#8d98a8;font-size:8.5px}
-.fd-employee-badge{display:inline-flex;align-items:center;padding:5px 7px;border-radius:5px;font-size:8.5px;font-weight:600;text-transform:capitalize}
-.fd-employee-badge.active,.fd-employee-badge.field{color:#5d971b;background:#f0f8e5}
-.fd-employee-badge.inactive{color:#6f7b90;background:#eef2f6}
-.fd-employee-badge.invited,.fd-employee-badge.admin{color:#123d70;background:#edf2f7}
-.fd-employee-badge.suspended{color:#b9444d;background:#fff0f1}
-.fd-employee-actions-cell{display:flex;gap:4px}
-.fd-employee-icon{width:29px;height:29px;display:grid;place-items:center;border:0;border-radius:6px;background:transparent;color:#66748b;cursor:pointer;transition:background .14s ease,color .14s ease}
-.fd-employee-icon:hover{background:var(--fd-green-soft);color:var(--fd-green-dark)}
-.fd-employee-icon.danger:hover{background:#fff0f1;color:#b9444d}
-.fd-employee-empty{padding:28px 18px!important;text-align:center;color:#9aa4b3!important;font-size:10px!important}
-.fd-employee-pagination{
-  min-height:48px;
-  padding:9px 14px;
-  display:flex;
-  justify-content:space-between;
-  align-items:center;
-  gap:12px;
-  border-top:1px solid var(--fd-border);
-  background:#fff;
-  font-size:9px;
-  color:#768397;
-}
-.fd-employee-pagination > div{display:flex;gap:6px}
-.fd-employee-pagination .fd-employee-btn{min-width:32px;min-height:32px;height:32px;padding:0 9px}
 
-/* Edit / delete dialogs stay consistent with the manage template */
-.fd-employee-modal-backdrop{position:fixed;inset:0;z-index:15000;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(0,17,49,.46);backdrop-filter:blur(3px)}
-.fd-employee-modal-backdrop.show{display:flex}
-.fd-employee-modal{width:min(860px,100%);max-height:calc(100vh - 36px);overflow:auto;border:1px solid #dfe5ec;border-radius:12px;background:#fff;box-shadow:0 24px 65px rgba(0,17,49,.24)}
-.fd-employee-modal-header{padding:11px 14px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--fd-border);background:#fbfcfd}
-.fd-employee-modal-icon{width:34px;height:34px;display:grid;place-items:center;border-radius:9px;background:var(--fd-green-soft);color:var(--fd-green-dark)}
-.fd-employee-modal-heading{flex:1}.fd-employee-modal-heading h3{margin:0;font-size:12px}.fd-employee-modal-heading p{margin:3px 0 0;color:var(--fd-muted);font-size:8.5px}
-.fd-employee-modal-close{width:30px;height:30px;border:0;border-radius:7px;background:transparent;color:#8490a0;cursor:pointer}
-.fd-employee-modal-close:hover{background:#eef2f6;color:#33445f}
-.fd-employee-modal-body{padding:15px}
-.fd-employee-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}
-.fd-employee-field.full{grid-column:1/-1}
-.fd-employee-field label{display:block;margin-bottom:6px;color:#42536c;font-size:9px;font-weight:700}
-.fd-employee-field input,.fd-employee-field select{width:100%;min-height:40px;padding:8px 10px;border:1px solid #dfe5ec;border-radius:8px;background:#fff;color:#263750;font-size:10px;outline:0}
-.fd-employee-field input:focus,.fd-employee-field select:focus{border-color:#bcd88f;box-shadow:0 0 0 3px rgba(116,184,36,.10)}
-.fd-employee-section{grid-column:1/-1;padding:7px 0 2px;border-bottom:1px solid #eef2f5;color:#31425b;font-size:9px;font-weight:700;text-transform:uppercase}
-.fd-employee-switches{grid-column:1/-1;display:grid;grid-template-columns:repeat(3,1fr);gap:9px}
-.fd-employee-switch-row{padding:10px;border:1px solid var(--fd-border);border-radius:9px;background:#fbfcfd;display:flex;align-items:center;justify-content:space-between}
-.fd-employee-switch-row strong,.fd-employee-switch-row small{display:block}.fd-employee-switch-row strong{font-size:9.5px}.fd-employee-switch-row small{margin-top:2px;color:#8a96a7;font-size:8px}
-.fd-employee-switch input{width:15px;height:15px;accent-color:var(--fd-green)}
-.fd-employee-money-input{position:relative}
-.fd-employee-money-input .fd-employee-currency{position:absolute;top:50%;transform:translateY(-50%);z-index:2;color:#607086;font-size:10px;font-weight:700;pointer-events:none;white-space:nowrap}
-.fd-employee-money-input.currency-before .fd-employee-currency{left:11px}.fd-employee-money-input.currency-after .fd-employee-currency{right:11px}
-.fd-employee-money-input.currency-before input{padding-left:42px!important}.fd-employee-money-input.currency-after input{padding-right:42px!important}
-.fd-employee-field-help{display:block;margin-top:5px;color:#8793a5;font-size:8px;line-height:1.45}
-.fd-employee-modal-footer{padding:12px 15px;display:flex;justify-content:flex-end;gap:8px;border-top:1px solid var(--fd-border);background:#fbfcfd}
-.fd-employee-confirm{width:min(440px,100%)}
-.fd-employee-toast{width:min(290px,calc(100vw - 24px));position:fixed;top:82px;right:16px;z-index:25000;padding:8px 9px;display:flex;align-items:center;gap:7px;border-radius:7px;color:#fff;opacity:0;transform:translateY(-8px);pointer-events:none;transition:.18s ease;box-shadow:0 10px 26px rgba(0,17,49,.18)}
-.fd-employee-toast.show{opacity:1;transform:translateY(0)}.fd-employee-toast.success{background:#5d971b}.fd-employee-toast.error{background:#e45b66}.fd-employee-toast.warning{background:#96a52f}.fd-employee-toast.info{background:#123d70}.fd-employee-toast span{font-size:8.5px}.fd-employee-toast button{margin-left:auto;border:0;background:transparent;color:#fff}
-@media(max-width:767.98px){
-  .fd-employees-header{align-items:stretch;flex-direction:column}
-  .fd-employees-actions{justify-content:flex-start}
-  .fd-employee-grid{grid-template-columns:1fr}
-  .fd-employee-field.full,.fd-employee-section,.fd-employee-switches{grid-column:auto}
-  .fd-employee-switches{grid-template-columns:1fr}
-  .fd-employee-search{width:100%}
-  .fd-employee-filter{flex:1;min-width:130px}
-  .fd-employee-toolbar-spacer{display:none}
+.fd-employee-table-wrap::-webkit-scrollbar-track{
+  height:3px !important;
+  background:transparent !important;
 }
-@media(max-width:575.98px){
-  .fd-employee-summary-card{min-height:126px}
-  .fd-employee-metric-value{font-size:29px}
-  .fd-employees-actions .fd-employee-btn{width:100%}
-  .fd-employee-toast{top:72px;left:12px;right:12px;width:auto}
-  .fd-employee-modal-footer{flex-direction:column-reverse}
-  .fd-employee-modal-footer .fd-employee-btn{width:100%}
-  .fd-employee-pagination{align-items:flex-start;flex-direction:column}
+
+.fd-employee-table-wrap::-webkit-scrollbar-thumb{
+  min-width:20px;
+  height:3px !important;
+  border:0 !important;
+  border-radius:999px !important;
+  background:#9aa0a6 !important;
 }
+
+.fd-employee-table-wrap::-webkit-scrollbar-button{
+  width:0 !important;
+  height:0 !important;
+  display:none !important;
+}
+
+.fd-employee-table-wrap::-webkit-scrollbar-corner{
+  background:transparent !important;
+}.fd-employee-table{width:100%;min-width:1180px;border-collapse:collapse;white-space:nowrap}.fd-employee-table th{padding:11px 12px;border-bottom:1px solid var(--fd-border);background:#f8fafc;color:#65738a;font-size:9px;font-weight:600;text-transform:uppercase}.fd-employee-table td{padding:12px;border-bottom:1px solid #f1f3f7;color:#33445f;font-size:9.5px}.fd-employee-person{display:flex;align-items:center;gap:10px}.fd-employee-avatar{width:36px;height:36px;flex:0 0 36px;display:grid;place-items:center;border-radius:50%;background:linear-gradient(135deg,#fff,#e8f3d9);border:1px solid #dce8cf;color:var(--fd-navy);font-size:10px;font-weight:700;overflow:hidden}.fd-employee-avatar img{width:100%;height:100%;object-fit:cover}.fd-employee-person strong,.fd-employee-person small{display:block}.fd-employee-person small{margin-top:2px;color:#8d98a8;font-size:8.5px}.fd-employee-badge{display:inline-flex;padding:5px 7px;border-radius:5px;font-size:8.5px;font-weight:600}.fd-employee-badge.active,.fd-employee-badge.field{color:#5d971b;background:#f0f8e5}.fd-employee-badge.inactive{color:#6f7b90;background:#eef2f6}.fd-employee-badge.invited,.fd-employee-badge.admin{color:#123d70;background:#edf2f7}.fd-employee-badge.suspended{color:#b9444d;background:#fff0f1}.fd-employee-actions-cell{display:flex;gap:5px}.fd-employee-icon{width:29px;height:29px;display:grid;place-items:center;border:0;border-radius:6px;background:transparent;color:#66748b;cursor:pointer}.fd-employee-icon:hover{background:var(--fd-green-soft);color:var(--fd-green-dark)}.fd-employee-icon.danger:hover{background:#fff0f1;color:#b9444d}.fd-employee-empty{padding:28px 18px!important;text-align:center;color:#9aa4b3!important;font-size:10px!important}.fd-employee-pagination{padding:10px 14px;display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--fd-border);font-size:9px;color:#768397}
+.fd-employee-modal-backdrop{position:fixed;inset:0;z-index:15000;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(0,17,49,.46);backdrop-filter:blur(3px)}.fd-employee-modal-backdrop.show{display:flex}.fd-employee-modal{width:min(860px,100%);max-height:calc(100vh - 36px);overflow:auto;border:1px solid #dfe5ec;border-radius:12px;background:#fff;box-shadow:0 24px 65px rgba(0,17,49,.24)}.fd-employee-modal-header{padding:11px 14px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--fd-border);background:#fbfcfd}.fd-employee-modal-icon{width:34px;height:34px;display:grid;place-items:center;border-radius:9px;background:var(--fd-green-soft);color:var(--fd-green-dark)}.fd-employee-modal-heading{flex:1}.fd-employee-modal-heading h3{margin:0;font-size:12px}.fd-employee-modal-heading p{margin:3px 0 0;color:var(--fd-muted);font-size:8.5px}.fd-employee-modal-close{width:30px;height:30px;border:0;border-radius:7px;background:transparent;color:#8490a0}.fd-employee-modal-body{padding:15px}.fd-employee-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px}.fd-employee-field.full{grid-column:1/-1}.fd-employee-field label{display:block;margin-bottom:6px;color:#42536c;font-size:9px;font-weight:700}.fd-employee-field input,.fd-employee-field select{width:100%;min-height:40px;padding:8px 10px;border:1px solid #dfe5ec;border-radius:8px;background:#fff;color:#263750;font-size:10px;outline:0}.fd-employee-section{grid-column:1/-1;padding:7px 0 2px;border-bottom:1px solid #eef2f5;color:#31425b;font-size:9px;font-weight:700;text-transform:uppercase}.fd-employee-switches{grid-column:1/-1;display:grid;grid-template-columns:repeat(3,1fr);gap:9px}.fd-employee-switch-row{padding:10px;border:1px solid var(--fd-border);border-radius:9px;background:#fbfcfd;display:flex;align-items:center;justify-content:space-between}.fd-employee-switch-row strong,.fd-employee-switch-row small{display:block}.fd-employee-switch-row strong{font-size:9.5px}.fd-employee-switch-row small{margin-top:2px;color:#8a96a7;font-size:8px}.fd-employee-switch input{width:15px;height:15px;accent-color:var(--fd-green)}.fd-employee-money-input{position:relative}.fd-employee-money-input .fd-employee-currency{position:absolute;top:50%;transform:translateY(-50%);z-index:2;color:#607086;font-size:10px;font-weight:700;pointer-events:none;white-space:nowrap}.fd-employee-money-input.currency-before .fd-employee-currency{left:11px}.fd-employee-money-input.currency-after .fd-employee-currency{right:11px}.fd-employee-money-input.currency-before input{padding-left:42px!important}.fd-employee-money-input.currency-after input{padding-right:42px!important}.fd-employee-field-help{display:block;margin-top:5px;color:#8793a5;font-size:8px;line-height:1.45}.fd-employee-modal-footer{padding:12px 15px;display:flex;justify-content:flex-end;gap:8px;border-top:1px solid var(--fd-border);background:#fbfcfd}.fd-employee-confirm{width:min(440px,100%)}
+.fd-employee-toast{width:min(290px,calc(100vw - 24px));position:fixed;top:82px;right:16px;z-index:25000;padding:8px 9px;display:flex;align-items:center;gap:7px;border-radius:7px;color:#fff;opacity:0;transform:translateY(-8px);pointer-events:none;transition:.18s ease;box-shadow:0 10px 26px rgba(0,17,49,.18)}.fd-employee-toast.show{opacity:1;transform:translateY(0)}.fd-employee-toast.success{background:#5d971b}.fd-employee-toast.error{background:#e45b66}.fd-employee-toast.warning{background:#96a52f}.fd-employee-toast.info{background:#123d70}.fd-employee-toast span{font-size:8.5px}.fd-employee-toast button{margin-left:auto;border:0;background:transparent;color:#fff}@media(max-width:767.98px){.fd-employees-header{flex-direction:column}.fd-employee-grid{grid-template-columns:1fr}.fd-employee-field.full,.fd-employee-section,.fd-employee-switches{grid-column:auto}.fd-employee-switches{grid-template-columns:1fr}.fd-employee-search{width:100%}.fd-employee-toolbar-spacer{display:none}}@media(max-width:575.98px){.fd-employee-toast{top:72px;left:12px;right:12px;width:auto}.fd-employee-modal-footer{flex-direction:column-reverse}.fd-employee-modal-footer .fd-employee-btn{width:100%}}
+
+
+/* Separate Add Employee page */
+.fd-employee-add-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px}
+.fd-employee-add-header h1{margin:0 0 7px;color:var(--fd-text);font-size:21px;font-weight:700}
+.fd-employee-add-header p{margin:0;color:var(--fd-muted);font-size:11px;line-height:1.55}
+.fd-employee-add-card{overflow:hidden;border:1px solid var(--fd-border);border-radius:10px;background:#fff;box-shadow:0 4px 14px rgba(31,43,88,.05)}
+.fd-employee-add-card-head{padding:15px 17px;display:flex;align-items:center;gap:11px;border-bottom:1px solid var(--fd-border);background:#fbfcfd}
+.fd-employee-add-card-icon{width:38px;height:38px;display:grid;place-items:center;border-radius:10px;background:var(--fd-green-soft);color:var(--fd-green-dark);font-size:17px}
+.fd-employee-add-card-head strong{display:block;color:var(--fd-navy);font-size:12px}
+.fd-employee-add-card-head small{display:block;margin-top:3px;color:var(--fd-muted);font-size:8.5px}
+.fd-employee-add-body{padding:18px}
+.fd-employee-add-mail-note{grid-column:1/-1;padding:11px 13px;display:flex;align-items:flex-start;gap:9px;border:1px solid #d9e9c1;border-radius:9px;background:#f7fbf0;color:#526b30;font-size:9px;line-height:1.55}
+.fd-employee-add-mail-note i{margin-top:1px;color:var(--fd-green-dark);font-size:14px}
+.fd-employee-add-footer{padding:13px 17px;display:flex;align-items:center;justify-content:space-between;gap:10px;border-top:1px solid var(--fd-border);background:#fbfcfd}
+.fd-employee-add-footer-note{color:#8a96a7;font-size:8.5px;line-height:1.45}
+.fd-employee-add-footer-actions{display:flex;gap:8px;margin-left:auto}
+.fd-employee-btn[disabled]{cursor:not-allowed;opacity:.68}
+.fd-employee-field input:focus,.fd-employee-field select:focus{border-color:#a9cf75;box-shadow:0 0 0 3px rgba(116,184,36,.11)}
+.fd-employee-field small{display:block;margin-top:5px;color:#8793a5;font-size:8px;line-height:1.45}
+.fd-employee-created-box{display:none;margin-top:14px;padding:13px 14px;border:1px solid #d9e9c1;border-radius:9px;background:#f7fbf0;color:#385d12;font-size:10px;line-height:1.55}
+.fd-employee-created-box.show{display:block}
+@media(max-width:767.98px){.fd-employee-add-header{flex-direction:column}.fd-employee-add-footer{align-items:stretch;flex-direction:column}.fd-employee-add-footer-actions{width:100%;margin-left:0}.fd-employee-add-footer-actions .fd-employee-btn{flex:1}}
+
 </style>
-</head>
-
 <body>
     <?php require_once __DIR__ . '/includes/nav.php'; ?>
     <div class="fieldplx-main-layout">
@@ -2898,69 +2734,310 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer {
         <main class="fieldplx-main-content">
             <div class="fieldplx-content-wrapper">
                 <div class="fd-dashboard">
-<section class="fd-employees-header">
-  <div>
-    <h1 class="fd-employees-title">Employees</h1>
-    <p class="fd-employees-subtitle">Manage employee accounts, assignments, roles, field access and work settings.</p>
-  </div>
-  <div class="fd-employees-actions">
-    <a class="fd-employee-btn primary" href="employee-add.php"><i class="bi bi-person-plus"></i><span>Add Employee</span></a>
-  </div>
-</section>
-<section class="row g-3 fd-employee-summary">
-  <div class="col-xl-3 col-md-6">
-    <article class="fd-employee-summary-card">
-      <span class="fd-employee-overview-title">Overview</span>
-      <div class="fd-employee-overview-list">
-        <div class="fd-employee-overview-row"><span class="fd-employee-overview-dot"></span><span>Total Employees</span><strong id="overviewTotal">0</strong></div>
-        <div class="fd-employee-overview-row"><span class="fd-employee-overview-dot green"></span><span>Active Employees</span><strong id="overviewActive">0</strong></div>
-        <div class="fd-employee-overview-row"><span class="fd-employee-overview-dot soft"></span><span>Field Workers</span><strong id="overviewField">0</strong></div>
-        <div class="fd-employee-overview-row"><span class="fd-employee-overview-dot muted"></span><span>Branches</span><strong id="overviewBranches">0</strong></div>
-      </div>
-    </article>
-  </div>
-  <div class="col-xl-3 col-md-6">
-    <article class="fd-employee-summary-card">
-      <i class="bi bi-arrow-up-right fd-employee-metric-arrow"></i>
-      <span class="fd-employee-metric-title">Total Employees</span>
-      <span class="fd-employee-metric-period">All employee accounts</span>
-      <div class="fd-employee-metric-number"><strong class="fd-employee-metric-value" id="statTotal">0</strong></div>
-    </article>
-  </div>
-  <div class="col-xl-3 col-md-6">
-    <article class="fd-employee-summary-card">
-      <i class="bi bi-arrow-up-right fd-employee-metric-arrow"></i>
-      <span class="fd-employee-metric-title">Active Employees</span>
-      <span class="fd-employee-metric-period">Currently active</span>
-      <div class="fd-employee-metric-number"><strong class="fd-employee-metric-value" id="statActive">0</strong></div>
-    </article>
-  </div>
-  <div class="col-xl-3 col-md-6">
-    <article class="fd-employee-summary-card">
-      <i class="bi bi-arrow-up-right fd-employee-metric-arrow"></i>
-      <span class="fd-employee-metric-title">Field Workers</span>
-      <span class="fd-employee-metric-period">Available for field work</span>
-      <div class="fd-employee-metric-number"><strong class="fd-employee-metric-value" id="statField">0</strong></div>
-    </article>
-  </div>
-</section>
-<section class="fd-card fd-employees-card"><div class="fd-employees-toolbar"><div class="fd-employee-search"><i class="bi bi-search"></i><input id="employeesSearch" type="search" placeholder="Search name, code, email or phone"></div><select class="fd-employee-filter" id="statusFilter"><option value="">All Status</option><option value="active">Active</option><option value="inactive">Inactive</option><option value="invited">Invited</option><option value="suspended">Suspended</option></select><select class="fd-employee-filter" id="branchFilter"><option value="">All Branches</option></select><select class="fd-employee-filter" id="roleFilter"><option value="">All Roles</option></select><div class="fd-employee-toolbar-spacer"></div><button class="fd-employee-btn" id="clearFiltersButton" type="button"><i class="bi bi-x-circle"></i>Clear</button></div><div class="fd-employee-table-wrap"><table class="fd-employee-table"><thead><tr><th>S/No</th><th>Employee</th><th>Contact</th><th>Branch</th><th>Department</th><th>Role</th><th>Work Type</th><th>Status</th><th>Last Login</th><th>Action</th></tr></thead><tbody id="employeesTableBody"><tr><td colspan="10" class="fd-employee-empty">Loading employees...</td></tr></tbody></table></div><div class="fd-employee-pagination"><span id="employeesCountText">Showing 0 employees</span><div><button class="fd-employee-btn" id="prevPageButton" type="button"><i class="bi bi-chevron-left"></i></button><button class="fd-employee-btn" id="nextPageButton" type="button"><i class="bi bi-chevron-right"></i></button></div></div></section>
-</div>
-<div class="fd-employee-modal-backdrop" id="employeeModalBackdrop"><section class="fd-employee-modal"><div class="fd-employee-modal-header"><span class="fd-employee-modal-icon"><i class="bi bi-person-badge"></i></span><div class="fd-employee-modal-heading"><h3 id="employeeModalTitle">Edit Employee</h3><p id="employeeModalSubtitle">Update the selected employee account.</p></div><button class="fd-employee-modal-close" id="employeeModalClose" type="button"><i class="bi bi-x-lg"></i></button></div><form id="employeeForm"><div class="fd-employee-modal-body"><input type="hidden" name="employee_id" id="employeeId" value="0"><div class="fd-employee-grid"><div class="fd-employee-section">Basic Details</div><div class="fd-employee-field"><label>Employee Code</label><input name="employee_code" id="employeeCode" maxlength="80"></div><div class="fd-employee-field"><label>Status</label><select name="status" id="employeeStatus"><option value="active">Active</option><option value="inactive">Inactive</option><option value="invited">Invited</option><option value="suspended">Suspended</option></select></div><div class="fd-employee-field"><label>First Name</label><input name="first_name" id="firstName" maxlength="120" required></div><div class="fd-employee-field"><label>Last Name</label><input name="last_name" id="lastName" maxlength="120"></div><div class="fd-employee-field"><label>Email Address</label><input type="email" name="email" id="email" maxlength="190" required></div><div class="fd-employee-field"><label>Phone</label><input name="phone" id="phone" maxlength="50"></div><div class="fd-employee-field"><label>Alternate Phone</label><input name="alternate_phone" id="alternatePhone" maxlength="50"></div><div class="fd-employee-field"><label>Job Title</label><input name="job_title" id="jobTitle" maxlength="120"></div><div class="fd-employee-section">Organization</div><div class="fd-employee-field"><label>Branch</label><select name="branch_id" id="branchId"><option value="">No Branch</option></select></div><div class="fd-employee-field"><label>Department</label><select name="department_id" id="departmentId"><option value="">No Department</option></select></div><div class="fd-employee-field"><label>Role</label><select name="role_id" id="roleId"><option value="">No Role</option></select></div><div class="fd-employee-field"><label for="laborRate">Labour Rate (Per Hour)</label><div class="fd-employee-money-input currency-<?= $tenantCurrencyPosition === 'after' ? 'after' : 'before' ?>"><span class="fd-employee-currency" aria-hidden="true"><?= htmlspecialchars($tenantCurrencySymbol, ENT_QUOTES, 'UTF-8') ?></span><input type="number" min="0" step="0.01" name="labor_rate" id="laborRate" inputmode="decimal" placeholder="0.00" aria-describedby="laborRateHelp"></div><small class="fd-employee-field-help" id="laborRateHelp">Hourly labour rate in <?= htmlspecialchars($tenantCurrencyCode !== '' ? $tenantCurrencyCode : 'the tenant currency', ENT_QUOTES, 'UTF-8') ?>, used for job costing and labour calculations.</small></div><div class="fd-employee-section">Account Access</div><div class="fd-employee-field full"><label>Password</label><input type="password" name="password" id="employeePassword" minlength="8" autocomplete="new-password"><small id="passwordHelp">Leave blank to keep current password.</small></div><div class="fd-employee-switches"><label class="fd-employee-switch-row"><span><strong>Bookable</strong><small>Can be scheduled.</small></span><span class="fd-employee-switch"><input type="checkbox" name="is_bookable" id="isBookable" value="1" checked></span></label><label class="fd-employee-switch-row"><span><strong>Field Worker</strong><small>Works on field jobs.</small></span><span class="fd-employee-switch"><input type="checkbox" name="is_field_worker" id="isFieldWorker" value="1"></span></label><label class="fd-employee-switch-row"><span><strong>Tenant Admin</strong><small>Tenant administrator.</small></span><span class="fd-employee-switch"><input type="checkbox" name="is_tenant_admin" id="isTenantAdmin" value="1"></span></label></div></div></div><div class="fd-employee-modal-footer"><button class="fd-employee-btn" id="cancelEmployeeButton" type="button">Cancel</button><button class="fd-employee-btn primary" id="saveEmployeeButton" type="submit"><span class="fd-employee-loader"></span><i class="bi bi-check-lg"></i><span id="saveEmployeeButtonText">Save Employee</span></button></div></form></section></div>
-<div class="fd-employee-modal-backdrop" id="deleteModalBackdrop"><section class="fd-employee-modal fd-employee-confirm"><div class="fd-employee-modal-header"><span class="fd-employee-modal-icon"><i class="bi bi-trash"></i></span><div class="fd-employee-modal-heading"><h3>Delete Employee</h3><p>The employee account will be soft deleted.</p></div><button class="fd-employee-modal-close" id="deleteModalClose" type="button"><i class="bi bi-x-lg"></i></button></div><div class="fd-employee-modal-body" id="deleteEmployeeMessage">Delete this employee?</div><div class="fd-employee-modal-footer"><button class="fd-employee-btn" id="cancelDeleteButton" type="button">Cancel</button><button class="fd-employee-btn danger" id="confirmDeleteButton" type="button"><span class="fd-employee-loader"></span><i class="bi bi-trash"></i>Delete</button></div></section></div>
-<div class="fd-employee-toast info" id="employeesToast"><span id="employeesToastMessage">Notification</span><button id="employeesToastClose" type="button"><i class="bi bi-x"></i></button></div>
-<script>
-(function(){'use strict';var csrf=<?= json_encode($employeesCsrfToken) ?>,state={page:1,perPage:10,search:'',status:'',branchId:'',roleId:'',deletingId:0,meta:false},body=document.getElementById('employeesTableBody'),modal=document.getElementById('employeeModalBackdrop'),delModal=document.getElementById('deleteModalBackdrop'),form=document.getElementById('employeeForm'),saveBtn=document.getElementById('saveEmployeeButton'),toast=document.getElementById('employeesToast'),toastMsg=document.getElementById('employeesToastMessage'),timer=null,searchTimer=null;function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;')}function show(t,m){if(timer)clearTimeout(timer);toast.className='fd-employee-toast '+(t||'info')+' show';toastMsg.textContent=m||'Notification';timer=setTimeout(function(){toast.classList.remove('show')},3000)}function loadBtn(b,x){b.disabled=!!x;b.classList.toggle('loading',!!x)}function parse(r){return r.text().then(function(x){var d;try{d=x.trim()?JSON.parse(x):{}}catch(e){throw new Error(x.replace(/<[^>]*>/g,' ').trim()||'Invalid server response.')}if(!r.ok||!d.success)throw new Error(d.message||'Request failed.');return d})}function req(fd){fd.append('csrf_token',csrf);return fetch('api/employees.php',{method:'POST',body:fd,credentials:'same-origin',headers:{'X-Requested-With':'XMLHttpRequest','Accept':'application/json'}}).then(parse)}function fill(s,items,empty){var h='<option value="">'+esc(empty)+'</option>';items.forEach(function(i){h+='<option value="'+Number(i.id)+'">'+esc(i.name)+'</option>'});s.innerHTML=h}function meta(m){fill(document.getElementById('branchId'),m.branches||[],'No Branch');fill(document.getElementById('departmentId'),m.departments||[],'No Department');fill(document.getElementById('roleId'),m.roles||[],'No Role');fill(document.getElementById('branchFilter'),m.branches||[],'All Branches');fill(document.getElementById('roleFilter'),m.roles||[],'All Roles');state.meta=true}function initials(a,b){return ((a?a.charAt(0):'')+(b?b.charAt(0):'')).toUpperCase()||'U'}function fmt(v){if(!v)return '-';var d=new Date(String(v).replace(' ','T'));return isNaN(d.getTime())?esc(v):d.toLocaleDateString(undefined,{day:'2-digit',month:'short',year:'numeric'})}function render(rows){if(!rows.length){body.innerHTML='<tr><td colspan="10" class="fd-employee-empty">No employees found.</td></tr>';return}var h='';rows.forEach(function(r,i){var av=r.avatar_path?'<span class="fd-employee-avatar"><img src="'+esc(r.avatar_path)+'"></span>':'<span class="fd-employee-avatar">'+esc(initials(r.first_name,r.last_name))+'</span>';var wt=(Number(r.is_field_worker)===1?'<span class="fd-employee-badge field">Field</span> ':'')+(Number(r.is_tenant_admin)===1?'<span class="fd-employee-badge admin">Admin</span>':'');if(!wt)wt='<span class="fd-employee-badge inactive">Office</span>';var db=Number(r.is_current_user)===1?'':'<button class="fd-employee-icon danger" data-action="delete" data-id="'+Number(r.id)+'"><i class="bi bi-trash"></i></button>';h+='<tr><td>'+((state.page-1)*state.perPage+i+1)+'</td><td><div class="fd-employee-person">'+av+'<span><strong>'+esc((r.first_name||'')+(r.last_name?' '+r.last_name:''))+'</strong><small>'+esc(r.employee_code||'-')+(r.job_title?' - '+esc(r.job_title):'')+'</small></span></div></td><td>'+esc(r.email||'-')+'<br><small>'+esc(r.phone||'-')+'</small></td><td>'+esc(r.branch_name||'-')+'</td><td>'+esc(r.department_name||'-')+'</td><td>'+esc(r.role_name||'-')+'</td><td>'+wt+'</td><td><span class="fd-employee-badge '+esc(r.status)+'">'+esc(r.status)+'</span></td><td>'+fmt(r.last_login_at)+'</td><td><div class="fd-employee-actions-cell"><button class="fd-employee-icon" data-action="edit" data-id="'+Number(r.id)+'"><i class="bi bi-pencil"></i></button><button class="fd-employee-icon" data-action="toggle" data-id="'+Number(r.id)+'" data-status="'+esc(r.status)+'"><i class="bi bi-power"></i></button>'+db+'</div></td></tr>'});body.innerHTML=h}function load(){var fd=new FormData();fd.append('action','list');fd.append('page',state.page);fd.append('per_page',state.perPage);fd.append('search',state.search);fd.append('status',state.status);fd.append('branch_id',state.branchId);fd.append('role_id',state.roleId);body.innerHTML='<tr><td colspan="10" class="fd-employee-empty">Loading employees...</td></tr>';req(fd).then(function(d){render(d.employees||[]);if(!state.meta)meta(d.meta||{});var s=d.summary||{},p=d.pagination||{};document.getElementById('statTotal').textContent=Number(s.total||0);document.getElementById('statActive').textContent=Number(s.active||0);document.getElementById('statField').textContent=Number(s.field_workers||0);document.getElementById('overviewTotal').textContent=Number(s.total||0);document.getElementById('overviewActive').textContent=Number(s.active||0);document.getElementById('overviewField').textContent=Number(s.field_workers||0);document.getElementById('overviewBranches').textContent=Number(s.branches||0);document.getElementById('employeesCountText').textContent='Showing '+Number(p.from||0)+'-'+Number(p.to||0)+' of '+Number(p.total||0)+' employees';document.getElementById('prevPageButton').disabled=state.page<=1;document.getElementById('nextPageButton').disabled=state.page>=Number(p.pages||1)}).catch(function(e){body.innerHTML='<tr><td colspan="10" class="fd-employee-empty">'+esc(e.message)+'</td></tr>';show('error',e.message)})}function close(){modal.classList.remove('show')}function open(id){form.reset();document.getElementById('employeeId').value=id||0;document.getElementById('isBookable').checked=true;document.getElementById('employeePassword').value='';if(!id){return}modal.classList.add('show');var fd=new FormData();fd.append('action','get');fd.append('employee_id',id);req(fd).then(function(d){meta(d.meta||{});var e=d.employee||{};document.getElementById('employeeModalTitle').textContent='Edit Employee';document.getElementById('saveEmployeeButtonText').textContent='Update Employee';document.getElementById('employeePassword').required=false;document.getElementById('passwordHelp').textContent='Leave blank to keep current password.';['employeeCode','firstName','lastName','email','phone','alternatePhone','jobTitle','laborRate','branchId','departmentId','roleId','employeeStatus'].forEach(function(k){var map={employeeCode:'employee_code',firstName:'first_name',lastName:'last_name',email:'email',phone:'phone',alternatePhone:'alternate_phone',jobTitle:'job_title',laborRate:'labor_rate',branchId:'branch_id',departmentId:'department_id',roleId:'role_id',employeeStatus:'status'};document.getElementById(k).value=e[map[k]]||''});document.getElementById('isBookable').checked=Number(e.is_bookable)===1;document.getElementById('isFieldWorker').checked=Number(e.is_field_worker)===1;document.getElementById('isTenantAdmin').checked=Number(e.is_tenant_admin)===1}).catch(function(e){close();show('error',e.message)})}form.addEventListener('submit',function(ev){ev.preventDefault();if(!form.reportValidity())return show('warning','Complete the required employee fields.');var fd=new FormData(form);fd.append('action','save');loadBtn(saveBtn,true);req(fd).then(function(d){close();show('success',d.message);state.meta=false;load()}).catch(function(e){show('error',e.message)}).finally(function(){loadBtn(saveBtn,false)})});body.addEventListener('click',function(ev){var b=ev.target.closest('[data-action]');if(!b)return;var a=b.dataset.action,id=Number(b.dataset.id);if(a==='edit')return open(id);if(a==='toggle'){var fd=new FormData();fd.append('action','change_status');fd.append('employee_id',id);fd.append('status',b.dataset.status==='active'?'inactive':'active');return req(fd).then(function(d){show('success',d.message);load()}).catch(function(e){show('error',e.message)})}if(a==='delete'){state.deletingId=id;document.getElementById('deleteEmployeeMessage').textContent='Delete this employee? The account will be soft deleted.';delModal.classList.add('show')}});document.getElementById('confirmDeleteButton').onclick=function(){var b=this,fd=new FormData();fd.append('action','delete');fd.append('employee_id',state.deletingId);loadBtn(b,true);req(fd).then(function(d){delModal.classList.remove('show');show('success',d.message);state.meta=false;load()}).catch(function(e){show('error',e.message)}).finally(function(){loadBtn(b,false)})};document.getElementById('employeeModalClose').onclick=close;document.getElementById('cancelEmployeeButton').onclick=close;document.getElementById('deleteModalClose').onclick=function(){delModal.classList.remove('show')};document.getElementById('cancelDeleteButton').onclick=function(){delModal.classList.remove('show')};document.getElementById('employeesToastClose').onclick=function(){toast.classList.remove('show')};document.getElementById('clearFiltersButton').onclick=function(){['employeesSearch','statusFilter','branchFilter','roleFilter'].forEach(function(id){document.getElementById(id).value=''});state.search=state.status=state.branchId=state.roleId='';state.page=1;load()};document.getElementById('employeesSearch').oninput=function(){var v=this.value;if(searchTimer)clearTimeout(searchTimer);searchTimer=setTimeout(function(){state.search=v.trim();state.page=1;load()},250)};document.getElementById('statusFilter').onchange=function(){state.status=this.value;state.page=1;load()};document.getElementById('branchFilter').onchange=function(){state.branchId=this.value;state.page=1;load()};document.getElementById('roleFilter').onchange=function(){state.roleId=this.value;state.page=1;load()};document.getElementById('prevPageButton').onclick=function(){if(state.page>1){state.page--;load()}};document.getElementById('nextPageButton').onclick=function(){state.page++;load()};load()})();
-</script>
+                    <section class="fd-employee-add-header">
+                        <div>
+                            <h1>Add Employee</h1>
+                            <p>Create a new employee account for <?= employeeAddEscape($tenantName) ?>. A welcome email is sent automatically after the account is created.</p>
+                        </div>
+                        <a class="fd-employee-btn" href="employees.php"><i class="bi bi-arrow-left"></i>Back to Employees</a>
+                    </section>
 
+                    <section class="fd-employee-add-card">
+                        <div class="fd-employee-add-card-head">
+                            <span class="fd-employee-add-card-icon"><i class="bi bi-person-plus"></i></span>
+                            <div>
+                                <strong>Employee Details</strong>
+                                <small>Enter account, organization and work details.</small>
+                            </div>
+                        </div>
+
+                        <form id="addEmployeeForm" novalidate>
+                            <div class="fd-employee-add-body">
+                                <input type="hidden" name="employee_id" value="0">
+                                <div class="fd-employee-grid">
+                                    <div class="fd-employee-section">Basic Details</div>
+
+                                    <div class="fd-employee-field">
+                                        <label for="employeeCode">Employee Code</label>
+                                        <input name="employee_code" id="employeeCode" maxlength="80" placeholder="Optional employee code">
+                                    </div>
+
+                                    <div class="fd-employee-field">
+                                        <label for="employeeStatus">Status</label>
+                                        <select name="status" id="employeeStatus">
+                                            <option value="active" selected>Active</option>
+                                            <option value="inactive">Inactive</option>
+                                            <option value="invited">Invited</option>
+                                            <option value="suspended">Suspended</option>
+                                        </select>
+                                    </div>
+
+                                    <div class="fd-employee-field">
+                                        <label for="firstName">First Name *</label>
+                                        <input name="first_name" id="firstName" maxlength="120" required autocomplete="given-name">
+                                    </div>
+
+                                    <div class="fd-employee-field">
+                                        <label for="lastName">Last Name</label>
+                                        <input name="last_name" id="lastName" maxlength="120" autocomplete="family-name">
+                                    </div>
+
+                                    <div class="fd-employee-field">
+                                        <label for="email">Email Address *</label>
+                                        <input type="email" name="email" id="email" maxlength="190" required autocomplete="email">
+                                        <small>The welcome email will be sent automatically to this registered address.</small>
+                                    </div>
+
+                                    <div class="fd-employee-field">
+                                        <label for="phone">Phone</label>
+                                        <input name="phone" id="phone" maxlength="50" autocomplete="tel">
+                                    </div>
+
+                                    <div class="fd-employee-field">
+                                        <label for="alternatePhone">Alternate Phone</label>
+                                        <input name="alternate_phone" id="alternatePhone" maxlength="50">
+                                    </div>
+
+                                    <div class="fd-employee-field">
+                                        <label for="jobTitle">Job Title</label>
+                                        <input name="job_title" id="jobTitle" maxlength="120">
+                                    </div>
+
+                                    <div class="fd-employee-section">Organization</div>
+
+                                    <div class="fd-employee-field">
+                                        <label for="branchId">Branch</label>
+                                        <select name="branch_id" id="branchId">
+                                            <option value="">No Branch</option>
+                                            <?php foreach ($branches as $branch): ?>
+                                                <option value="<?= (int) $branch['id'] ?>" <?= $defaultBranchId === (int) $branch['id'] ? 'selected' : '' ?>><?= employeeAddEscape($branch['name']) ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+
+                                    <div class="fd-employee-field">
+                                        <label for="departmentId">Department</label>
+                                        <select name="department_id" id="departmentId">
+                                            <option value="">No Department</option>
+                                        </select>
+                                    </div>
+
+                                    <div class="fd-employee-field">
+                                        <label for="roleId">Role</label>
+                                        <select name="role_id" id="roleId">
+                                            <option value="">No Role</option>
+                                            <?php foreach ($roles as $role): ?>
+                                                <option value="<?= (int) $role['id'] ?>"><?= employeeAddEscape($role['name']) ?></option>
+                                            <?php endforeach; ?>
+                                        </select>
+                                    </div>
+
+                                    <div class="fd-employee-field">
+                                        <label for="laborRate">Labour Rate (Per Hour)</label>
+                                        <div class="fd-employee-money-input currency-<?= $tenantCurrencyPosition === 'after' ? 'after' : 'before' ?>">
+                                            <span class="fd-employee-currency" aria-hidden="true"><?= employeeAddEscape($tenantCurrencySymbol) ?></span>
+                                            <input type="number" min="0" step="0.01" name="labor_rate" id="laborRate" inputmode="decimal" placeholder="0.00" aria-describedby="laborRateHelp">
+                                        </div>
+                                        <small id="laborRateHelp">Hourly labour rate in <?= employeeAddEscape($tenantCurrencyCode !== '' ? $tenantCurrencyCode : 'the tenant currency') ?>, used for job costing and labour calculations.</small>
+                                    </div>
+
+                                    <div class="fd-employee-section">Account Access</div>
+
+                                    <div class="fd-employee-field">
+                                        <label for="employeePassword">Password *</label>
+                                        <input type="password" name="password" id="employeePassword" minlength="8" required autocomplete="new-password">
+                                        <small>Minimum 8 characters. The password is not included in the welcome email.</small>
+                                    </div>
+
+                                    <div class="fd-employee-field">
+                                        <label for="confirmPassword">Confirm Password *</label>
+                                        <input type="password" id="confirmPassword" minlength="8" required autocomplete="new-password">
+                                    </div>
+
+                                    <div class="fd-employee-switches">
+                                        <label class="fd-employee-switch-row">
+                                            <span><strong>Bookable</strong><small>Can be scheduled.</small></span>
+                                            <span class="fd-employee-switch"><input type="checkbox" name="is_bookable" value="1" checked></span>
+                                        </label>
+                                        <label class="fd-employee-switch-row">
+                                            <span><strong>Field Worker</strong><small>Works on field jobs.</small></span>
+                                            <span class="fd-employee-switch"><input type="checkbox" name="is_field_worker" value="1"></span>
+                                        </label>
+                                        <label class="fd-employee-switch-row">
+                                            <span><strong>Tenant Admin</strong><small>Tenant administrator.</small></span>
+                                            <span class="fd-employee-switch"><input type="checkbox" name="is_tenant_admin" value="1"></span>
+                                        </label>
+                                    </div>
+
+                                    <div class="fd-employee-add-mail-note">
+                                        <i class="bi bi-envelope-check"></i>
+                                        <div>
+                                            After the employee record is created, FieldPlx first uses an active SMTP configuration for the selected branch when available, then falls back to the active tenant SMTP configuration. The email contains the employee account details but never includes the password.
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="fd-employee-created-box" id="employeeCreatedBox"></div>
+                            </div>
+
+                            <div class="fd-employee-add-footer">
+                                <span class="fd-employee-add-footer-note">Fields marked * are required.</span>
+                                <div class="fd-employee-add-footer-actions">
+                                    <a class="fd-employee-btn" href="employees.php">Cancel</a>
+                                    <button class="fd-employee-btn primary" id="createEmployeeButton" type="submit">
+                                        <span class="fd-employee-loader"></span>
+                                        <i class="bi bi-person-check"></i>
+                                        <span>Create Employee</span>
+                                    </button>
+                                </div>
+                            </div>
+                        </form>
+                    </section>
+                </div>
             </div>
         </main>
     </div>
+
     <?php require_once __DIR__ . '/includes/footer.php'; ?>
 
+    <div class="fd-employee-toast info" id="employeesToast">
+        <span id="employeesToastMessage">Notification</span>
+        <button id="employeesToastClose" type="button"><i class="bi bi-x"></i></button>
+    </div>
+
+    <script>
+    (function(){
+        'use strict';
+
+        var csrf = <?= json_encode($employeesCsrfToken) ?>;
+        var departments = <?= json_encode($departments, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+        var form = document.getElementById('addEmployeeForm');
+        var branch = document.getElementById('branchId');
+        var department = document.getElementById('departmentId');
+        var saveButton = document.getElementById('createEmployeeButton');
+        var toast = document.getElementById('employeesToast');
+        var toastMessage = document.getElementById('employeesToastMessage');
+        var createdBox = document.getElementById('employeeCreatedBox');
+        var toastTimer = null;
+        var created = false;
+
+        function esc(value){
+            return String(value == null ? '' : value)
+                .replace(/&/g,'&amp;')
+                .replace(/</g,'&lt;')
+                .replace(/>/g,'&gt;')
+                .replace(/"/g,'&quot;')
+                .replace(/'/g,'&#039;');
+        }
+
+        function showToast(type,message,duration){
+            if(toastTimer) clearTimeout(toastTimer);
+            toast.className = 'fd-employee-toast ' + (type || 'info') + ' show';
+            toastMessage.textContent = message || 'Notification';
+            toastTimer = setTimeout(function(){toast.classList.remove('show');}, duration || 3500);
+        }
+
+        function loading(active){
+            saveButton.disabled = !!active;
+            saveButton.classList.toggle('loading',!!active);
+        }
+
+        function parseResponse(response){
+            return response.text().then(function(text){
+                var data;
+                try {
+                    data = text.trim() ? JSON.parse(text) : {};
+                } catch(error) {
+                    throw new Error(text.replace(/<[^>]*>/g,' ').trim() || 'Invalid server response.');
+                }
+                if(!response.ok || !data.success){
+                    throw new Error(data.message || 'Unable to create employee.');
+                }
+                return data;
+            });
+        }
+
+        function renderDepartments(){
+            var branchId = Number(branch.value || 0);
+            var html = '<option value="">No Department</option>';
+            departments.forEach(function(item){
+                var departmentBranch = Number(item.branch_id || 0);
+                if(departmentBranch === 0 || branchId === 0 || departmentBranch === branchId){
+                    html += '<option value="' + Number(item.id) + '">' + esc(item.name || '') + '</option>';
+                }
+            });
+            department.innerHTML = html;
+        }
+
+        branch.addEventListener('change',renderDepartments);
+        renderDepartments();
+
+        form.addEventListener('submit',function(event){
+            event.preventDefault();
+            if(created) return;
+
+            if(!form.reportValidity()){
+                showToast('warning','Complete the required employee fields.');
+                return;
+            }
+
+            var password = document.getElementById('employeePassword').value;
+            var confirmPassword = document.getElementById('confirmPassword').value;
+            if(password !== confirmPassword){
+                showToast('warning','Password and confirm password do not match.');
+                document.getElementById('confirmPassword').focus();
+                return;
+            }
+
+            var fd = new FormData(form);
+            fd.delete('confirm_password');
+            fd.append('action','save');
+            fd.append('csrf_token',csrf);
+
+            loading(true);
+
+            fetch('api/employees.php',{
+                method:'POST',
+                body:fd,
+                credentials:'same-origin',
+                headers:{
+                    'X-Requested-With':'XMLHttpRequest',
+                    'Accept':'application/json'
+                }
+            })
+            .then(parseResponse)
+            .then(function(data){
+                created = true;
+                form.querySelectorAll('input,select').forEach(function(control){control.disabled = true;});
+                saveButton.disabled = true;
+
+                if(data.email_sent === true){
+                    createdBox.className = 'fd-employee-created-box show';
+                    createdBox.innerHTML = '<strong>Employee created successfully.</strong><br>Welcome email sent to <strong>' + esc(data.email_to || document.getElementById('email').value) + '</strong>.';
+                    showToast('success',data.message || 'Employee created and welcome email sent.',5000);
+                    setTimeout(function(){window.location.href='employees.php';},1500);
+                } else {
+                    createdBox.className = 'fd-employee-created-box show';
+                    createdBox.style.borderColor = '#f0d7a0';
+                    createdBox.style.background = '#fffaf0';
+                    createdBox.style.color = '#74551d';
+                    createdBox.innerHTML = '<strong>Employee created successfully, but the welcome email was not sent.</strong><br>' + esc(data.email_message || 'Check the tenant SMTP configuration in Master Controls.') + '<br><br><a href="employees.php" class="fd-employee-btn">Back to Employees</a>';
+                    showToast('warning',data.message || 'Employee created, but welcome email failed.',7000);
+                }
+            })
+            .catch(function(error){
+                showToast('error',error.message,6000);
+            })
+            .finally(function(){
+                if(!created) loading(false);
+                else saveButton.classList.remove('loading');
+            });
+        });
+
+        document.getElementById('employeesToastClose').onclick = function(){toast.classList.remove('show');};
+    })();
+    </script>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-
-
 </body>
-
 </html>

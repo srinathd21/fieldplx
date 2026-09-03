@@ -229,6 +229,68 @@ function rolesApiCurrentPlanId(
     return (int)$stmt->fetchColumn();
 }
 
+function rolesApiSyncStandardPermissions(
+    PDO $pdo,
+    $tenantId,
+    $planId
+) {
+    if ($planId <= 0 || $tenantId <= 0) {
+        return;
+    }
+
+    /*
+     * New sidebar modules can be added after the original permission seed.
+     * Keep the permission master synchronized with the exact same effective
+     * module rules used by the tenant sidebar: plan enabled + active sidebar
+     * module + not disabled by tenant override.
+     */
+    $definitions = array(
+        array('view', '.view', 'View '),
+        array('create', '.create', 'Create in '),
+        array('update', '.update', 'Update '),
+        array('delete', '.delete', 'Delete/archive in '),
+        array('approve', '.approve', 'Approve in '),
+        array('export', '.export', 'Export from ')
+    );
+
+    $sql = "
+        INSERT IGNORE INTO permissions (
+            module_id,
+            action_code,
+            permission_code,
+            description
+        )
+        SELECT
+            m.id,
+            :action_code,
+            CONCAT(m.module_code, :permission_suffix),
+            CONCAT(:description_prefix, m.module_name)
+        FROM plan_modules pm
+        INNER JOIN modules m
+            ON m.id = pm.module_id
+        LEFT JOIN tenant_modules tm
+            ON tm.tenant_id = :tenant_id
+           AND tm.module_id = m.id
+        WHERE pm.plan_id = :plan_id
+          AND pm.is_enabled = 1
+          AND m.is_active = 1
+          AND m.is_sidebar_item = 1
+          AND COALESCE(tm.access_type, 'inherit') <> 'disabled'
+    ";
+
+    $stmt = $pdo->prepare($sql);
+
+    foreach ($definitions as $definition) {
+        $stmt->execute(array(
+            ':action_code' => $definition[0],
+            ':permission_suffix' => $definition[1],
+            ':description_prefix' => $definition[2],
+            ':tenant_id' => (int)$tenantId,
+            ':plan_id' => (int)$planId
+        ));
+    }
+}
+
 function rolesApiPermissions(
     PDO $pdo,
     $tenantId,
@@ -238,6 +300,12 @@ function rolesApiPermissions(
         return array();
     }
 
+    rolesApiSyncStandardPermissions(
+        $pdo,
+        $tenantId,
+        $planId
+    );
+
     $stmt = $pdo->prepare("
         SELECT
             p.id,
@@ -246,15 +314,23 @@ function rolesApiPermissions(
             p.permission_code,
             p.description,
 
+            m.parent_id,
             m.module_code,
             m.module_name,
-            m.menu_order
+            m.menu_url,
+            m.icon_name,
+            m.menu_order,
+
+            parent.module_code AS parent_module_code,
+            parent.module_name AS parent_module_name,
+            parent.menu_order AS parent_menu_order
 
         FROM permissions p
 
         INNER JOIN modules m
             ON m.id = p.module_id
            AND m.is_active = 1
+           AND m.is_sidebar_item = 1
 
         INNER JOIN plan_modules pm
             ON pm.module_id = m.id
@@ -265,23 +341,36 @@ function rolesApiPermissions(
             ON tm.tenant_id = :tenant_id
            AND tm.module_id = m.id
 
+        LEFT JOIN modules parent
+            ON parent.id = m.parent_id
+
         WHERE COALESCE(
             tm.access_type,
             'inherit'
         ) <> 'disabled'
 
         ORDER BY
+            COALESCE(parent.menu_order, m.menu_order),
+            COALESCE(m.parent_id, m.id),
+            CASE WHEN m.parent_id IS NULL THEN 0 ELSE 1 END,
             m.menu_order,
             m.module_name,
+            CASE p.action_code
+                WHEN 'view' THEN 1
+                WHEN 'create' THEN 2
+                WHEN 'update' THEN 3
+                WHEN 'delete' THEN 4
+                WHEN 'approve' THEN 5
+                WHEN 'export' THEN 6
+                ELSE 99
+            END,
             p.action_code
     ");
 
     $stmt->execute(
         array(
-            ':plan_id' =>
-                (int)$planId,
-            ':tenant_id' =>
-                (int)$tenantId
+            ':plan_id' => (int)$planId,
+            ':tenant_id' => (int)$tenantId
         )
     );
 

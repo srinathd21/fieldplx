@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/includes/auth.php';
+require_once __DIR__ . '/includes/db.php';
 
 $pageTitle = 'Roles';
 $activePage = 'roles';
@@ -13,6 +14,51 @@ if (empty($_SESSION['roles_csrf_token'])) {
 }
 
 $rolesCsrfToken = (string)$_SESSION['roles_csrf_token'];
+
+/*
+ * Role summary cards are loaded directly from the tenant database.
+ * The list API remains responsible only for the dynamic role table/actions.
+ */
+$rolesTenantId = isset($_SESSION['tenant_id']) ? (int)$_SESSION['tenant_id'] : 0;
+$rolesSummary = array(
+    'total' => 0,
+    'active' => 0,
+    'admin' => 0,
+    'assigned_users' => 0
+);
+
+if ($rolesTenantId > 0 && isset($pdo) && $pdo instanceof PDO) {
+    try {
+        $rolesSummaryStmt = $pdo->prepare("
+            SELECT
+                COUNT(*) AS total,
+                SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active,
+                SUM(CASE WHEN is_admin = 1 THEN 1 ELSE 0 END) AS admin
+            FROM roles
+            WHERE tenant_id = :tenant_id
+        ");
+        $rolesSummaryStmt->execute(array(':tenant_id' => $rolesTenantId));
+        $rolesSummaryRow = $rolesSummaryStmt->fetch(PDO::FETCH_ASSOC);
+
+        if ($rolesSummaryRow) {
+            $rolesSummary['total'] = (int)($rolesSummaryRow['total'] ?? 0);
+            $rolesSummary['active'] = (int)($rolesSummaryRow['active'] ?? 0);
+            $rolesSummary['admin'] = (int)($rolesSummaryRow['admin'] ?? 0);
+        }
+
+        $rolesAssignedStmt = $pdo->prepare("
+            SELECT COUNT(*)
+            FROM users
+            WHERE tenant_id = :tenant_id
+              AND role_id IS NOT NULL
+              AND deleted_at IS NULL
+        ");
+        $rolesAssignedStmt->execute(array(':tenant_id' => $rolesTenantId));
+        $rolesSummary['assigned_users'] = (int)$rolesAssignedStmt->fetchColumn();
+    } catch (Throwable $rolesSummaryError) {
+        error_log('FieldPlx Roles direct summary: ' . $rolesSummaryError->getMessage());
+    }
+}
 
 function roles_h($value)
 {
@@ -3397,6 +3443,355 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer {
     width:auto;
   }
 }
+
+
+/* ==========================================================
+   Roles v2.0 - canonical FieldPlx cards + permission matrix
+   ========================================================== */
+.fd-roles-summary{margin-bottom:18px;}
+.fd-role-summary-card{
+  width:100%;
+  min-height:134px;
+  padding:15px 18px;
+  position:relative;
+  overflow:visible;
+  border:1px solid #dfe6ef;
+  border-radius:12px;
+  background:#fff;
+  box-shadow:0 3px 12px rgba(24,45,76,.035);
+}
+.fd-role-card-arrow{
+  position:absolute;
+  top:15px;
+  right:16px;
+  color:#8b9bb0;
+  font-size:15px;
+  line-height:1;
+}
+.fd-role-summary-title{
+  margin:0;
+  color:#31425b;
+  font-size:15px;
+  line-height:1.2;
+  font-weight:600;
+}
+.fd-role-summary-period{
+  margin-top:5px;
+  color:#8c98a9;
+  font-size:10px;
+}
+.fd-role-summary-value-row{
+  min-height:67px;
+  padding-top:10px;
+  display:flex;
+  align-items:flex-end;
+}
+.fd-role-summary-value{
+  color:#020b16;
+  font-size:31px;
+  line-height:1;
+  font-weight:700;
+  letter-spacing:-.5px;
+}
+.fd-role-overview-list{
+  margin-top:12px;
+  display:grid;
+  gap:7px;
+}
+.fd-role-overview-item{
+  min-width:0;
+  display:grid;
+  grid-template-columns:7px minmax(0,1fr) auto;
+  align-items:center;
+  gap:8px;
+  color:#637289;
+  font-size:9.5px;
+}
+.fd-role-overview-item strong{
+  color:#172942;
+  font-size:10px;
+  font-weight:700;
+}
+.fd-role-overview-dot{
+  width:7px;
+  height:7px;
+  border-radius:50%;
+  background:#123d70;
+}
+.fd-role-overview-dot.active{background:#74b824;}
+.fd-role-overview-dot.admin{background:#547493;}
+.fd-role-overview-dot.users{background:#96c945;}
+
+.fd-roles-card{
+  border-radius:10px;
+  box-shadow:0 4px 14px rgba(31,43,88,.04);
+}
+.fd-roles-toolbar{background:#fff;}
+.fd-role-table tbody tr:hover{background:#fbfdf8;}
+
+.fd-role-modal{
+  width:min(1060px,100%);
+  max-height:calc(100vh - 30px);
+  overflow:hidden;
+  display:flex;
+  flex-direction:column;
+}
+.fd-role-modal form{
+  min-height:0;
+  display:flex;
+  flex-direction:column;
+}
+.fd-role-modal-body{
+  min-height:0;
+  overflow:auto;
+  padding:17px;
+}
+.fd-role-modal-header{
+  padding:13px 16px;
+  background:#fff;
+}
+.fd-role-modal-heading h3{font-size:14px;}
+.fd-role-modal-heading p{font-size:9px;}
+.fd-role-modal-footer{
+  flex:0 0 auto;
+  padding:12px 16px;
+}
+
+.fd-role-permissions{
+  margin-top:17px;
+  border-radius:11px;
+  border-color:#dfe6ef;
+  background:#fff;
+}
+.fd-role-permissions-head{
+  min-height:60px;
+  padding:11px 13px;
+  align-items:center;
+  background:#fff;
+}
+.fd-role-permissions-copy{min-width:0;}
+.fd-role-permissions-head strong{
+  color:#1e304a;
+  font-size:11px;
+}
+.fd-role-permissions-head small{
+  max-width:620px;
+  margin-top:4px;
+  font-size:8.5px;
+  line-height:1.45;
+}
+.fd-role-permissions-head-meta{
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:7px;
+  flex-wrap:wrap;
+}
+.fd-role-permission-count{
+  padding:5px 7px;
+  border:1px solid #e0e6ed;
+  border-radius:999px;
+  color:#69788e;
+  background:#f8fafc;
+  font-size:8px;
+  white-space:nowrap;
+}
+.fd-role-select-all-control,
+.fd-role-action-select,
+.fd-role-module-select-all{
+  margin:0;
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  color:#4c5f77;
+  font-size:8.5px;
+  font-weight:600;
+  cursor:pointer;
+  white-space:nowrap;
+}
+.fd-role-select-all-control{
+  min-height:30px;
+  padding:0 9px;
+  border:1px solid #cfe3ae;
+  border-radius:7px;
+  color:var(--fd-green-dark);
+  background:#f8fced;
+}
+.fd-role-select-all-control input,
+.fd-role-action-select input,
+.fd-role-module-select-all input{
+  width:13px;
+  height:13px;
+  margin:0;
+  accent-color:var(--fd-green);
+}
+.fd-role-permission-bulk{
+  min-height:42px;
+  padding:7px 12px;
+  display:flex;
+  align-items:center;
+  gap:7px;
+  flex-wrap:wrap;
+  border-bottom:1px solid #edf1f5;
+  background:#fbfcfd;
+}
+.fd-role-permission-bulk:empty{display:none;}
+.fd-role-permission-bulk-label{
+  margin-right:2px;
+  color:#738197;
+  font-size:8px;
+  font-weight:700;
+  text-transform:uppercase;
+  letter-spacing:.35px;
+}
+.fd-role-action-select{
+  min-height:27px;
+  padding:0 8px;
+  border:1px solid #e0e6ec;
+  border-radius:7px;
+  background:#fff;
+}
+.fd-role-action-select:hover{
+  border-color:#cfe3ae;
+  color:var(--fd-green-dark);
+  background:#f9fcf4;
+}
+.fd-role-permission-list{
+  max-height:430px;
+  padding:11px;
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:10px;
+  overflow:auto;
+  background:#f8fafc;
+}
+.fd-role-permission-module{
+  min-width:0;
+  overflow:hidden;
+  border:1px solid #dfe6ed !important;
+  border-radius:10px;
+  background:#fff;
+  box-shadow:0 2px 8px rgba(24,45,76,.025);
+}
+.fd-role-permission-title{
+  min-height:48px;
+  padding:8px 10px;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  border-bottom:1px solid #edf1f4;
+  color:#34465e;
+  background:#fff;
+}
+.fd-role-permission-module-icon{
+  width:30px;
+  height:30px;
+  flex:0 0 30px;
+  display:grid;
+  place-items:center;
+  border-radius:8px;
+  color:#123d70;
+  background:#edf2f7;
+  font-size:13px;
+}
+.fd-role-permission-module-copy{
+  min-width:0;
+  flex:1;
+}
+.fd-role-permission-module-copy strong,
+.fd-role-permission-module-copy small{display:block;}
+.fd-role-permission-module-copy strong{
+  overflow:hidden;
+  color:#172942;
+  font-size:9.5px;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.fd-role-permission-module-copy small{
+  margin-top:2px;
+  overflow:hidden;
+  color:#8a96a7;
+  font-size:7.5px;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.fd-role-module-select-all{
+  min-height:27px;
+  padding:0 7px;
+  border:1px solid #e0e6ec;
+  border-radius:7px;
+  background:#fbfcfd;
+}
+.fd-role-permission-items{
+  padding:9px 10px 10px;
+  display:grid;
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:7px;
+}
+.fd-role-permission-check{
+  min-width:0;
+  min-height:43px;
+  padding:7px 8px;
+  display:grid;
+  grid-template-columns:14px minmax(0,1fr);
+  grid-template-rows:auto auto;
+  align-items:center;
+  column-gap:6px;
+  row-gap:1px;
+  border:1px solid #e2e7ed;
+  border-radius:8px;
+  color:#52647b;
+  background:#fff;
+  font-size:8.5px;
+}
+.fd-role-permission-check:hover{
+  border-color:#cfe3ae;
+  background:#fbfdf8;
+}
+.fd-role-permission-check input{
+  grid-row:1/3;
+  width:13px;
+  height:13px;
+  margin:0;
+}
+.fd-role-permission-action{
+  overflow:hidden;
+  color:#34465e;
+  font-size:8.5px;
+  font-weight:700;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.fd-role-permission-check small{
+  overflow:hidden;
+  color:#98a3b1;
+  font-size:6.8px;
+  font-weight:400;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.fd-role-permission-check:has(input:checked){
+  border-color:#bddc91;
+  background:#f8fced;
+}
+.fd-role-permission-check:has(input:checked) .fd-role-permission-action{
+  color:var(--fd-green-dark);
+}
+
+@media(max-width:991.98px){
+  .fd-role-permission-list{grid-template-columns:1fr;}
+}
+@media(max-width:767.98px){
+  .fd-role-permissions-head{align-items:flex-start;flex-direction:column;}
+  .fd-role-permissions-head-meta{width:100%;justify-content:flex-start;}
+  .fd-role-permission-items{grid-template-columns:repeat(2,minmax(0,1fr));}
+}
+@media(max-width:480px){
+  .fd-role-permission-items{grid-template-columns:1fr;}
+  .fd-role-permission-bulk{align-items:stretch;}
+  .fd-role-action-select{flex:1 1 calc(50% - 8px);}
+}
+
 </style>
 </head>
 
@@ -3409,25 +3804,14 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer {
                 <div class="fd-dashboard">
 
                     <section class="fd-roles-header">
-
                         <div>
-                            <h1 class="fd-roles-title">Roles</h1>
+                            <h1 class="fd-roles-title">Roles & Permissions</h1>
                             <p class="fd-roles-subtitle">
-                                Create and manage tenant roles, status and permissions available to this tenant.
+                                Create employee roles and control access to every module available in this tenant's sidebar.
                             </p>
                         </div>
 
                         <div class="fd-roles-actions">
-
-                            <button
-                                type="button"
-                                class="fd-role-button"
-                                id="refreshRolesButton"
-                            >
-                                <i class="bi bi-arrow-clockwise"></i>
-                                Refresh
-                            </button>
-
                             <button
                                 type="button"
                                 class="fd-role-button primary"
@@ -3436,69 +3820,71 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer {
                                 <i class="bi bi-plus-lg"></i>
                                 Add Role
                             </button>
-
                         </div>
-
                     </section>
 
                     <section class="row g-3 fd-roles-summary">
-
                         <div class="col-xl-3 col-md-6">
-                            <article class="fd-role-stat-card">
-                                <div class="fd-role-stat-row">
-                                    <span class="fd-role-stat-icon">
-                                        <i class="bi bi-shield-check"></i>
-                                    </span>
-                                    <div>
-                                        <span class="fd-role-stat-label">Total Roles</span>
-                                        <strong class="fd-role-stat-value" id="statTotal">0</strong>
+                            <article class="fd-role-summary-card fd-role-overview-card">
+                                <span class="fd-role-card-arrow"><i class="bi bi-arrow-up-right"></i></span>
+                                <h2 class="fd-role-summary-title">Overview</h2>
+                                <div class="fd-role-overview-list">
+                                    <div class="fd-role-overview-item">
+                                        <span class="fd-role-overview-dot total"></span>
+                                        <span>Total roles</span>
+                                        <strong><?= (int)$rolesSummary['total'] ?></strong>
+                                    </div>
+                                    <div class="fd-role-overview-item">
+                                        <span class="fd-role-overview-dot active"></span>
+                                        <span>Active roles</span>
+                                        <strong><?= (int)$rolesSummary['active'] ?></strong>
+                                    </div>
+                                    <div class="fd-role-overview-item">
+                                        <span class="fd-role-overview-dot admin"></span>
+                                        <span>Admin roles</span>
+                                        <strong><?= (int)$rolesSummary['admin'] ?></strong>
+                                    </div>
+                                    <div class="fd-role-overview-item">
+                                        <span class="fd-role-overview-dot users"></span>
+                                        <span>Assigned users</span>
+                                        <strong><?= (int)$rolesSummary['assigned_users'] ?></strong>
                                     </div>
                                 </div>
                             </article>
                         </div>
 
                         <div class="col-xl-3 col-md-6">
-                            <article class="fd-role-stat-card">
-                                <div class="fd-role-stat-row">
-                                    <span class="fd-role-stat-icon">
-                                        <i class="bi bi-check-circle"></i>
-                                    </span>
-                                    <div>
-                                        <span class="fd-role-stat-label">Active Roles</span>
-                                        <strong class="fd-role-stat-value" id="statActive">0</strong>
-                                    </div>
+                            <article class="fd-role-summary-card fd-role-metric-card">
+                                <span class="fd-role-card-arrow"><i class="bi bi-arrow-up-right"></i></span>
+                                <h2 class="fd-role-summary-title">Total roles</h2>
+                                <div class="fd-role-summary-period">Tenant role master</div>
+                                <div class="fd-role-summary-value-row">
+                                    <strong class="fd-role-summary-value"><?= (int)$rolesSummary['total'] ?></strong>
                                 </div>
                             </article>
                         </div>
 
                         <div class="col-xl-3 col-md-6">
-                            <article class="fd-role-stat-card">
-                                <div class="fd-role-stat-row">
-                                    <span class="fd-role-stat-icon">
-                                        <i class="bi bi-person-lock"></i>
-                                    </span>
-                                    <div>
-                                        <span class="fd-role-stat-label">Admin Roles</span>
-                                        <strong class="fd-role-stat-value" id="statAdmin">0</strong>
-                                    </div>
+                            <article class="fd-role-summary-card fd-role-metric-card">
+                                <span class="fd-role-card-arrow"><i class="bi bi-arrow-up-right"></i></span>
+                                <h2 class="fd-role-summary-title">Active roles</h2>
+                                <div class="fd-role-summary-period">Available for assignment</div>
+                                <div class="fd-role-summary-value-row">
+                                    <strong class="fd-role-summary-value"><?= (int)$rolesSummary['active'] ?></strong>
                                 </div>
                             </article>
                         </div>
 
                         <div class="col-xl-3 col-md-6">
-                            <article class="fd-role-stat-card">
-                                <div class="fd-role-stat-row">
-                                    <span class="fd-role-stat-icon">
-                                        <i class="bi bi-person-badge"></i>
-                                    </span>
-                                    <div>
-                                        <span class="fd-role-stat-label">Assigned Users</span>
-                                        <strong class="fd-role-stat-value" id="statAssigned">0</strong>
-                                    </div>
+                            <article class="fd-role-summary-card fd-role-metric-card">
+                                <span class="fd-role-card-arrow"><i class="bi bi-arrow-up-right"></i></span>
+                                <h2 class="fd-role-summary-title">Assigned users</h2>
+                                <div class="fd-role-summary-period">Employees with a role</div>
+                                <div class="fd-role-summary-value-row">
+                                    <strong class="fd-role-summary-value"><?= (int)$rolesSummary['assigned_users'] ?></strong>
                                 </div>
                             </article>
                         </div>
-
                     </section>
 
                     <section class="fd-card fd-roles-card">
@@ -3751,21 +4137,22 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer {
                                 <div class="fd-role-permissions">
 
                                     <div class="fd-role-permissions-head">
-
-                                        <span>
+                                        <span class="fd-role-permissions-copy">
                                             <strong>Role Permissions</strong>
-                                            <small>Only tenant-accessible module permissions are shown.</small>
+                                            <small>Matches the modules currently available in this tenant's sidebar and plan.</small>
                                         </span>
 
-                                        <label class="fd-role-permission-check">
-                                            <input
-                                                type="checkbox"
-                                                id="selectAllPermissions"
-                                            >
-                                            Select All
-                                        </label>
-
+                                        <div class="fd-role-permissions-head-meta">
+                                            <span class="fd-role-permission-count" id="permissionModuleCount">0 modules</span>
+                                            <span class="fd-role-permission-count" id="permissionSelectedCount">0 selected</span>
+                                            <label class="fd-role-select-all-control">
+                                                <input type="checkbox" id="selectAllPermissions">
+                                                <span>Select all permissions</span>
+                                            </label>
+                                        </div>
                                     </div>
+
+                                    <div class="fd-role-permission-bulk" id="permissionActionBulk" aria-label="Select permissions by action"></div>
 
                                     <div
                                         class="fd-role-permission-list"
@@ -3946,6 +4333,15 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer {
 
                 var selectAllPermissions =
                     document.getElementById('selectAllPermissions');
+
+                var permissionActionBulk =
+                    document.getElementById('permissionActionBulk');
+
+                var permissionModuleCount =
+                    document.getElementById('permissionModuleCount');
+
+                var permissionSelectedCount =
+                    document.getElementById('permissionSelectedCount');
 
                 var toast =
                     document.getElementById('rolesToast');
@@ -4222,21 +4618,6 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer {
                         .then(function(data){
                             renderRoles(data.roles || []);
 
-                            var summary =
-                                data.summary || {};
-
-                            document.getElementById('statTotal').textContent =
-                                Number(summary.total || 0);
-
-                            document.getElementById('statActive').textContent =
-                                Number(summary.active || 0);
-
-                            document.getElementById('statAdmin').textContent =
-                                Number(summary.admin || 0);
-
-                            document.getElementById('statAssigned').textContent =
-                                Number(summary.assigned_users || 0);
-
                             var pagination =
                                 data.pagination || {};
 
@@ -4275,103 +4656,198 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer {
                         });
                 }
 
+                function permissionActionLabel(actionCode){
+                    var labels = {
+                        view:'View',
+                        create:'Create',
+                        update:'Update',
+                        delete:'Delete',
+                        approve:'Approve',
+                        export:'Export'
+                    };
+
+                    var key = String(actionCode || '').toLowerCase();
+                    return labels[key] || (key ? key.charAt(0).toUpperCase() + key.slice(1) : 'Permission');
+                }
+
+                function permissionIcon(module){
+                    var icon = String(module.icon_name || '').trim();
+                    if(icon === ''){
+                        return 'bi bi-grid';
+                    }
+                    if(icon.indexOf('bi ') === 0 || icon.indexOf('bi-') === 0){
+                        return icon.indexOf('bi ') === 0 ? icon : 'bi ' + icon;
+                    }
+                    return 'bi bi-grid';
+                }
+
                 function buildPermissionList(
                     permissions,
                     selectedIds
                 ){
-                    state.permissions =
-                        permissions || [];
-
-                    selectedIds =
-                        (selectedIds || []).map(Number);
+                    state.permissions = permissions || [];
+                    selectedIds = (selectedIds || []).map(Number);
 
                     if(!state.permissions.length){
+                        permissionActionBulk.innerHTML = '';
+                        permissionModuleCount.textContent = '0 modules';
+                        permissionSelectedCount.textContent = '0 selected';
                         permissionList.innerHTML =
                             '<div class="fd-role-empty">' +
-                            'No permissions are available for this tenant.' +
+                            'No tenant sidebar permissions are available. Check this tenant\'s active plan modules.' +
                             '</div>';
+                        selectAllPermissions.checked = false;
+                        selectAllPermissions.indeterminate = false;
                         return;
                     }
 
-                    var grouped = {};
+                    var modules = [];
+                    var moduleMap = {};
+                    var actionCodes = [];
+                    var seenActions = {};
 
-                    state.permissions.forEach(
-                        function(item){
-                            var key =
-                                item.module_name || 'Other';
+                    state.permissions.forEach(function(item){
+                        var moduleKey = String(item.module_id || item.module_code || item.module_name || 'other');
 
-                            if(!grouped[key]){
-                                grouped[key] = [];
-                            }
-
-                            grouped[key].push(item);
+                        if(!moduleMap[moduleKey]){
+                            moduleMap[moduleKey] = {
+                                id:Number(item.module_id || 0),
+                                code:item.module_code || '',
+                                name:item.module_name || 'Other',
+                                parent:item.parent_module_name || '',
+                                icon_name:item.icon_name || '',
+                                permissions:[]
+                            };
+                            modules.push(moduleMap[moduleKey]);
                         }
-                    );
+
+                        moduleMap[moduleKey].permissions.push(item);
+
+                        var actionKey = String(item.action_code || '').toLowerCase();
+                        if(actionKey !== '' && !seenActions[actionKey]){
+                            seenActions[actionKey] = true;
+                            actionCodes.push(actionKey);
+                        }
+                    });
+
+                    var preferredOrder = ['view','create','update','delete','approve','export'];
+                    actionCodes.sort(function(a,b){
+                        var ai = preferredOrder.indexOf(a);
+                        var bi = preferredOrder.indexOf(b);
+                        ai = ai === -1 ? 999 : ai;
+                        bi = bi === -1 ? 999 : bi;
+                        return ai === bi ? a.localeCompare(b) : ai - bi;
+                    });
+
+                    permissionModuleCount.textContent =
+                        modules.length + (modules.length === 1 ? ' module' : ' modules');
+
+                    var bulkHtml =
+                        '<span class="fd-role-permission-bulk-label">Select by action</span>';
+
+                    actionCodes.forEach(function(actionCode){
+                        bulkHtml +=
+                            '<label class="fd-role-action-select">' +
+                                '<input type="checkbox" class="fd-role-action-select-all" data-action="' +
+                                escapeHtml(actionCode) + '">' +
+                                '<span>' + escapeHtml(permissionActionLabel(actionCode)) + ' all</span>' +
+                            '</label>';
+                    });
+
+                    permissionActionBulk.innerHTML = bulkHtml;
 
                     var html = '';
 
-                    Object.keys(grouped).forEach(
-                        function(moduleName){
-                            html +=
-                                '<section class="fd-role-permission-module">' +
-                                    '<div class="fd-role-permission-title">' +
-                                        '<i class="bi bi-grid"></i>' +
-                                        escapeHtml(moduleName) +
-                                    '</div>' +
-                                    '<div class="fd-role-permission-items">';
+                    modules.forEach(function(module){
+                        var moduleId = Number(module.id || 0);
+                        var moduleKey = moduleId > 0 ? String(moduleId) : module.code;
+                        var subtitle = module.parent ? module.parent + ' / ' + module.code : module.code;
 
-                            grouped[moduleName].forEach(
-                                function(permission){
-                                    var checked =
-                                        selectedIds.indexOf(
-                                            Number(permission.id)
-                                        ) !== -1;
+                        html +=
+                            '<section class="fd-role-permission-module" data-module-id="' + escapeHtml(moduleKey) + '">' +
+                                '<div class="fd-role-permission-title">' +
+                                    '<span class="fd-role-permission-module-icon"><i class="' + escapeHtml(permissionIcon(module)) + '"></i></span>' +
+                                    '<span class="fd-role-permission-module-copy">' +
+                                        '<strong>' + escapeHtml(module.name) + '</strong>' +
+                                        '<small>' + escapeHtml(subtitle || 'Sidebar module') + '</small>' +
+                                    '</span>' +
+                                    '<label class="fd-role-module-select-all">' +
+                                        '<input type="checkbox" class="fd-role-module-select" data-module-id="' + escapeHtml(moduleKey) + '">' +
+                                        '<span>Select all</span>' +
+                                    '</label>' +
+                                '</div>' +
+                                '<div class="fd-role-permission-items">';
 
-                                    html +=
-                                        '<label class="fd-role-permission-check">' +
-                                            '<input type="checkbox" ' +
-                                            'name="permission_ids[]" ' +
-                                            'value="' +
-                                            Number(permission.id) +
-                                            '"' +
-                                            (checked ? ' checked' : '') +
-                                            '>' +
-                                            escapeHtml(
-                                                permission.action_code
-                                            ) +
-                                        '</label>';
-                                }
-                            );
+                        module.permissions.forEach(function(permission){
+                            var checked =
+                                selectedIds.indexOf(Number(permission.id)) !== -1;
+                            var actionCode = String(permission.action_code || '').toLowerCase();
 
                             html +=
-                                    '</div>' +
-                                '</section>';
-                        }
-                    );
+                                '<label class="fd-role-permission-check" title="' + escapeHtml(permission.description || permission.permission_code || '') + '">' +
+                                    '<input type="checkbox" ' +
+                                    'class="fd-role-permission-box" ' +
+                                    'name="permission_ids[]" ' +
+                                    'data-module-id="' + escapeHtml(moduleKey) + '" ' +
+                                    'data-action="' + escapeHtml(actionCode) + '" ' +
+                                    'value="' + Number(permission.id) + '"' +
+                                    (checked ? ' checked' : '') +
+                                    '>' +
+                                    '<span class="fd-role-permission-action">' + escapeHtml(permissionActionLabel(actionCode)) + '</span>' +
+                                    '<small>' + escapeHtml(permission.permission_code || '') + '</small>' +
+                                '</label>';
+                        });
+
+                        html +=
+                                '</div>' +
+                            '</section>';
+                    });
 
                     permissionList.innerHTML = html;
-
                     updateSelectAllState();
                 }
 
                 function updateSelectAllState(){
-                    var boxes =
-                        permissionList.querySelectorAll(
-                            'input[name="permission_ids[]"]'
-                        );
+                    var boxes = permissionList.querySelectorAll('input[name="permission_ids[]"]');
+                    var checked = permissionList.querySelectorAll('input[name="permission_ids[]"]:checked');
+
+                    permissionSelectedCount.textContent =
+                        checked.length + ' of ' + boxes.length + ' selected';
 
                     if(!boxes.length){
                         selectAllPermissions.checked = false;
+                        selectAllPermissions.indeterminate = false;
                         return;
                     }
 
-                    var checked =
-                        permissionList.querySelectorAll(
-                            'input[name="permission_ids[]"]:checked'
+                    selectAllPermissions.checked = checked.length === boxes.length;
+                    selectAllPermissions.indeterminate = checked.length > 0 && checked.length < boxes.length;
+
+                    permissionList.querySelectorAll('.fd-role-module-select').forEach(function(moduleBox){
+                        var moduleId = moduleBox.getAttribute('data-module-id');
+                        var moduleBoxes = permissionList.querySelectorAll(
+                            'input[name="permission_ids[]"][data-module-id="' + CSS.escape(moduleId) + '"]'
+                        );
+                        var moduleChecked = permissionList.querySelectorAll(
+                            'input[name="permission_ids[]"][data-module-id="' + CSS.escape(moduleId) + '"]:checked'
                         );
 
-                    selectAllPermissions.checked =
-                        checked.length === boxes.length;
+                        moduleBox.checked = moduleBoxes.length > 0 && moduleChecked.length === moduleBoxes.length;
+                        moduleBox.indeterminate = moduleChecked.length > 0 && moduleChecked.length < moduleBoxes.length;
+                    });
+
+                    permissionActionBulk.querySelectorAll('.fd-role-action-select-all').forEach(function(actionBox){
+                        var actionCode = actionBox.getAttribute('data-action');
+                        var actionBoxes = permissionList.querySelectorAll(
+                            'input[name="permission_ids[]"][data-action="' + CSS.escape(actionCode) + '"]'
+                        );
+                        var actionChecked = permissionList.querySelectorAll(
+                            'input[name="permission_ids[]"][data-action="' + CSS.escape(actionCode) + '"]:checked'
+                        );
+
+                        actionBox.checked = actionBoxes.length > 0 && actionChecked.length === actionBoxes.length;
+                        actionBox.indeterminate = actionChecked.length > 0 && actionChecked.length < actionBoxes.length;
+                    });
                 }
 
                 function openRoleModal(roleId){
@@ -4705,22 +5181,51 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer {
 
                 permissionList.addEventListener(
                     'change',
-                    updateSelectAllState
+                    function(event){
+                        var target = event.target;
+
+                        if(target && target.classList.contains('fd-role-module-select')){
+                            var moduleId = target.getAttribute('data-module-id');
+                            permissionList.querySelectorAll(
+                                'input[name="permission_ids[]"][data-module-id="' + CSS.escape(moduleId) + '"]'
+                            ).forEach(function(box){
+                                box.checked = target.checked;
+                            });
+                        }
+
+                        updateSelectAllState();
+                    }
+                );
+
+                permissionActionBulk.addEventListener(
+                    'change',
+                    function(event){
+                        var target = event.target;
+                        if(!target || !target.classList.contains('fd-role-action-select-all')){
+                            return;
+                        }
+
+                        var actionCode = target.getAttribute('data-action');
+                        permissionList.querySelectorAll(
+                            'input[name="permission_ids[]"][data-action="' + CSS.escape(actionCode) + '"]'
+                        ).forEach(function(box){
+                            box.checked = target.checked;
+                        });
+
+                        updateSelectAllState();
+                    }
                 );
 
                 selectAllPermissions.addEventListener(
                     'change',
                     function(){
-                        permissionList
-                            .querySelectorAll(
-                                'input[name="permission_ids[]"]'
-                            )
-                            .forEach(
-                                function(box){
-                                    box.checked =
-                                        selectAllPermissions.checked;
-                                }
-                            );
+                        permissionList.querySelectorAll(
+                            'input[name="permission_ids[]"]'
+                        ).forEach(function(box){
+                            box.checked = selectAllPermissions.checked;
+                        });
+
+                        updateSelectAllState();
                     }
                 );
 
@@ -4732,11 +5237,10 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer {
                         }
                     );
 
-                document.getElementById('refreshRolesButton')
-                    .addEventListener(
-                        'click',
-                        loadRoles
-                    );
+                var refreshRolesButton = document.getElementById('refreshRolesButton');
+                if(refreshRolesButton){
+                    refreshRolesButton.addEventListener('click',loadRoles);
+                }
 
                 document.getElementById('roleModalClose')
                     .addEventListener(

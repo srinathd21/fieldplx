@@ -2965,6 +2965,14 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer {
   box-shadow:0 0 0 3px rgba(116,184,36,.11);
 }
 
+.mc-field-help{
+  display:block;
+  margin-top:5px;
+  color:#8793a5;
+  font-size:8px;
+  line-height:1.45;
+}
+
 
 .mc-check-field{
   min-height:40px;
@@ -3311,7 +3319,7 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer {
                             <div class="mc-toolbar">
                                 <div class="mc-toolbar-title">
                                     <strong>Services</strong>
-                                    <small>Manage tenant service catalog, pricing, tax, duration and booking availability.</small>
+                                    <small>Manage tenant service catalog, internal service cost, customer pricing, tax, duration and booking availability.</small>
                                 </div>
                                 <button class="mc-btn primary" id="addServiceButton" type="button">
                                     <i class="bi bi-plus-lg"></i> Add Service
@@ -3326,8 +3334,8 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer {
                                             <th>Service</th>
                                             <th>SKU</th>
                                             <th>Unit</th>
-                                            <th>Cost</th>
-                                            <th>Price</th>
+                                            <th>Internal Cost</th>
+                                            <th>Customer Price</th>
                                             <th>Tax</th>
                                             <th>Duration</th>
                                             <th>Bookable</th>
@@ -3924,8 +3932,8 @@ function serviceForm(row){
         '<div class="mc-field"><label>SKU / Service Code</label><input name="sku" maxlength="100" value="'+esc(row.sku||'')+'" placeholder="SER-001"></div>'+
         '<div class="mc-field"><label>Unit Name</label><input name="unit_name" maxlength="50" value="'+esc(row.unit_name||'Service')+'" placeholder="Service / Hour / Visit"></div>'+
         '<div class="mc-field"><label>Tax Percent</label><input type="number" name="tax_percent" min="0" max="100" step="0.0001" value="'+esc(row.tax_percent===undefined?'0.0000':row.tax_percent)+'"></div>'+
-        '<div class="mc-field"><label>Unit Cost <span class="mc-currency-code">('+esc(tenantCurrency().symbol || tenantCurrency().code)+')</span></label>'+moneyInputHtml('unit_cost',row.unit_cost===undefined?'0.00':row.unit_cost)+'</div>'+
-        '<div class="mc-field"><label>Unit Price <span class="mc-currency-code">('+esc(tenantCurrency().symbol || tenantCurrency().code)+')</span></label>'+moneyInputHtml('unit_price',row.unit_price===undefined?'0.00':row.unit_price)+'</div>'+
+        '<div class="mc-field"><label>Internal Service Cost <span class="mc-currency-code">('+esc(tenantCurrency().symbol || tenantCurrency().code)+')</span></label>'+moneyInputHtml('unit_cost',row.unit_cost===undefined?'0.00':row.unit_cost)+'<small class="mc-field-help">Your internal cost per selected service unit, for example a technician visit or technician hour.</small></div>'+
+        '<div class="mc-field"><label>Customer Service Price <span class="mc-currency-code">('+esc(tenantCurrency().symbol || tenantCurrency().code)+')</span></label>'+moneyInputHtml('unit_price',row.unit_price===undefined?'0.00':row.unit_price)+'<small class="mc-field-help">Amount charged to the customer per the same service unit.</small></div>'+
         '<div class="mc-field"><label>Estimated Duration (Minutes)</label><input type="number" name="estimated_duration_minutes" min="0" step="1" value="'+esc(row.estimated_duration_minutes||'')+'" placeholder="60"></div>'+
         '<div class="mc-field"><label>Status</label><select name="status">'+
             '<option value="active"'+((row.status||'active')==='active'?' selected':'')+'>Active</option>'+

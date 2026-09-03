@@ -1,7 +1,7 @@
 <?php
 /*
 |--------------------------------------------------------------------------
-| FieldPlx Tenant Sidebar - Database Only - Version 1.1.0
+| FieldPlx Tenant Sidebar - Permission Aware - Version 1.2.0
 |--------------------------------------------------------------------------
 |
 | IMPORTANT:
@@ -22,7 +22,11 @@
 | modules.is_active = 1
 | modules.is_sidebar_item = 1
 |      ↓
-| Render database parent/child menu
+| role_permissions: module view must be allowed
+|      ↓
+| user_permissions: allow/deny override, when configured
+|      ↓
+| Render only the logged-in tenant user's permitted database menu
 |
 | Tenant override can disable a plan module.
 | It cannot enable a module that is not included in the plan.
@@ -141,6 +145,34 @@ function ts_icon_class($icon)
     return $icon;
 }
 
+
+/*
+|--------------------------------------------------------------------------
+| Optional schema helper
+|--------------------------------------------------------------------------
+*/
+function ts_table_exists(PDO $pdo, $tableName)
+{
+    $tableName = trim((string)$tableName);
+
+    if ($tableName === '') {
+        return false;
+    }
+
+    $stmt = $pdo->prepare("
+        SELECT COUNT(*)
+        FROM information_schema.tables
+        WHERE table_schema = DATABASE()
+          AND table_name = :table_name
+    " );
+
+    $stmt->execute(array(
+        ':table_name' => $tableName
+    ));
+
+    return (int)$stmt->fetchColumn() > 0;
+}
+
 $currentTenantId =
     isset($_SESSION['tenant_id'])
     ? (int) $_SESSION['tenant_id']
@@ -150,6 +182,15 @@ $currentPlanId =
     isset($_SESSION['plan_id'])
     ? (int) $_SESSION['plan_id']
     : 0;
+
+
+$currentTenantUserId =
+    isset($_SESSION['tenant_user_id'])
+    ? (int) $_SESSION['tenant_user_id']
+    : 0;
+
+$currentRoleId = 0;
+$currentTenantUserIsActive = false;
 
 $currentTenantName =
     trim(
@@ -244,22 +285,79 @@ if ($userInitials === '') {
 
 /*
 |--------------------------------------------------------------------------
-| Load ONLY effective tenant sidebar modules
+| Resolve logged-in tenant user + role
 |--------------------------------------------------------------------------
 |
-| Rules:
+| Sidebar access is resolved from the database on every request so a role
+| permission change takes effect immediately without requiring a new login.
+|
+*/
+if (
+    $currentTenantId > 0 &&
+    $currentTenantUserId > 0
+) {
+    $userAccessStmt = $pdo->prepare("
+        SELECT
+            u.role_id,
+            u.status AS user_status,
+            r.status AS role_status
+        FROM users u
+        LEFT JOIN roles r
+            ON r.id = u.role_id
+           AND r.tenant_id = u.tenant_id
+        WHERE u.id = :user_id
+          AND u.tenant_id = :tenant_id
+          AND u.deleted_at IS NULL
+        LIMIT 1
+    ");
+
+    $userAccessStmt->execute(array(
+        ':user_id' => $currentTenantUserId,
+        ':tenant_id' => $currentTenantId
+    ));
+
+    $currentUserAccess = $userAccessStmt->fetch(PDO::FETCH_ASSOC);
+
+    if (
+        $currentUserAccess &&
+        (string)$currentUserAccess['user_status'] === 'active'
+    ) {
+        $currentTenantUserIsActive = true;
+
+        if (
+            !empty($currentUserAccess['role_id']) &&
+            (string)$currentUserAccess['role_status'] === 'active'
+        ) {
+            $currentRoleId = (int)$currentUserAccess['role_id'];
+        }
+    }
+}
+
+/*
+|--------------------------------------------------------------------------
+| Load tenant-accessible sidebar modules first
+|--------------------------------------------------------------------------
+|
+| Base rules:
 | 1. Module must exist in plan_modules and is_enabled = 1.
 | 2. Module must be active.
 | 3. Module must be marked as sidebar item.
 | 4. tenant_modules='disabled' hides it.
 | 5. tenant_modules='enabled' does NOT bypass plan_modules.
 |
+| IMPORTANT:
+| This is only the tenant entitlement layer. Role/user permission filtering
+| is applied immediately after this query.
+|
 */
+$tenantSidebarRows = array();
 $sidebarRows = array();
+$moduleActionAllowed = array();
 
 if (
     $currentTenantId > 0 &&
-    $currentPlanId > 0
+    $currentPlanId > 0 &&
+    $currentTenantUserIsActive
 ) {
 
     $stmt = $pdo->prepare("
@@ -330,14 +428,137 @@ if (
     ");
 
     $stmt->execute(array(
-        ':tenant_id' =>
-            $currentTenantId,
-        ':plan_id' =>
-            $currentPlanId
+        ':tenant_id' => $currentTenantId,
+        ':plan_id' => $currentPlanId
     ));
 
-    $sidebarRows =
-        $stmt->fetchAll();
+    $tenantSidebarRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+/*
+|--------------------------------------------------------------------------
+| Apply role permission + user override to sidebar modules
+|--------------------------------------------------------------------------
+|
+| Effective permission:
+| - user_permissions allow/deny wins when a user override exists.
+| - otherwise role_permissions allow/deny is used.
+| - missing permission / missing grant = denied.
+|
+| Sidebar visibility requires the module's VIEW permission.
+| Quick Create additionally requires the module's CREATE permission.
+|
+*/
+if (!empty($tenantSidebarRows)) {
+
+    $moduleIds = array();
+
+    foreach ($tenantSidebarRows as $tenantSidebarRow) {
+        $moduleIds[] = (int)$tenantSidebarRow['id'];
+    }
+
+    $moduleIds = array_values(array_unique($moduleIds));
+
+    if (!empty($moduleIds)) {
+        $modulePlaceholders = implode(
+            ',',
+            array_fill(0, count($moduleIds), '?')
+        );
+
+        $hasUserPermissions = ts_table_exists(
+            $pdo,
+            'user_permissions'
+        );
+
+        $permissionSql = "
+            SELECT
+                p.module_id,
+                p.action_code,
+                rp.access_type AS role_access";
+
+        if ($hasUserPermissions) {
+            $permissionSql .= ",\n                up.access_type AS user_access";
+        } else {
+            $permissionSql .= ",\n                NULL AS user_access";
+        }
+
+        $permissionSql .= "
+            FROM permissions p
+
+            LEFT JOIN role_permissions rp
+                ON rp.permission_id = p.id
+               AND rp.tenant_id = ?
+               AND rp.role_id = ?";
+
+        if ($hasUserPermissions) {
+            $permissionSql .= "
+
+            LEFT JOIN user_permissions up
+                ON up.permission_id = p.id
+               AND up.tenant_id = ?
+               AND up.user_id = ?";
+        }
+
+        $permissionSql .= "
+
+            WHERE p.module_id IN ($modulePlaceholders)
+              AND p.action_code IN ('view','create')
+            ORDER BY p.module_id, p.action_code, p.id
+        ";
+
+        $permissionParams = array(
+            $currentTenantId,
+            $currentRoleId
+        );
+
+        if ($hasUserPermissions) {
+            $permissionParams[] = $currentTenantId;
+            $permissionParams[] = $currentTenantUserId;
+        }
+
+        foreach ($moduleIds as $moduleId) {
+            $permissionParams[] = (int)$moduleId;
+        }
+
+        $permissionStmt = $pdo->prepare($permissionSql);
+        $permissionStmt->execute($permissionParams);
+
+        foreach ($permissionStmt->fetchAll(PDO::FETCH_ASSOC) as $permissionRow) {
+            $moduleId = (int)$permissionRow['module_id'];
+            $actionCode = strtolower(
+                trim((string)$permissionRow['action_code'])
+            );
+            $roleAccess = strtolower(
+                trim((string)($permissionRow['role_access'] ?? ''))
+            );
+            $userAccess = strtolower(
+                trim((string)($permissionRow['user_access'] ?? ''))
+            );
+
+            $effectiveAccess = $userAccess !== ''
+                ? $userAccess
+                : $roleAccess;
+
+            if (!isset($moduleActionAllowed[$moduleId])) {
+                $moduleActionAllowed[$moduleId] = array();
+            }
+
+            $moduleActionAllowed[$moduleId][$actionCode] =
+                $effectiveAccess === 'allow';
+        }
+    }
+
+    foreach ($tenantSidebarRows as $tenantSidebarRow) {
+        $moduleId = (int)$tenantSidebarRow['id'];
+
+        if (
+            !empty(
+                $moduleActionAllowed[$moduleId]['view']
+            )
+        ) {
+            $sidebarRows[] = $tenantSidebarRow;
+        }
+    }
 }
 
 /*
@@ -567,10 +788,10 @@ $topLevelIds =
 | Dynamic quick-create actions
 |--------------------------------------------------------------------------
 |
-| The Create flyout follows the same effective plan/tenant module result as
-| the main sidebar. An action is therefore shown only when its module is
-| enabled for the current tenant. Module aliases support the existing legacy
-| Quotation and Job Cards module codes without rendering duplicate actions.
+| The Create flyout follows the same effective sidebar result and additionally
+| requires CREATE permission for the logged-in tenant user. User-specific
+| permission overrides take precedence over the role. Module aliases support
+| the existing legacy Quotation and Job Cards module codes without duplicates.
 |
 */
 $quickCreateDefinitions = array(
@@ -638,6 +859,16 @@ foreach ($quickCreateDefinitions as $quickCreateKey => $definition) {
     }
 
     if ($matchedModule === null) {
+        continue;
+    }
+
+    $matchedModuleId = (int)$matchedModule['id'];
+
+    if (
+        empty(
+            $moduleActionAllowed[$matchedModuleId]['create']
+        )
+    ) {
         continue;
     }
 
