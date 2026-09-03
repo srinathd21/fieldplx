@@ -1,69 +1,19 @@
 <?php
-/* FieldPlx Products Manage Page - Version 2.0.0 - 2026-09-03 - Manage UI + Import Export */
+/* FieldPlx Bulk Stock Adjustment - Version 1.0.0 - 2026-09-03 */
 require_once __DIR__ . '/includes/auth.php';
-
-$pageTitle = 'Products';
-$activePage = 'products';
-
-if (session_status() === PHP_SESSION_NONE) {
-  session_start();
-}
-
-if (empty($_SESSION['products_csrf_token'])) {
-  $_SESSION['products_csrf_token'] = bin2hex(random_bytes(32));
-}
-
-$csrfToken = (string) $_SESSION['products_csrf_token'];
-
-/* Product summary statistics are loaded directly on this page. */
-$productStats = array(
-  'total' => 0,
-  'active' => 0,
-  'inactive' => 0,
-  'archived' => 0
-);
-
-$productStatsTenantId = isset($_SESSION['tenant_id']) ? (int)$_SESSION['tenant_id'] : (isset($_SESSION['business_id']) ? (int)$_SESSION['business_id'] : 0);
-$productStatsPdo = null;
-if (isset($pdo) && $pdo instanceof PDO) {
-  $productStatsPdo = $pdo;
-} elseif (isset($db) && $db instanceof PDO) {
-  $productStatsPdo = $db;
-}
-
-if ($productStatsTenantId > 0 && $productStatsPdo instanceof PDO) {
-  try {
-    $productStatsStmt = $productStatsPdo->prepare(
-      "SELECT
-          COUNT(*) AS total,
-          SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active,
-          SUM(CASE WHEN status = 'inactive' THEN 1 ELSE 0 END) AS inactive,
-          SUM(CASE WHEN status = 'archived' THEN 1 ELSE 0 END) AS archived
-       FROM products
-       WHERE tenant_id = :tenant_id
-         AND deleted_at IS NULL"
-    );
-    $productStatsStmt->execute(array(':tenant_id' => $productStatsTenantId));
-    $productStatsRow = $productStatsStmt->fetch(PDO::FETCH_ASSOC);
-    if ($productStatsRow) {
-      $productStats['total'] = isset($productStatsRow['total']) ? (int)$productStatsRow['total'] : 0;
-      $productStats['active'] = isset($productStatsRow['active']) ? (int)$productStatsRow['active'] : 0;
-      $productStats['inactive'] = isset($productStatsRow['inactive']) ? (int)$productStatsRow['inactive'] : 0;
-      $productStats['archived'] = isset($productStatsRow['archived']) ? (int)$productStatsRow['archived'] : 0;
-    }
-  } catch (Throwable $productStatsError) {
-    error_log('FieldPlx products direct stats error: ' . $productStatsError->getMessage());
-  }
-}
-
+$pageTitle = 'Bulk Stock Adjustment';
+$activePage = 'inventory';
+if (session_status() === PHP_SESSION_NONE) { session_start(); }
+if (empty($_SESSION['inventory_csrf_token'])) { $_SESSION['inventory_csrf_token'] = bin2hex(random_bytes(32)); }
+$inventoryCsrfToken = (string)$_SESSION['inventory_csrf_token'];
+$initialBulkMode = (isset($_GET['mode']) && $_GET['mode'] === 'remove') ? 'remove' : 'add';
 ?>
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
-  <meta charset="utf-8" />
-  <meta content="width=device-width, initial-scale=1" name="viewport" />
-  <title>Products - FieldPlx</title>
+  <meta charset="utf-8">
+  <meta content="width=device-width, initial-scale=1" name="viewport">
+  <title>Bulk Stock Adjustment - FieldPlx</title>
   <?php require_once __DIR__ . '/includes/links.php'; ?>
   <style>
     :root {
@@ -3941,10 +3891,12 @@ if ($productStatsTenantId > 0 && $productStatsPdo instanceof PDO) {
       }
     }
 
-    \n
+    
+
 
     /* Customers page additions */
-    \na,
+    
+a,
     a:link,
     a:visited,
     a:hover,
@@ -3953,7 +3905,8 @@ if ($productStatsTenantId > 0 && $productStatsPdo instanceof PDO) {
       text-decoration: none !important
     }
 
-    \n.fd-client-type {
+    
+.fd-client-type {
       display: inline-flex;
       align-items: center;
       padding: 5px 7px;
@@ -3962,7 +3915,8 @@ if ($productStatsTenantId > 0 && $productStatsPdo instanceof PDO) {
       font-weight: 600
     }
 
-    \n.fd-client-type.client,
+    
+.fd-client-type.client,
     .fd-client-type.active {
       color: #5d971b;
       background: #f0f8e5
@@ -3984,7 +3938,8 @@ if ($productStatsTenantId > 0 && $productStatsPdo instanceof PDO) {
       background: #fff7df
     }
 
-    \n.fd-client-checks {
+    
+.fd-client-checks {
       grid-column: 1/-1;
       display: flex;
       flex-wrap: wrap;
@@ -4010,7 +3965,8 @@ if ($productStatsTenantId > 0 && $productStatsPdo instanceof PDO) {
       accent-color: var(--fd-green)
     }
 
-    \n
+    
+
 
     /* Customers table font + alignment correction */
     .fd-client-table {
@@ -4171,82 +4127,80 @@ if ($productStatsTenantId > 0 && $productStatsPdo instanceof PDO) {
     .fd-team-actions-cell a.fd-team-icon-button {
       text-decoration: none !important
     }
-  
 
     /* ==========================================================
-       Products page - uses the same canonical Customers/Teams layout
+       Inventory page additions - reference template components
        ========================================================== */
-    .fd-product-table { min-width: 1110px; }
-    .fd-product-table th,
-    .fd-product-table td { vertical-align: middle; }
-    .fd-product-name { min-width: 205px; }
-    .fd-product-name .fd-team-name-icon {
-      color: var(--fd-green-dark);
-      background: var(--fd-green-soft);
+    .fd-inventory-table {
+      min-width: 1260px;
     }
-    .fd-product-money { color: var(--fd-navy); font-weight: 700; }
-    .fd-product-status {
-      display: inline-flex;
-      align-items: center;
-      min-height: 22px;
-      padding: 4px 7px;
-      border-radius: 5px;
-      font-size: 8.5px;
-      line-height: 1;
-      font-weight: 700;
-      text-transform: capitalize;
-      white-space: nowrap;
-    }
-    .fd-product-status.active { color: #5d971b; background: #f0f8e5; }
-    .fd-product-status.inactive { color: #6f7b90; background: #eef2f6; }
-    .fd-product-status.archived { color: #8a5e10; background: #fff7df; }
-    .fd-product-bookable {
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      color: #5d971b;
-      font-size: 8.5px;
-      font-weight: 700;
-    }
-    .fd-product-bookable.no { color: #8994a5; }
-    .fd-product-check {
-      min-height: 40px;
-      padding: 8px 10px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      border: 1px solid var(--fd-border);
-      border-radius: 8px;
-      background: #fbfcfd;
-      color: #53647b;
-      font-size: 9px;
-    }
-    .fd-product-check input { width: 15px; height: 15px; accent-color: var(--fd-green); }
-    .fd-product-table td:last-child { min-width: 78px; }
-    .fd-product-table .fd-team-actions-cell { min-width: 72px; }
 
-    .fd-product-markup {
-      display: inline-flex;
-      align-items: center;
-      padding: 5px 7px;
-      border-radius: 5px;
-      color: #123d70;
-      background: #edf2f7;
-      font-size: 8.5px;
-      font-weight: 600;
+    .fd-inventory-product-icon {
+      overflow: hidden;
+      border: 1px solid #dfe8cf;
+    }
+
+    .fd-inventory-product-icon img {
+      width: 100%;
+      height: 100%;
+      display: block;
+      object-fit: cover;
+    }
+
+    .fd-inventory-product-copy strong {
+      max-width: 230px;
+      overflow: hidden;
+      text-overflow: ellipsis;
       white-space: nowrap;
     }
 
-    #productSellingPrice[readonly] {
-      background: #f5f8fb;
-      color: #5a6980;
-      cursor: default;
+    .fd-inventory-stock-number {
+      color: var(--fd-text);
+      font-size: 10.5px;
+      font-weight: 700;
+    }
+
+    .fd-inventory-money {
+      color: var(--fd-text);
+      font-weight: 700;
+    }
+
+    .fd-team-badge.low-stock {
+      color: #8a6b10;
+      background: #fff8df;
+    }
+
+    .fd-team-badge.out-stock {
+      color: #b9444d;
+      background: #fff0f1;
+    }
+
+    .fd-team-badge.not-tracked {
+      color: #6f7b90;
+      background: #eef2f6;
+    }
+
+    .fd-inventory-stat-money {
+      font-size: 24px;
+      line-height: 1.1;
+    }
+
+    .fd-team-pagination-actions .fd-team-button {
+      width: 31px;
+      min-width: 31px;
+      height: 31px;
+      min-height: 31px;
+      padding: 0;
+    }
+
+    @media(max-width:767.98px) {
+      .fd-inventory-stat-money { font-size: 21px; }
     }
 
 
     /* ==========================================================
-       Products manage page - Version 2.0.0
-       Same summary-card structure as Customers / Quotations.
+       Inventory manage page - Version 2.0.0
+       Same manage UI as Customers / Products / Quotations.
        ========================================================== */
     .fieldplx-topbar {
       position: fixed !important;
@@ -4256,7 +4210,7 @@ if ($productStatsTenantId > 0 && $productStatsPdo instanceof PDO) {
     }
     .fieldplx-main-content { padding-top: var(--fieldplx-topbar-height); }
 
-    .fd-product-header {
+    .fd-inventory-header {
       min-width: 0;
       position: relative;
       z-index: 20;
@@ -4267,10 +4221,10 @@ if ($productStatsTenantId > 0 && $productStatsPdo instanceof PDO) {
       gap: 16px;
       margin-bottom: 18px;
     }
-    .fd-product-header > div:first-child { min-width: 0; flex: 1 1 auto; }
-    .fd-product-title { margin: 0 0 7px; color: var(--fd-text); font-size: 21px; line-height: 1.2; font-weight: 700; }
-    .fd-product-subtitle { margin: 0; max-width: 820px; color: var(--fd-muted); font-size: 11px; line-height: 1.55; }
-    .fd-product-header-actions {
+    .fd-inventory-header > div:first-child { min-width: 0; flex: 1 1 auto; }
+    .fd-inventory-title { margin: 0 0 7px; color: var(--fd-text); font-size: 21px; line-height: 1.2; font-weight: 700; }
+    .fd-inventory-subtitle { margin: 0; max-width: 820px; color: var(--fd-muted); font-size: 11px; line-height: 1.55; }
+    .fd-inventory-header-actions {
       min-width: 0;
       flex: 0 0 auto;
       margin-left: auto;
@@ -4280,10 +4234,10 @@ if ($productStatsTenantId > 0 && $productStatsPdo instanceof PDO) {
       gap: 8px;
       flex-wrap: nowrap;
     }
-    .fd-product-header-actions .fd-team-button { flex: 0 0 auto; white-space: nowrap; }
+    .fd-inventory-header-actions .fd-team-button { flex: 0 0 auto; white-space: nowrap; }
 
-    .fd-product-more { position: relative; z-index: 30; }
-    .fd-product-more-menu {
+    .fd-inventory-more { position: relative; z-index: 30; }
+    .fd-inventory-more-menu {
       width: 205px;
       padding: 6px;
       position: absolute;
@@ -4296,8 +4250,8 @@ if ($productStatsTenantId > 0 && $productStatsPdo instanceof PDO) {
       background: #fff;
       box-shadow: 0 16px 38px rgba(15,23,42,.15);
     }
-    .fd-product-more.open .fd-product-more-menu { display: block; }
-    .fd-product-more-item {
+    .fd-inventory-more.open .fd-inventory-more-menu { display: block; }
+    .fd-inventory-more-item {
       width: 100%;
       padding: 9px 10px;
       display: flex;
@@ -4312,12 +4266,12 @@ if ($productStatsTenantId > 0 && $productStatsPdo instanceof PDO) {
       font: inherit;
       cursor: pointer;
     }
-    .fd-product-more-item:hover { background: #f7fbed; color: var(--fd-green-dark); }
-    .fd-product-more-item + .fd-product-more-item { margin-top: 2px; }
+    .fd-inventory-more-item:hover { background: #f7fbed; color: var(--fd-green-dark); }
+    .fd-inventory-more-item + .fd-inventory-more-item { margin-top: 2px; }
 
-    .fd-product-summary { margin-bottom: 16px; }
-    .fd-product-summary > div { display: flex; }
-    .fd-product-summary-card {
+    .fd-inventory-manage-summary { margin-bottom: 16px; }
+    .fd-inventory-manage-summary > div { display: flex; }
+    .fd-inventory-summary-card {
       width: 100%;
       min-height: 134px;
       padding: 15px 18px;
@@ -4328,13 +4282,14 @@ if ($productStatsTenantId > 0 && $productStatsPdo instanceof PDO) {
       background: #fff;
       box-shadow: 0 3px 12px rgba(24,45,76,.035);
     }
-    .fd-product-summary-title { margin: 0; color: #10213c; font-size: 15px; line-height: 1.2; font-weight: 700; }
-    .fd-product-summary-period { display: block; margin-top: 3px; color: #7f8da1; font-size: 10px; line-height: 1.2; }
-    .fd-product-summary-arrow { position: absolute; top: 15px; right: 16px; color: #8191a6; font-size: 15px; line-height: 1; }
-    .fd-product-summary-number-row { min-height: 67px; display: flex; align-items: flex-end; gap: 8px; padding-top: 10px; }
-    .fd-product-summary-value { color: #030d1b; font-size: 31px; line-height: 1; font-weight: 700; letter-spacing: -.45px; }
-    .fd-product-overview-list { margin-top: 7px; display: grid; gap: 5px; }
-    .fd-product-overview-row {
+    .fd-inventory-summary-title { margin: 0; color: #10213c; font-size: 15px; line-height: 1.2; font-weight: 700; }
+    .fd-inventory-summary-period { display: block; margin-top: 3px; color: #7f8da1; font-size: 10px; line-height: 1.2; }
+    .fd-inventory-summary-arrow { position: absolute; top: 15px; right: 16px; color: #8191a6; font-size: 15px; line-height: 1; }
+    .fd-inventory-summary-number-row { min-height: 67px; display: flex; align-items: flex-end; gap: 8px; padding-top: 10px; }
+    .fd-inventory-summary-value { color: #030d1b; font-size: 31px; line-height: 1; font-weight: 700; letter-spacing: -.45px; }
+    .fd-inventory-summary-value.money { font-size: 25px; letter-spacing: -.3px; }
+    .fd-inventory-overview-list { margin-top: 7px; display: grid; gap: 5px; }
+    .fd-inventory-overview-row {
       min-height: 14px;
       display: grid;
       grid-template-columns: 7px minmax(0,1fr) auto;
@@ -4344,38 +4299,266 @@ if ($productStatsTenantId > 0 && $productStatsPdo instanceof PDO) {
       font-size: 9.5px;
       line-height: 1.15;
     }
-    .fd-product-overview-row strong { color: #17243a; font-size: 9.5px; font-weight: 700; }
-    .fd-product-overview-dot { width: 6px; height: 6px; border-radius: 50%; background: #91a0b4; }
-    .fd-product-overview-dot.active { background: #68aa1d; }
-    .fd-product-overview-dot.inactive { background: #9aa9bc; }
-    .fd-product-overview-dot.archived { background: #d6a825; }
-    .fd-product-overview-dot.total { background: #123f73; }
+    .fd-inventory-overview-row strong { color: #17243a; font-size: 9.5px; font-weight: 700; }
+    .fd-inventory-overview-dot { width: 6px; height: 6px; border-radius: 50%; background: #91a0b4; }
+    .fd-inventory-overview-dot.total { background: #123f73; }
+    .fd-inventory-overview-dot.in { background: #68aa1d; }
+    .fd-inventory-overview-dot.low { background: #d6a825; }
+    .fd-inventory-overview-dot.out { background: #e45b66; }
 
-    .fd-product-table th { padding: 12px 14px !important; color: #5f6f86 !important; font-size: 9px !important; font-weight: 700 !important; text-align: left !important; white-space: nowrap !important; }
-    .fd-product-table td { padding: 12px 14px !important; color: #33445f !important; font-size: 9.5px !important; line-height: 1.45 !important; text-align: left !important; vertical-align: middle !important; }
-    .fd-product-table th:first-child, .fd-product-table td:first-child { width: 58px; text-align: center !important; }
+    .fd-inventory-table th { padding: 12px 14px !important; color: #5f6f86 !important; font-size: 9px !important; font-weight: 700 !important; text-align: left !important; white-space: nowrap !important; }
+    .fd-inventory-table td { padding: 12px 14px !important; color: #33445f !important; font-size: 9.5px !important; line-height: 1.45 !important; text-align: left !important; vertical-align: middle !important; }
+    .fd-inventory-table th:first-child, .fd-inventory-table td:first-child { width: 58px; text-align: center !important; }
 
     @media (max-width: 991.98px) {
-      .fd-product-header { align-items: flex-start; }
-      .fd-product-header-actions { flex-wrap: wrap; }
-      .fd-product-summary-card { min-height: 126px; }
-    }
-    @media (max-width: 767.98px) {
-      .fieldplx-main-content { padding-top: 64px; }
-      .fd-product-header { flex-direction: column; }
-      .fd-product-header-actions { width: 100%; margin-left: 0; justify-content: flex-start; }
-      .fd-product-table th, .fd-product-table td { padding: 10px 11px !important; }
-    }
-    @media (max-width: 575.98px) {
-      .fd-product-summary-card { min-height: 122px; }
-      .fd-product-summary-value { font-size: 28px; }
-      .fd-product-header-actions > .fd-team-button,
-      .fd-product-header-actions > .fd-product-more { flex: 1 1 calc(50% - 4px); }
-      .fd-product-header-actions .fd-team-button { width: 100%; }
-      .fd-product-more-menu { left: 0; right: auto; max-width: min(215px, calc(100vw - 24px)); }
+      .fd-inventory-header { align-items: flex-start; }
+      .fd-inventory-header-actions { flex-wrap: wrap; }
+      .fd-inventory-summary-card { min-height: 126px; }
     }
 
-  </style>
+    .fd-inventory-remove-button {
+      border-color: #f1cfd3 !important;
+      color: #b9444d !important;
+      background: #fff !important;
+    }
+    .fd-inventory-remove-button:hover {
+      border-color: #e9b8bd !important;
+      color: #a83d45 !important;
+      background: #fff6f7 !important;
+    }
+    .fd-inventory-row-actions { display:flex; align-items:center; gap:4px; }
+    .fd-inventory-adjust-icon.add:hover { color:var(--fd-green-dark); background:var(--fd-green-soft); }
+    .fd-inventory-adjust-icon.remove:hover { color:#b9444d; background:#fff0f1; }
+    .fd-inventory-adjust-modal { width:min(720px,100%); }
+    .fd-inventory-adjust-mode {
+      grid-column:1/-1;
+      display:flex;
+      gap:8px;
+      padding:4px 0 1px;
+    }
+    .fd-inventory-mode-pill {
+      min-height:36px;
+      padding:0 12px;
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      gap:6px;
+      border:1px solid #dfe5ec;
+      border-radius:8px;
+      color:#52627a;
+      background:#fff;
+      font-size:9.5px;
+      font-weight:700;
+      cursor:pointer;
+    }
+    .fd-inventory-mode-pill.active.add {
+      border-color:#bcd99a;
+      color:#5d971b;
+      background:#f3faeb;
+    }
+    .fd-inventory-mode-pill.active.remove {
+      border-color:#efc4c8;
+      color:#b9444d;
+      background:#fff3f4;
+    }
+    .fd-inventory-stock-preview {
+      grid-column:1/-1;
+      display:grid;
+      grid-template-columns:repeat(4,minmax(0,1fr));
+      gap:8px;
+      padding:11px;
+      border:1px solid #e4eaf0;
+      border-radius:9px;
+      background:#f8fafc;
+    }
+    .fd-inventory-stock-preview div { min-width:0; }
+    .fd-inventory-stock-preview span,
+    .fd-inventory-stock-preview strong { display:block; }
+    .fd-inventory-stock-preview span { color:#7a8799; font-size:8px; }
+    .fd-inventory-stock-preview strong { margin-top:4px; color:#10213c; font-size:13px; }
+    .fd-inventory-stock-preview strong.result-add { color:#5d971b; }
+    .fd-inventory-stock-preview strong.result-remove { color:#b9444d; }
+    .fd-inventory-adjust-help {
+      grid-column:1/-1;
+      margin-top:-2px;
+      color:#7d899b;
+      font-size:8.5px;
+      line-height:1.5;
+    }
+    .fd-inventory-adjust-error {
+      display:none;
+      grid-column:1/-1;
+      padding:8px 10px;
+      border:1px solid #f0c9cd;
+      border-radius:8px;
+      color:#a63f47;
+      background:#fff5f6;
+      font-size:9px;
+      line-height:1.45;
+    }
+    .fd-inventory-adjust-error.show { display:block; }
+    .fd-inventory-more-divider { height:1px; margin:5px 7px; background:#edf1f5; }
+    .fd-inventory-bulk-modal { width:min(1180px,100%); }
+    .fd-inventory-bulk-toolbar {
+      display:flex;
+      align-items:center;
+      gap:8px;
+      flex-wrap:wrap;
+      margin-bottom:10px;
+    }
+    .fd-inventory-bulk-toolbar .fd-inventory-adjust-mode { margin-right:auto; padding:0; }
+    .fd-inventory-bulk-table-wrap {
+      max-height:520px;
+      overflow:auto;
+      border:1px solid #e1e7ee;
+      border-radius:9px;
+      background:#fff;
+    }
+    .fd-inventory-bulk-table {
+      width:100%;
+      min-width:1040px;
+      border-collapse:collapse;
+      white-space:nowrap;
+    }
+    .fd-inventory-bulk-table th {
+      position:sticky;
+      top:0;
+      z-index:2;
+      padding:9px 8px;
+      border-bottom:1px solid #dfe6ed;
+      background:#f8fafc;
+      color:#66758a;
+      font-size:8.5px;
+      font-weight:700;
+      text-transform:uppercase;
+    }
+    .fd-inventory-bulk-table td {
+      padding:7px 8px;
+      border-bottom:1px solid #eef2f5;
+      color:#33445f;
+      font-size:9px;
+      vertical-align:middle;
+    }
+    .fd-inventory-bulk-table tr.invalid td { background:#fff7f8; }
+    .fd-inventory-bulk-select,
+    .fd-inventory-bulk-input {
+      width:100%;
+      height:34px;
+      padding:5px 7px;
+      border:1px solid #dce4ec;
+      border-radius:7px;
+      background:#fff;
+      color:#2d3e56;
+      font-size:9px;
+      outline:0;
+    }
+    .fd-inventory-bulk-select:focus,
+    .fd-inventory-bulk-input:focus { border-color:#a9cd7d; box-shadow:0 0 0 2px rgba(116,184,36,.10); }
+    .fd-inventory-bulk-product { min-width:230px; }
+    .fd-inventory-bulk-branch { min-width:165px; }
+    .fd-inventory-bulk-qty { width:100px; min-width:100px; }
+    .fd-inventory-bulk-notes { min-width:180px; }
+    .fd-inventory-bulk-number { color:#17243a; font-weight:700; }
+    .fd-inventory-bulk-result.add { color:#5d971b; }
+    .fd-inventory-bulk-result.remove { color:#b9444d; }
+    .fd-inventory-bulk-row-remove {
+      width:28px;
+      height:28px;
+      display:grid;
+      place-items:center;
+      border:0;
+      border-radius:6px;
+      background:transparent;
+      color:#8a96a7;
+      cursor:pointer;
+    }
+    .fd-inventory-bulk-row-remove:hover { color:#b9444d; background:#fff0f1; }
+    .fd-inventory-bulk-summary {
+      display:flex;
+      align-items:center;
+      gap:14px;
+      flex-wrap:wrap;
+      margin-top:10px;
+      padding:9px 11px;
+      border:1px solid #e3e9ef;
+      border-radius:8px;
+      background:#f9fbfc;
+      color:#69788c;
+      font-size:8.5px;
+    }
+    .fd-inventory-bulk-summary strong { color:#10213c; font-size:9.5px; }
+    .fd-inventory-bulk-error {
+      display:none;
+      margin-top:9px;
+      padding:8px 10px;
+      border:1px solid #f0c9cd;
+      border-radius:8px;
+      color:#a63f47;
+      background:#fff5f6;
+      font-size:9px;
+      line-height:1.45;
+    }
+    .fd-inventory-bulk-error.show { display:block; }
+    @media(max-width:767.98px) {
+      .fd-inventory-stock-preview { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .fd-inventory-adjust-mode { flex-wrap:wrap; }
+      .fd-inventory-mode-pill { flex:1; }
+    }
+
+    @media (max-width: 767.98px) {
+      .fieldplx-main-content { padding-top: 64px; }
+      .fd-inventory-header { flex-direction: column; }
+      .fd-inventory-header-actions { width: 100%; margin-left: 0; justify-content: flex-start; }
+      .fd-inventory-table th, .fd-inventory-table td { padding: 10px 11px !important; }
+    }
+    @media (max-width: 575.98px) {
+      .fd-inventory-summary-card { min-height: 122px; }
+      .fd-inventory-summary-value { font-size: 28px; }
+      .fd-inventory-summary-value.money { font-size: 22px; }
+      .fd-inventory-header-actions > .fd-team-button,
+      .fd-inventory-header-actions > .fd-inventory-more { flex: 1 1 calc(50% - 4px); }
+      .fd-inventory-header-actions .fd-team-button { width: 100%; }
+      .fd-inventory-more-menu { left: 0; right: auto; max-width: min(215px, calc(100vw - 24px)); }
+    }
+
+  
+
+    .fd-bulk-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px}
+    .fd-bulk-title{margin:0 0 7px;color:var(--fd-text);font-size:21px;font-weight:700}
+    .fd-bulk-subtitle{margin:0;color:var(--fd-muted);font-size:11px;line-height:1.55}
+    .fd-bulk-actions{display:flex;gap:8px;flex-wrap:wrap}
+    .fd-bulk-controls{padding:14px;display:flex;align-items:flex-end;gap:10px;flex-wrap:wrap;border-bottom:1px solid var(--fd-border);background:#fbfcfd}
+    .fd-bulk-control{min-width:180px}
+    .fd-bulk-control.search{width:280px;position:relative}
+    .fd-bulk-control.search i{position:absolute;left:12px;bottom:12px;color:#8a96a7}
+    .fd-bulk-control label{display:block;margin-bottom:6px;color:#42536c;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.25px}
+    .fd-bulk-control input,.fd-bulk-control select{width:100%;height:39px;border:1px solid #dde4ec;border-radius:8px;background:#fff;color:#33445f;font-size:10px;outline:0;padding:8px 10px}
+    .fd-bulk-control.search input{padding-left:34px}
+    .fd-bulk-mode{display:flex;gap:7px}
+    .fd-bulk-mode button{height:39px;padding:0 13px;border:1px solid #dfe6ef;border-radius:8px;background:#fff;color:#52627a;font-size:10px;font-weight:700}
+    .fd-bulk-mode button.active.add{border-color:#bedc98;color:#5d971b;background:#f2f9e9}
+    .fd-bulk-mode button.active.remove{border-color:#efc2c6;color:#b9444d;background:#fff3f4}
+    .fd-bulk-info{padding:10px 14px;border-bottom:1px solid var(--fd-border);display:flex;gap:18px;align-items:center;flex-wrap:wrap;color:#748196;font-size:9px;background:#fff}
+    .fd-bulk-info strong{color:#10213c;font-size:10px}
+    .fd-bulk-table-wrap{overflow:auto;max-height:calc(100vh - 355px);min-height:360px}
+    .fd-bulk-table{width:100%;min-width:1180px;border-collapse:collapse;white-space:nowrap}
+    .fd-bulk-table th{position:sticky;top:0;z-index:2;padding:11px 12px;border-bottom:1px solid var(--fd-border);background:#f8fafc;color:#65738a;font-size:9px;font-weight:600;text-transform:uppercase}
+    .fd-bulk-table td{padding:10px 12px;border-bottom:1px solid #f1f3f7;color:#33445f;font-size:9.5px;vertical-align:middle;background:#fff}
+    .fd-bulk-table tr.is-invalid td{background:#fff6f7}
+    .fd-bulk-product{display:flex;align-items:center;gap:10px;min-width:250px}
+    .fd-bulk-product-icon{width:34px;height:34px;flex:0 0 34px;display:grid;place-items:center;border-radius:9px;color:var(--fd-green-dark);background:var(--fd-green-soft);font-size:14px}
+    .fd-bulk-product strong,.fd-bulk-product small{display:block}.fd-bulk-product strong{color:var(--fd-text);font-size:10.5px}.fd-bulk-product small{margin-top:2px;color:#8d98a8;font-size:8.5px}
+    .fd-bulk-track{display:inline-flex;margin-top:3px;padding:3px 6px;border-radius:999px;background:#eef2f6;color:#6f7b90;font-size:7.5px;font-weight:700}.fd-bulk-track.on{background:#f0f8e5;color:#5d971b}
+    .fd-bulk-num{font-weight:700;color:#17243a}
+    .fd-bulk-result.add{color:#5d971b}.fd-bulk-result.remove{color:#b9444d}
+    .fd-bulk-qty{width:112px;height:36px;padding:7px 9px;border:1px solid #dfe5ec;border-radius:7px;font-size:10px;outline:0}.fd-bulk-qty:focus,.fd-bulk-note:focus{border-color:#a9cd7d;box-shadow:0 0 0 2px rgba(116,184,36,.10)}
+    .fd-bulk-note{width:190px;height:36px;padding:7px 9px;border:1px solid #dfe5ec;border-radius:7px;font-size:10px;outline:0}
+    .fd-bulk-footer{padding:12px 14px;display:flex;align-items:center;gap:10px;border-top:1px solid var(--fd-border);background:#fbfcfd}
+    .fd-bulk-footer-copy{margin-right:auto;color:#758197;font-size:9px}.fd-bulk-footer-copy strong{color:#10213c}
+    .fd-bulk-error{display:none;margin:0 14px 12px;padding:9px 11px;border:1px solid #ffd3d7;border-radius:8px;background:#fff4f5;color:#b9444d;font-size:9px}.fd-bulk-error.show{display:block}
+    .fd-bulk-empty{padding:40px 18px!important;text-align:center;color:#96a0af!important}
+    @media(max-width:767.98px){.fd-bulk-header{flex-direction:column}.fd-bulk-actions{width:100%}.fd-bulk-actions .fd-team-button{flex:1}.fd-bulk-control,.fd-bulk-control.search{width:100%}.fd-bulk-table-wrap{max-height:none}.fd-bulk-footer{align-items:stretch;flex-direction:column}.fd-bulk-footer-copy{margin-right:0}.fd-bulk-footer .fd-team-button{width:100%}}
+</style>
 </head>
 <body>
   <?php require_once __DIR__ . '/includes/nav.php'; ?>
@@ -4384,237 +4567,95 @@ if ($productStatsTenantId > 0 && $productStatsPdo instanceof PDO) {
     <main class="fieldplx-main-content">
       <div class="fieldplx-content-wrapper">
         <div class="fd-dashboard">
-          <section class="fd-product-header">
+          <section class="fd-bulk-header">
             <div>
-              <h1 class="fd-product-title">Products</h1>
-              <p class="fd-product-subtitle">Manage product master details, base pricing, markup, selling price and tax used across quotations, jobs and invoices.</p>
+              <h1 class="fd-bulk-title">Bulk Stock Adjustment</h1>
+              <p class="fd-bulk-subtitle">Add or remove stock for multiple existing products on one page. Products are not created here.</p>
             </div>
-            <div class="fd-product-header-actions">
-              <a class="fd-team-button primary" href="product-form.php"><i class="bi bi-plus-lg"></i> Add Product</a>
-              <div class="fd-product-more" id="productMoreActions">
-                <button type="button" class="fd-team-button" id="productMoreActionsButton" aria-expanded="false"><i class="bi bi-three-dots"></i> More Actions <i class="bi bi-chevron-down"></i></button>
-                <div class="fd-product-more-menu" role="menu" aria-label="Product actions">
-                  <a class="fd-product-more-item" href="product-import.php" role="menuitem"><i class="bi bi-upload"></i> Import Products</a>
-                  <button class="fd-product-more-item" type="button" id="exportProductsButton" role="menuitem"><i class="bi bi-download"></i> Export Products</button>
+            <div class="fd-bulk-actions">
+              <a class="fd-team-button" href="inventory.php"><i class="bi bi-arrow-left"></i> Inventory</a>
+              <a class="fd-team-button" href="products.php"><i class="bi bi-box-seam"></i> Products</a>
+            </div>
+          </section>
+
+          <section class="fd-card fd-teams-card">
+            <div class="fd-bulk-controls">
+              <div class="fd-bulk-control">
+                <label>Adjustment</label>
+                <div class="fd-bulk-mode">
+                  <button type="button" id="modeAdd" class="add"><i class="bi bi-plus-circle"></i> Add Stock</button>
+                  <button type="button" id="modeRemove" class="remove"><i class="bi bi-dash-circle"></i> Remove Stock</button>
                 </div>
               </div>
+              <div class="fd-bulk-control">
+                <label for="branchId">Branch *</label>
+                <select id="branchId"><option value="">Select Branch</option></select>
+              </div>
+              <div class="fd-bulk-control search">
+                <label for="bulkSearch">Search Products</label>
+                <i class="bi bi-search"></i>
+                <input type="search" id="bulkSearch" placeholder="Search product or SKU..." autocomplete="off">
+              </div>
+              <div style="margin-left:auto;display:flex;gap:8px;align-items:flex-end">
+                <button type="button" class="fd-team-button" id="clearQty"><i class="bi bi-x-circle"></i> Clear Quantities</button>
+              </div>
             </div>
-          </section>
-
-          <section class="row g-3 fd-product-summary">
-            <div class="col-xl-3 col-md-6">
-              <article class="fd-product-summary-card">
-                <h2 class="fd-product-summary-title">Overview</h2>
-                <div class="fd-product-overview-list">
-                  <div class="fd-product-overview-row"><span class="fd-product-overview-dot total"></span><span>Total Products</span><strong><?= (int)$productStats['total'] ?></strong></div>
-                  <div class="fd-product-overview-row"><span class="fd-product-overview-dot active"></span><span>Active</span><strong><?= (int)$productStats['active'] ?></strong></div>
-                  <div class="fd-product-overview-row"><span class="fd-product-overview-dot inactive"></span><span>Inactive</span><strong><?= (int)$productStats['inactive'] ?></strong></div>
-                  <div class="fd-product-overview-row"><span class="fd-product-overview-dot archived"></span><span>Archived</span><strong><?= (int)$productStats['archived'] ?></strong></div>
-                </div>
-              </article>
+            <div class="fd-bulk-info">
+              <span>Products: <strong id="productCount">0</strong></span>
+              <span>Rows to save: <strong id="readyCount">0</strong></span>
+              <span>Total adjustment qty: <strong id="totalQty">0.000</strong></span>
+              <span id="modeHint">Entering stock for a product automatically enables inventory tracking for that product.</span>
             </div>
-            <div class="col-xl-3 col-md-6">
-              <article class="fd-product-summary-card">
-                <span class="fd-product-summary-arrow"><i class="bi bi-arrow-up-right"></i></span>
-                <h2 class="fd-product-summary-title">Total Products</h2>
-                <span class="fd-product-summary-period">All product master records</span>
-                <div class="fd-product-summary-number-row"><strong class="fd-product-summary-value"><?= (int)$productStats['total'] ?></strong></div>
-              </article>
-            </div>
-            <div class="col-xl-3 col-md-6">
-              <article class="fd-product-summary-card">
-                <span class="fd-product-summary-arrow"><i class="bi bi-arrow-up-right"></i></span>
-                <h2 class="fd-product-summary-title">Active Products</h2>
-                <span class="fd-product-summary-period">Available for current use</span>
-                <div class="fd-product-summary-number-row"><strong class="fd-product-summary-value"><?= (int)$productStats['active'] ?></strong></div>
-              </article>
-            </div>
-            <div class="col-xl-3 col-md-6">
-              <article class="fd-product-summary-card">
-                <span class="fd-product-summary-arrow"><i class="bi bi-arrow-up-right"></i></span>
-                <h2 class="fd-product-summary-title">Inactive Products</h2>
-                <span class="fd-product-summary-period">Temporarily unavailable</span>
-                <div class="fd-product-summary-number-row"><strong class="fd-product-summary-value"><?= (int)$productStats['inactive'] ?></strong></div>
-              </article>
-            </div>
-          </section>
-
-          <section class="fd-card fd-teams-card" id="productCard">
-            <div class="fd-teams-toolbar">
-              <div class="fd-team-search"><i class="bi bi-search"></i><input type="search" id="searchInput" placeholder="Search product, SKU or description" autocomplete="off"></div>
-              <select class="fd-team-filter" id="statusFilter">
-                <option value="">All Status</option>
-                <option value="active">Active</option>
-                <option value="inactive">Inactive</option>
-                <option value="archived">Archived</option>
-              </select>
-              <button type="button" class="fd-team-button" id="clearBtn"><i class="bi bi-x-circle"></i> Clear</button>
-              <div class="fd-team-toolbar-spacer"></div>
-              <select class="fd-team-filter" id="perPage">
-                <option value="10">10 / page</option>
-                <option value="25">25 / page</option>
-                <option value="50">50 / page</option>
-                <option value="100">100 / page</option>
-              </select>
-            </div>
-
-            <div class="fd-team-table-wrap">
-              <table class="fd-team-table fd-product-table">
-                <thead>
-                  <tr>
-                    <th>S/No</th><th>Product</th><th>Unit</th><th>Base Price</th><th>Markup</th><th>Selling Price</th><th>Tax</th><th>Status</th><th>Updated</th><th>Action</th>
-                  </tr>
-                </thead>
-                <tbody id="productRows"><tr><td colspan="10" class="fd-team-empty">Loading products...</td></tr></tbody>
+            <div class="fd-bulk-table-wrap">
+              <table class="fd-bulk-table">
+                <thead><tr><th>S/No</th><th>Product</th><th>Unit</th><th>On Hand</th><th>Reserved</th><th>Available</th><th>Quantity</th><th>After</th><th>Notes</th></tr></thead>
+                <tbody id="bulkRows"><tr><td colspan="9" class="fd-bulk-empty">Loading products...</td></tr></tbody>
               </table>
             </div>
-
-            <div class="fd-team-pagination">
-              <span id="countText">Showing 0 products</span>
-              <div class="fd-team-pagination-actions">
-                <button type="button" class="fd-team-button" id="prevPage"><i class="bi bi-chevron-left"></i></button>
-                <span id="pageText" style="min-width:72px;text-align:center">Page 1 of 1</span>
-                <button type="button" class="fd-team-button" id="nextPage"><i class="bi bi-chevron-right"></i></button>
-              </div>
+            <div class="fd-bulk-error" id="bulkError"></div>
+            <div class="fd-bulk-footer">
+              <div class="fd-bulk-footer-copy">Only rows with a quantity greater than zero are saved. <strong>Remove Stock</strong> can use only available quantity after reservations.</div>
+              <a class="fd-team-button" href="inventory.php">Cancel</a>
+              <button type="button" class="fd-team-button primary" id="saveBulk"><span class="fd-team-loader"></span><i class="bi bi-check2-circle"></i> <span id="saveText">Apply Bulk Add</span></button>
             </div>
           </section>
         </div>
-
-        <div class="fd-team-modal-backdrop" id="archiveModal" aria-hidden="true">
-          <section class="fd-team-modal fd-team-confirm" role="dialog" aria-modal="true">
-            <div class="fd-team-modal-header">
-              <span class="fd-team-modal-icon"><i class="bi bi-archive"></i></span>
-              <div class="fd-team-modal-heading"><h3>Archive Product</h3><p>Existing historical records will remain unchanged.</p></div>
-              <button type="button" class="fd-team-modal-close" data-close-archive><i class="bi bi-x-lg"></i></button>
-            </div>
-            <div class="fd-team-modal-body">Archive <strong id="archiveName">this product</strong>? The product will no longer appear in active product selections.</div>
-            <div class="fd-team-modal-footer">
-              <button type="button" class="fd-team-button" data-close-archive>Cancel</button>
-              <button type="button" class="fd-team-button danger" id="confirmArchiveBtn"><span class="fd-team-loader"></span><i class="bi bi-archive"></i> Archive</button>
-            </div>
-          </section>
-        </div>
-
-        <div class="fd-team-toast info" id="productsToast"><span class="fd-team-toast-message" id="productsToastMessage">Notification</span><button type="button" class="fd-team-toast-close" id="productsToastClose"><i class="bi bi-x"></i></button></div>
-
-        <script>
-          (function () {
-            'use strict';
-            var csrfToken = <?= json_encode($csrfToken) ?>;
-            var basePath = <?= json_encode(rtrim(dirname($_SERVER['SCRIPT_NAME']), '/\\')) ?>;
-            var apiUrl = basePath + '/api/products.php';
-            var state = {page:1, perPage:10, search:'', status:'', pages:1, total:0};
-            var currency = {symbol:'', position:'before', decimals:2};
-            var searchTimer = null, toastTimer = null, archiveId = 0;
-            var tableBody = document.getElementById('productRows');
-            var archiveModal = document.getElementById('archiveModal');
-            var toast = document.getElementById('productsToast');
-            var toastMessage = document.getElementById('productsToastMessage');
-
-            function el(id){ return document.getElementById(id); }
-            function esc(v){ return String(v == null ? '' : v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;'); }
-            function notify(type,msg){ if(toastTimer) clearTimeout(toastTimer); toast.className='fd-team-toast '+(type||'info')+' show'; toastMessage.textContent=msg||'Notification'; toastTimer=setTimeout(function(){ toast.classList.remove('show'); },3000); }
-            function loading(button,on){ if(!button) return; button.disabled=!!on; button.classList.toggle('loading',!!on); }
-            function request(payload){ var data=new FormData(); Object.keys(payload).forEach(function(k){data.append(k,payload[k]);}); data.append('csrf_token',csrfToken); return fetch(apiUrl,{method:'POST',body:data,credentials:'same-origin',cache:'no-store',headers:{'X-Requested-With':'XMLHttpRequest','Accept':'application/json'}}).then(function(r){return r.text().then(function(raw){var d,t=String(raw||'').trim();try{d=t?JSON.parse(t):{}}catch(e){throw new Error(t.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim()||('Invalid server response. HTTP '+r.status));}if(!r.ok||!d.success)throw new Error(d.message||('Request failed. HTTP '+r.status));return d;});}); }
-            function money(v){ var n=Number(v||0),amount=n.toLocaleString(undefined,{minimumFractionDigits:currency.decimals,maximumFractionDigits:currency.decimals}); if(!currency.symbol)return amount; return currency.position==='after'?amount+' '+currency.symbol:currency.symbol+' '+amount; }
-            function markupText(r){ var value=Number(r.markup_value||0); return String(r.markup_type)==='fixed' ? money(value) : value.toFixed(2)+'%'; }
-            function render(data){
-              currency=data.currency||currency;
-              var pg=data.pagination||{};
-              state.page=Number(pg.page||1); state.pages=Number(pg.pages||1); state.total=Number(pg.total||0);
-              el('countText').textContent=state.total?('Showing '+Number(pg.from||0)+'-'+Number(pg.to||0)+' of '+state.total+' products'):'Showing 0 products';
-              el('pageText').textContent='Page '+state.page+' of '+state.pages;
-              el('prevPage').disabled=state.page<=1; el('nextPage').disabled=state.page>=state.pages;
-              var rows=data.products||[];
-              if(!rows.length){ tableBody.innerHTML='<tr><td colspan="10" class="fd-team-empty">No products found for the selected filters.</td></tr>'; return; }
-              tableBody.innerHTML=rows.map(function(r,i){
-                var sku=r.sku?esc(r.sku):'No SKU';
-                var desc=r.description?'<small title="'+esc(r.description)+'">'+esc(r.description)+'</small>':'';
-                var updated=r.updated_display||r.created_display||'-';
-                var archiveButton=String(r.status)==='archived'?'':'<button type="button" class="fd-team-icon-button danger" data-archive="'+Number(r.id)+'" data-name="'+esc(r.name)+'" title="Archive"><i class="bi bi-archive"></i></button>';
-                return '<tr><td>'+((state.page-1)*state.perPage+i+1)+'</td>'+ 
-                  '<td><div class="fd-team-name fd-product-name"><span class="fd-team-name-icon"><i class="bi bi-box-seam"></i></span><span><strong>'+esc(r.name)+'</strong><small>'+sku+'</small>'+desc+'</span></div></td>'+ 
-                  '<td>'+esc(r.unit_name||'unit')+'</td>'+ 
-                  '<td class="fd-product-money">'+money(r.base_unit_price)+'</td>'+ 
-                  '<td><span class="fd-product-markup">'+esc(markupText(r))+'</span></td>'+ 
-                  '<td class="fd-product-money">'+money(r.selling_price)+'</td>'+ 
-                  '<td>'+Number(r.tax_percent||0).toFixed(2)+'%</td>'+ 
-                  '<td><span class="fd-product-status '+esc(r.status)+'">'+esc(String(r.status||'').replace(/_/g,' '))+'</span></td>'+ 
-                  '<td>'+esc(updated)+'</td>'+ 
-                  '<td><div class="fd-team-actions-cell"><a class="fd-team-icon-button" href="product-form.php?id='+Number(r.id)+'" title="Edit"><i class="bi bi-pencil"></i></a>'+archiveButton+'</div></td></tr>';
-              }).join('');
-            }
-            function loadProducts(){ tableBody.innerHTML='<tr><td colspan="10" class="fd-team-empty">Loading products...</td></tr>'; request({action:'list',page:state.page,per_page:state.perPage,search:state.search,status:state.status}).then(render).catch(function(e){tableBody.innerHTML='<tr><td colspan="10" class="fd-team-empty">'+esc(e.message)+'</td></tr>';notify('error',e.message);}); }
-            function openArchive(id,name){ archiveId=Number(id||0);el('archiveName').textContent=name||'this product';archiveModal.classList.add('show');archiveModal.setAttribute('aria-hidden','false'); }
-            function closeArchive(){ archiveId=0;archiveModal.classList.remove('show');archiveModal.setAttribute('aria-hidden','true'); }
-
-
-            var moreActions = el('productMoreActions');
-            var moreActionsButton = el('productMoreActionsButton');
-            function closeMoreActions(){
-              if(!moreActions) return;
-              moreActions.classList.remove('open');
-              if(moreActionsButton) moreActionsButton.setAttribute('aria-expanded','false');
-            }
-            if(moreActionsButton){
-              moreActionsButton.onclick=function(e){
-                e.stopPropagation();
-                var open=!moreActions.classList.contains('open');
-                closeMoreActions();
-                if(open){ moreActions.classList.add('open'); moreActionsButton.setAttribute('aria-expanded','true'); }
-              };
-            }
-            document.addEventListener('click',function(e){ if(moreActions && !moreActions.contains(e.target)) closeMoreActions(); });
-
-            function csvCell(value){
-              var text=String(value==null?'':value);
-              return /[",\r\n]/.test(text) ? '"'+text.replace(/"/g,'""')+'"' : text;
-            }
-            function downloadCsv(filename, rows){
-              var csv='\ufeff'+rows.map(function(row){return row.map(csvCell).join(',');}).join('\r\n');
-              var blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
-              var url=URL.createObjectURL(blob),a=document.createElement('a');
-              a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
-            }
-            if(el('exportProductsButton')){
-              el('exportProductsButton').onclick=function(){
-                var btn=this;
-                closeMoreActions();
-                loading(btn,true);
-                request({action:'export',search:state.search,status:state.status}).then(function(d){
-                  var rows=[['SKU','Product Name','Description','Unit','Base Price','Markup Type','Markup Value','Selling Price','Tax Percent','Status','Created','Updated']];
-                  (d.products||[]).forEach(function(r){
-                    rows.push([r.sku||'',r.name||'',r.description||'',r.unit_name||'unit',r.base_unit_price||0,r.markup_type||'percentage',r.markup_value||0,r.selling_price||0,r.tax_percent||0,r.status||'active',r.created_at||'',r.updated_at||'']);
-                  });
-                  downloadCsv('products-'+new Date().toISOString().slice(0,10)+'.csv',rows);
-                  notify('success',(d.products||[]).length+' product(s) exported.');
-                }).catch(function(e){notify('error',e.message);}).finally(function(){loading(btn,false);});
-              };
-            }
-
-            el('productsToastClose').onclick=function(){toast.classList.remove('show');};
-            el('clearBtn').onclick=function(){state.page=1;state.search='';state.status='';el('searchInput').value='';el('statusFilter').value='';loadProducts();};
-            el('searchInput').oninput=function(e){if(searchTimer)clearTimeout(searchTimer);searchTimer=setTimeout(function(){state.search=e.target.value.trim();state.page=1;loadProducts();},250);};
-            el('statusFilter').onchange=function(e){state.status=e.target.value;state.page=1;loadProducts();};
-            el('perPage').onchange=function(e){state.perPage=Number(e.target.value||10);state.page=1;loadProducts();};
-            el('prevPage').onclick=function(){if(state.page>1){state.page--;loadProducts();}};
-            el('nextPage').onclick=function(){if(state.page<state.pages){state.page++;loadProducts();}};
-
-            tableBody.onclick=function(e){var b=e.target.closest('[data-archive]');if(!b)return;openArchive(Number(b.getAttribute('data-archive')),b.getAttribute('data-name'));};
-            document.addEventListener('click',function(e){if(e.target.closest('[data-close-archive]'))closeArchive();});
-            archiveModal.onclick=function(e){if(e.target===archiveModal)closeArchive();};
-            document.addEventListener('keydown',function(e){if(e.key==='Escape')closeArchive();});
-
-            el('confirmArchiveBtn').onclick=function(){if(!archiveId)return;var b=this;loading(b,true);request({action:'archive',id:archiveId}).then(function(d){closeArchive();notify('success',d.message);setTimeout(function(){window.location.reload();},350);}).catch(function(e){notify('error',e.message);}).finally(function(){loading(b,false);});};
-
-            loadProducts();
-          })();
-        </script>
       </div>
     </main>
   </div>
-
+  <div class="fd-team-toast info" id="bulkToast"><span class="fd-team-toast-message" id="bulkToastMessage">Notification</span><button type="button" class="fd-team-toast-close" id="bulkToastClose"><i class="bi bi-x"></i></button></div>
   <?php require_once __DIR__ . '/includes/footer.php'; ?>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+  (function(){
+    'use strict';
+    var csrfToken=<?= json_encode($inventoryCsrfToken) ?>;
+    var apiUrl='api/inventory.php';
+    var mode=<?= json_encode($initialBulkMode) ?>;
+    var products=[],branches=[],inventoryMap={},quantities={},notes={},search='';
+    var toastTimer=null;
+    function el(id){return document.getElementById(id)}
+    function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;')}
+    function request(fd){fd.append('csrf_token',csrfToken);return fetch(apiUrl,{method:'POST',body:fd,credentials:'same-origin',cache:'no-store',headers:{'X-Requested-With':'XMLHttpRequest','Accept':'application/json'}}).then(function(r){return r.text().then(function(raw){var d,t=String(raw||'').trim();try{d=t?JSON.parse(t):{}}catch(e){throw new Error(t.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim()||('Invalid server response. HTTP '+r.status))}if(!r.ok||!d.success)throw new Error(d.message||('Request failed. HTTP '+r.status));return d})})}
+    function notify(type,msg){if(toastTimer)clearTimeout(toastTimer);var t=el('bulkToast');t.className='fd-team-toast '+(type||'info')+' show';el('bulkToastMessage').textContent=msg||'Notification';toastTimer=setTimeout(function(){t.classList.remove('show')},3200)}
+    function key(pid,bid){return String(pid)+':'+String(bid)}
+    function invFor(pid,bid){return inventoryMap[key(pid,bid)]||{quantity_on_hand:0,quantity_reserved:0,reorder_level:0,minimum_stock:0}}
+    function buildMap(){inventoryMap={};products.forEach(function(p){(p.inventories||[]).forEach(function(i){inventoryMap[key(p.id,i.branch_id)]=i})})}
+    function rowCalc(p){var bid=Number(el('branchId').value||0),inv=invFor(p.id,bid),on=Number(inv.quantity_on_hand||0),res=Number(inv.quantity_reserved||0),av=Math.max(0,on-res),qty=Math.max(0,Number(quantities[p.id]||0)),after=mode==='remove'?on-qty:on+qty,invalid=mode==='remove'&&qty>av+0.0000001;return {on:on,res:res,av:av,qty:qty,after:after,invalid:invalid}}
+    function setMode(next){mode=next==='remove'?'remove':'add';el('modeAdd').classList.toggle('active',mode==='add');el('modeRemove').classList.toggle('active',mode==='remove');el('saveText').textContent=mode==='remove'?'Apply Bulk Remove':'Apply Bulk Add';el('modeHint').textContent=mode==='add'?'Entering stock for a product automatically enables inventory tracking for that product.':'Remove Stock is limited to available quantity and never consumes reserved stock.';renderRows()}
+    function filteredProducts(){var q=search.toLowerCase();if(!q)return products;return products.filter(function(p){return String(p.name||'').toLowerCase().indexOf(q)>=0||String(p.sku||'').toLowerCase().indexOf(q)>=0})}
+    function updateSummary(){var ready=0,total=0;products.forEach(function(p){var q=Number(quantities[p.id]||0);if(q>0){ready++;total+=q}});el('readyCount').textContent=ready;el('totalQty').textContent=total.toFixed(3);el('productCount').textContent=products.length}
+    function renderRows(){var list=filteredProducts(),bid=Number(el('branchId').value||0),h='';if(!list.length){el('bulkRows').innerHTML='<tr><td colspan="9" class="fd-bulk-empty">No products match the search.</td></tr>';updateSummary();return}list.forEach(function(p,i){var c=rowCalc(p),track=Number(p.track_inventory||0)===1,hint=track?'<span class="fd-bulk-track on">Inventory tracked</span>':'<span class="fd-bulk-track">Enables on first add</span>';h+='<tr data-product-id="'+Number(p.id)+'"'+(c.invalid?' class="is-invalid"':'')+'><td>'+(i+1)+'</td><td><div class="fd-bulk-product"><span class="fd-bulk-product-icon"><i class="bi bi-box-seam"></i></span><span><strong>'+esc(p.name)+'</strong><small>'+esc(p.sku||'No SKU')+'</small>'+hint+'</span></div></td><td>'+esc(p.unit_name||'unit')+'</td><td><span class="fd-bulk-num" data-on="'+p.id+'">'+c.on.toFixed(3)+'</span></td><td><span data-res="'+p.id+'">'+c.res.toFixed(3)+'</span></td><td><span data-av="'+p.id+'">'+c.av.toFixed(3)+'</span></td><td><input class="fd-bulk-qty" type="number" min="0" step="0.001" inputmode="decimal" placeholder="0.000" value="'+esc(quantities[p.id]||'')+'" data-qty="'+p.id+'" '+(!bid?'disabled':'')+'></td><td><strong class="fd-bulk-result '+mode+'" data-after="'+p.id+'">'+c.after.toFixed(3)+'</strong></td><td><input class="fd-bulk-note" maxlength="500" placeholder="Optional note" value="'+esc(notes[p.id]||'')+'" data-note="'+p.id+'" '+(!bid?'disabled':'')+'></td></tr>'});el('bulkRows').innerHTML=h;updateSummary()}
+    function loadMeta(){var fd=new FormData();fd.append('action','adjust_meta');request(fd).then(function(d){products=d.products||[];branches=d.branches||[];buildMap();var s=el('branchId'),current=s.value;s.innerHTML='<option value="">Select Branch</option>'+branches.map(function(b){return '<option value="'+Number(b.id)+'">'+esc(b.name)+'</option>'}).join('');if(current)s.value=current;if(!s.value&&branches.length===1)s.value=String(branches[0].id);renderRows()}).catch(function(e){el('bulkRows').innerHTML='<tr><td colspan="9" class="fd-bulk-empty">'+esc(e.message)+'</td></tr>';notify('error',e.message)})}
+    el('modeAdd').onclick=function(){setMode('add')};el('modeRemove').onclick=function(){setMode('remove')};
+    el('branchId').onchange=function(){renderRows()};
+    el('bulkSearch').addEventListener('input',function(e){search=e.target.value.trim();renderRows()});
+    el('clearQty').onclick=function(){quantities={};notes={};el('bulkError').classList.remove('show');renderRows()};
+    el('bulkRows').addEventListener('input',function(e){var pid;if(e.target.hasAttribute('data-qty')){pid=Number(e.target.getAttribute('data-qty'));quantities[pid]=e.target.value}else if(e.target.hasAttribute('data-note')){pid=Number(e.target.getAttribute('data-note'));notes[pid]=e.target.value;return}else return;var p=products.find(function(x){return Number(x.id)===pid});if(!p)return;var c=rowCalc(p),tr=e.target.closest('tr');if(tr)tr.classList.toggle('is-invalid',c.invalid);var after=tr?tr.querySelector('[data-after]'):null;if(after)after.textContent=c.after.toFixed(3);updateSummary()});
+    el('saveBulk').onclick=function(){var error=el('bulkError'),bid=Number(el('branchId').value||0);if(!bid){error.textContent='Select a branch before entering the bulk stock adjustment.';error.classList.add('show');return}var rows=[],bad='';products.forEach(function(p){var qty=Number(quantities[p.id]||0);if(!(qty>0))return;var c=rowCalc(p);if(mode==='remove'&&c.invalid&&!bad)bad=esc(p.name)+': only '+c.av.toFixed(3)+' available quantity can be removed.';rows.push({product_id:Number(p.id),branch_id:bid,quantity:qty.toFixed(3),notes:String(notes[p.id]||'').trim()})});if(bad){error.textContent=bad;error.classList.add('show');return}if(!rows.length){error.textContent='Enter a quantity for at least one product.';error.classList.add('show');return}error.classList.remove('show');var btn=this,fd=new FormData();fd.append('action','bulk_adjust_stock');fd.append('adjustment_type',mode);fd.append('rows_json',JSON.stringify(rows));btn.disabled=true;btn.classList.add('loading');request(fd).then(function(d){notify('success',d.message||'Bulk stock adjustment completed.');quantities={};notes={};return loadMeta()}).catch(function(e){error.textContent=e.message;error.classList.add('show');notify('error',e.message)}).finally(function(){btn.disabled=false;btn.classList.remove('loading')})};
+    el('bulkToastClose').onclick=function(){el('bulkToast').classList.remove('show')};
+    setMode(mode);loadMeta();
+  })();
+  </script>
 </body>
 </html>

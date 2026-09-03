@@ -4108,7 +4108,7 @@ a,a:link,a:visited,a:hover,a:focus,a:active{text-decoration:none!important}
 .select2-container{width:100%!important}.select2-container .select2-selection--single{height:40px!important;border:1px solid #dfe5ec!important;border-radius:8px!important}.select2-container .select2-selection--single .select2-selection__rendered{height:38px!important;padding:0 31px 0 10px!important;display:flex!important;align-items:center!important;color:#263750!important;font-size:10px!important}.select2-container .select2-selection--single .select2-selection__arrow{height:38px!important}.select2-container .select2-selection--multiple{min-height:40px!important;border:1px solid #dfe5ec!important;border-radius:8px!important}.select2-dropdown{z-index:20000!important;border:1px solid #dfe5ec!important}.select2-results__option{font-size:9px!important}
 @media(max-width:767.98px){.fd-job-head{flex-direction:column}.fd-job-grid{grid-template-columns:1fr}.fd-job-field.full,.fd-job-section,.fd-job-assignment{grid-column:auto}.fd-job-search{width:100%}.fd-job-spacer{display:none}}
 
-a,a:link,a:visited,a:hover,a:focus,a:active{text-decoration:none!important}.mjv-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:15px}.mjv-title{margin:0 0 5px;color:#0b1933;font-size:21px;font-weight:700}.mjv-sub{margin:0;color:#6f7b90;font-size:10px}.mjv-back{min-height:37px;padding:0 11px;display:inline-flex;align-items:center;gap:6px;border:1px solid #dfe5ec;border-radius:8px;color:#43546c;background:#fff;font-size:9px;font-weight:700}.mjv-head-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.mjv-work-btn{min-height:37px;padding:0 12px;display:inline-flex;align-items:center;justify-content:center;gap:7px;border:1px solid #74b824;border-radius:8px;color:#fff;background:linear-gradient(90deg,#7fc92d,#68aa1d);box-shadow:0 6px 14px rgba(104,170,29,.15);font-size:9px;font-weight:700}.mjv-work-btn:hover{color:#fff;background:linear-gradient(90deg,#74b824,#5d971b)}.mjv-travel-btn{min-height:37px;padding:0 12px;display:inline-flex;align-items:center;justify-content:center;gap:7px;border:1px solid #123d70;border-radius:8px;color:#fff;background:#123d70;box-shadow:0 6px 14px rgba(18,61,112,.14);font-size:9px;font-weight:700}.mjv-travel-btn:hover{color:#fff;background:#0b315f;border-color:#0b315f}.mjv-travel-btn{cursor:pointer}.mjv-arrived-btn{min-height:39px;padding:0 14px;display:inline-flex;align-items:center;justify-content:center;gap:7px;position:relative;z-index:2;border:1px solid #74b824;border-radius:8px;color:#fff;background:linear-gradient(90deg,#7fc92d,#5d971b);box-shadow:0 7px 17px rgba(93,151,27,.22);font-size:9px;font-weight:700;cursor:pointer;outline:0}.mjv-arrived-btn:hover,.mjv-arrived-btn:focus,.mjv-arrived-btn:focus-visible{color:#fff;background:linear-gradient(90deg,#74b824,#4d7f14);box-shadow:0 0 0 3px rgba(116,184,36,.18),0 8px 18px rgba(93,151,27,.22)}.mjv-arrived-btn:disabled{opacity:.62;cursor:not-allowed;box-shadow:none}.mjv-update-job-btn{min-height:37px;padding:0 12px;display:inline-flex;align-items:center;justify-content:center;gap:7px;border:1px solid #74b824;border-radius:8px;color:#fff;background:linear-gradient(90deg,#7fc92d,#68aa1d);font-size:9px;font-weight:700;cursor:pointer}.mjv-update-job-btn:hover{color:#fff;background:linear-gradient(90deg,#74b824,#5d971b)}.mjv-modal-backdrop{position:fixed;inset:0;z-index:16000;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(0,17,49,.46);backdrop-filter:blur(3px)}.mjv-modal-backdrop.show{display:flex}.mjv-modal{width:min(520px,100%);overflow:hidden;border:1px solid #dfe5ec;border-radius:12px;background:#fff;box-shadow:0 24px 65px rgba(0,17,49,.24)}.mjv-modal-head{padding:13px 15px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #e8edf2;background:#fbfcfd}.mjv-modal-head h3{margin:0;color:#1d2d46;font-size:12px}.mjv-modal-close{width:30px;height:30px;display:grid;place-items:center;border:0;border-radius:7px;background:transparent;color:#7b889a}.mjv-modal-body{padding:15px}.mjv-field{margin-bottom:13px}.mjv-field label{display:block;margin-bottom:6px;color:#42536c;font-size:9px;font-weight:700}.mjv-field select,.mjv-field textarea{width:100%;min-height:40px;padding:9px 10px;border:1px solid #dfe5ec;border-radius:8px;outline:0;background:#fff;color:#263750;font-size:10px}.mjv-field textarea{min-height:90px;resize:vertical}.mjv-field select:focus,.mjv-field textarea:focus{border-color:#a9cf75;box-shadow:0 0 0 3px rgba(116,184,36,.11)}.mjv-modal-foot{padding:12px 15px;display:flex;justify-content:flex-end;gap:8px;border-top:1px solid #e8edf2;background:#fbfcfd}.mjv-travel-state{display:inline-flex;align-items:center;gap:6px;margin-left:7px;padding:4px 8px;border-radius:999px;background:#fff4df;color:#a85a08;font-size:8px;font-weight:700}.mjv-travel-state.arrived{background:#f0f8e5;color:#5d971b}.mjv-grid{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(280px,.7fr);gap:14px}.mjv-card{padding:0;overflow:hidden}.mjv-card-head{padding:12px 14px;border-bottom:1px solid #e7ecf1;background:#fbfcfd}.mjv-card-head h3{margin:0;color:#23344d;font-size:11px}.mjv-body{padding:14px}.mjv-job-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.mjv-number{display:block;margin-bottom:5px;color:#123d70;font-size:9px;font-weight:700}.mjv-job-title{margin:0;color:#14233b;font-size:16px;font-weight:700}.mjv-badge{padding:4px 7px;border-radius:5px;color:#123d70;background:#edf2f7;font-size:8px;font-weight:700;text-transform:capitalize}.mjv-desc{margin:12px 0 0;color:#5f6f83;font-size:9.5px;line-height:1.65;white-space:pre-wrap}.mjv-info{margin-top:14px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.mjv-info-item{padding:10px;border:1px solid #edf1f4;border-radius:8px;background:#fcfdfd}.mjv-info-item small{display:block;margin-bottom:4px;color:#8a96a7;font-size:7.5px;text-transform:uppercase}.mjv-info-item strong{display:block;color:#3b4e66;font-size:9.5px;line-height:1.45}.mjv-section{margin-top:14px;padding-top:13px;border-top:1px solid #edf1f4}.mjv-section-title{margin:0 0 9px;color:#334760;font-size:9px;font-weight:700;text-transform:uppercase}.mjv-person{padding:10px;display:flex;align-items:center;gap:9px;border:1px solid #edf1f4;border-radius:8px;background:#fff}.mjv-person-icon{width:32px;height:32px;display:grid;place-items:center;border-radius:8px;color:#5d971b;background:#f0f8e5}.mjv-person strong,.mjv-person small{display:block}.mjv-person strong{color:#253750;font-size:9.5px}.mjv-person small{margin-top:2px;color:#8490a2;font-size:8px}.mjv-side-list{display:grid;gap:9px}.mjv-side-row{padding:10px 11px;border:1px solid #edf1f4;border-radius:8px;background:#fff}.mjv-side-row small{display:block;margin-bottom:4px;color:#8d98a7;font-size:7.5px;text-transform:uppercase}.mjv-side-row strong{display:block;color:#354961;font-size:9.5px;line-height:1.45}.mjv-empty{padding:38px 20px;text-align:center;color:#8290a3}.mjv-empty i{display:block;margin-bottom:10px;font-size:28px}.mjv-toast{width:min(300px,calc(100vw - 24px));position:fixed;top:82px;right:16px;z-index:25000;padding:8px 9px;border-radius:7px;color:#fff;background:#e45b66;box-shadow:0 10px 26px rgba(0,17,49,.18);opacity:0;transform:translateY(-8px);transition:.18s}.mjv-toast.show{opacity:1;transform:translateY(0)}
+a,a:link,a:visited,a:hover,a:focus,a:active{text-decoration:none!important}.mjv-head{display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:15px}.mjv-title{margin:0 0 5px;color:#0b1933;font-size:21px;font-weight:700}.mjv-sub{margin:0;color:#6f7b90;font-size:10px}.mjv-back{min-height:37px;padding:0 11px;display:inline-flex;align-items:center;gap:6px;border:1px solid #dfe5ec;border-radius:8px;color:#43546c;background:#fff;font-size:9px;font-weight:700}.mjv-head-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.mjv-work-btn{min-height:37px;padding:0 12px;display:inline-flex;align-items:center;justify-content:center;gap:7px;border:1px solid #74b824;border-radius:8px;color:#fff;background:linear-gradient(90deg,#7fc92d,#68aa1d);box-shadow:0 6px 14px rgba(104,170,29,.15);font-size:9px;font-weight:700}.mjv-work-btn:hover{color:#fff;background:linear-gradient(90deg,#74b824,#5d971b)}.mjv-travel-btn{min-height:37px;padding:0 12px;display:inline-flex;align-items:center;justify-content:center;gap:7px;border:1px solid #123d70;border-radius:8px;color:#fff;background:#123d70;box-shadow:0 6px 14px rgba(18,61,112,.14);font-size:9px;font-weight:700}.mjv-travel-btn:hover{color:#fff;background:#0b315f;border-color:#0b315f}.mjv-travel-btn{cursor:pointer}.mjv-arrived-btn{min-height:39px;padding:0 14px;display:inline-flex;align-items:center;justify-content:center;gap:7px;position:relative;z-index:2;border:1px solid #74b824;border-radius:8px;color:#fff;background:linear-gradient(90deg,#7fc92d,#5d971b);box-shadow:0 7px 17px rgba(93,151,27,.22);font-size:9px;font-weight:700;cursor:pointer;outline:0;pointer-events:auto;touch-action:manipulation}.mjv-arrived-btn:hover,.mjv-arrived-btn:focus,.mjv-arrived-btn:focus-visible{color:#fff;background:linear-gradient(90deg,#74b824,#4d7f14);box-shadow:0 0 0 3px rgba(116,184,36,.18),0 8px 18px rgba(93,151,27,.22)}.mjv-arrived-btn:disabled{opacity:.62;cursor:not-allowed;box-shadow:none}.mjv-update-job-btn{min-height:37px;padding:0 12px;display:inline-flex;align-items:center;justify-content:center;gap:7px;border:1px solid #74b824;border-radius:8px;color:#fff;background:linear-gradient(90deg,#7fc92d,#68aa1d);font-size:9px;font-weight:700;cursor:pointer}.mjv-update-job-btn:hover{color:#fff;background:linear-gradient(90deg,#74b824,#5d971b)}.mjv-modal-backdrop{position:fixed;inset:0;z-index:16000;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(0,17,49,.46);backdrop-filter:blur(3px)}.mjv-modal-backdrop.show{display:flex}.mjv-modal{width:min(520px,100%);overflow:hidden;border:1px solid #dfe5ec;border-radius:12px;background:#fff;box-shadow:0 24px 65px rgba(0,17,49,.24)}.mjv-modal-head{padding:13px 15px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #e8edf2;background:#fbfcfd}.mjv-modal-head h3{margin:0;color:#1d2d46;font-size:12px}.mjv-modal-close{width:30px;height:30px;display:grid;place-items:center;border:0;border-radius:7px;background:transparent;color:#7b889a}.mjv-modal-body{padding:15px}.mjv-field{margin-bottom:13px}.mjv-field label{display:block;margin-bottom:6px;color:#42536c;font-size:9px;font-weight:700}.mjv-field select,.mjv-field textarea{width:100%;min-height:40px;padding:9px 10px;border:1px solid #dfe5ec;border-radius:8px;outline:0;background:#fff;color:#263750;font-size:10px}.mjv-field textarea{min-height:90px;resize:vertical}.mjv-field select:focus,.mjv-field textarea:focus{border-color:#a9cf75;box-shadow:0 0 0 3px rgba(116,184,36,.11)}.mjv-modal-foot{padding:12px 15px;display:flex;justify-content:flex-end;gap:8px;border-top:1px solid #e8edf2;background:#fbfcfd}.mjv-travel-state{display:inline-flex;align-items:center;gap:6px;margin-left:7px;padding:4px 8px;border-radius:999px;background:#fff4df;color:#a85a08;font-size:8px;font-weight:700}.mjv-travel-state.arrived{background:#f0f8e5;color:#5d971b}.mjv-grid{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(280px,.7fr);gap:14px}.mjv-card{padding:0;overflow:hidden}.mjv-card-head{padding:12px 14px;border-bottom:1px solid #e7ecf1;background:#fbfcfd}.mjv-card-head h3{margin:0;color:#23344d;font-size:11px}.mjv-body{padding:14px}.mjv-job-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.mjv-number{display:block;margin-bottom:5px;color:#123d70;font-size:9px;font-weight:700}.mjv-job-title{margin:0;color:#14233b;font-size:16px;font-weight:700}.mjv-badge{padding:4px 7px;border-radius:5px;color:#123d70;background:#edf2f7;font-size:8px;font-weight:700;text-transform:capitalize}.mjv-desc{margin:12px 0 0;color:#5f6f83;font-size:9.5px;line-height:1.65;white-space:pre-wrap}.mjv-info{margin-top:14px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.mjv-info-item{padding:10px;border:1px solid #edf1f4;border-radius:8px;background:#fcfdfd}.mjv-info-item small{display:block;margin-bottom:4px;color:#8a96a7;font-size:7.5px;text-transform:uppercase}.mjv-info-item strong{display:block;color:#3b4e66;font-size:9.5px;line-height:1.45}.mjv-section{margin-top:14px;padding-top:13px;border-top:1px solid #edf1f4}.mjv-section-title{margin:0 0 9px;color:#334760;font-size:9px;font-weight:700;text-transform:uppercase}.mjv-person{padding:10px;display:flex;align-items:center;gap:9px;border:1px solid #edf1f4;border-radius:8px;background:#fff}.mjv-person-icon{width:32px;height:32px;display:grid;place-items:center;border-radius:8px;color:#5d971b;background:#f0f8e5}.mjv-person strong,.mjv-person small{display:block}.mjv-person strong{color:#253750;font-size:9.5px}.mjv-person small{margin-top:2px;color:#8490a2;font-size:8px}.mjv-side-list{display:grid;gap:9px}.mjv-side-row{padding:10px 11px;border:1px solid #edf1f4;border-radius:8px;background:#fff}.mjv-side-row small{display:block;margin-bottom:4px;color:#8d98a7;font-size:7.5px;text-transform:uppercase}.mjv-side-row strong{display:block;color:#354961;font-size:9.5px;line-height:1.45}.mjv-empty{padding:38px 20px;text-align:center;color:#8290a3}.mjv-empty i{display:block;margin-bottom:10px;font-size:28px}.mjv-toast{width:min(300px,calc(100vw - 24px));position:fixed;top:82px;right:16px;z-index:25000;padding:8px 9px;border-radius:7px;color:#fff;background:#e45b66;box-shadow:0 10px 26px rgba(0,17,49,.18);opacity:0;transform:translateY(-8px);pointer-events:none!important;transition:.18s;font-size:8.5px;font-weight:600;line-height:1.4}.mjv-toast.show{opacity:1;transform:translateY(0)}.mjv-head-actions a,.mjv-head-actions button,.mjv-modal-foot button{cursor:pointer!important;pointer-events:auto}.mjv-head-actions button:disabled,.mjv-modal-foot button:disabled{cursor:not-allowed!important}.mjv-action-spinner{width:12px;height:12px;display:none;flex:0 0 12px;border:2px solid rgba(255,255,255,.45);border-top-color:#fff;border-radius:50%;animation:mjvSpin .7s linear infinite}.mjv-back .mjv-action-spinner{border-color:rgba(67,84,108,.28);border-top-color:#43546c}.is-loading .mjv-action-spinner{display:inline-block}.is-loading .mjv-action-icon{display:none!important}@keyframes mjvSpin{to{transform:rotate(360deg)}}
 @media(max-width:900px){.mjv-grid{grid-template-columns:1fr}}@media(max-width:575px){.mjv-head{flex-direction:column}.mjv-head-actions{width:100%;display:grid;grid-template-columns:1fr}.mjv-back,.mjv-work-btn,.mjv-travel-btn,.mjv-arrived-btn,.mjv-update-job-btn{width:100%;justify-content:center}.mjv-info{grid-template-columns:1fr}.mjv-toast{left:12px;right:12px;width:auto}}
 </style>
 </head>
@@ -4120,7 +4120,7 @@ a,a:link,a:visited,a:hover,a:focus,a:active{text-decoration:none!important}.mjv-
         <main class="fieldplx-main-content">
             <div class="fieldplx-content-wrapper">
                 <div class="fd-dashboard">
-<section class="mjv-head"><div><h1 class="mjv-title">My Job Details</h1><p class="mjv-sub">View the full details of a job assigned to you or one of your teams.</p></div><div class="mjv-head-actions"><button type="button" class="mjv-travel-btn" id="startTravellingButton" style="display:none"><i class="bi bi-geo-alt-fill"></i> <span id="travelButtonText">Start Travelling</span></button><a class="mjv-travel-btn" id="openMapsButton" href="#" target="_blank" rel="noopener" style="display:none"><i class="bi bi-map"></i> Open Maps</a><button type="button" class="mjv-arrived-btn" id="arrivedButton" style="display:none"><i class="bi bi-check2-circle"></i> <span id="arrivedButtonText">Arrived</span></button><a class="mjv-work-btn" id="updateWorkButton" href="#" style="display:none"><i class="bi bi-list-check"></i> Update Work</a><a class="mjv-update-job-btn" id="updateJobButton" href="update-workflow.php?id=<?= (int)$jobId ?>" style="display:none"><i class="bi bi-pencil-square"></i> Update Job</a><a class="mjv-back" href="my-jobs.php"><i class="bi bi-arrow-left"></i> Back to My Jobs</a></div></section>
+<section class="mjv-head"><div><h1 class="mjv-title">My Job Details</h1><p class="mjv-sub">View the full details of a job assigned to you or one of your teams.</p></div><div class="mjv-head-actions"><button type="button" class="mjv-travel-btn" id="startTravellingButton" style="display:none"><span class="mjv-action-spinner" aria-hidden="true"></span><i class="bi bi-geo-alt-fill mjv-action-icon"></i> <span id="travelButtonText">Start Travelling</span></button><a class="mjv-travel-btn" id="openMapsButton" href="#" target="_blank" rel="noopener" style="display:none"><span class="mjv-action-spinner" aria-hidden="true"></span><i class="bi bi-map mjv-action-icon"></i> <span>Open Maps</span></a><button type="button" class="mjv-arrived-btn" id="arrivedButton" style="display:none"><span class="mjv-action-spinner" aria-hidden="true"></span><i class="bi bi-check2-circle mjv-action-icon"></i> <span id="arrivedButtonText">Arrived</span></button><a class="mjv-work-btn" id="updateWorkButton" href="#" style="display:none"><span class="mjv-action-spinner" aria-hidden="true"></span><i class="bi bi-list-check mjv-action-icon"></i> <span>Update Work</span></a><a class="mjv-update-job-btn" id="updateJobButton" href="update-workflow.php?id=<?= (int)$jobId ?>" style="display:none"><span class="mjv-action-spinner" aria-hidden="true"></span><i class="bi bi-pencil-square mjv-action-icon"></i> <span>Update Job</span></a><a class="mjv-back" href="my-jobs.php"><i class="bi bi-arrow-left"></i> Back to My Jobs</a></div></section>
 <div class="mjv-grid" id="content"><section class="fd-card mjv-card"><div class="mjv-empty"><i class="bi bi-hourglass-split"></i>Loading job details...</div></section></div>
 </div>
 <div class="mjv-toast" id="toast">Unable to load job.</div>
@@ -4132,7 +4132,7 @@ a,a:link,a:visited,a:hover,a:focus,a:active{text-decoration:none!important}.mjv-
         <div class="mjv-field"><label for="jobProgressStatus">Job Status</label><select id="jobProgressStatus" required><option value="in_progress">In Progress</option><option value="waiting_customer">Waiting Customer</option><option value="waiting_material">Waiting Material</option><option value="completed">Completed</option></select></div>
         <div class="mjv-field"><label for="jobProgressRemarks">Work Update / Remarks</label><textarea id="jobProgressRemarks" placeholder="Enter the work completed, issue found, material required or other update."></textarea></div>
       </div>
-      <div class="mjv-modal-foot"><button type="button" class="mjv-back" id="cancelUpdateJob">Cancel</button><button type="submit" class="mjv-work-btn" id="saveJobUpdate"><i class="bi bi-check2-circle"></i> Save Update</button></div>
+      <div class="mjv-modal-foot"><button type="button" class="mjv-back" id="cancelUpdateJob">Cancel</button><button type="submit" class="mjv-work-btn" id="saveJobUpdate"><span class="mjv-action-spinner" aria-hidden="true"></span><i class="bi bi-check2-circle mjv-action-icon"></i> <span id="saveJobUpdateText">Save Update</span></button></div>
     </form>
   </section>
 </div>
@@ -4151,18 +4151,126 @@ var jobId=<?= (int)$jobId ?>,
 function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;')}
 function title(v){return String(v||'-').replace(/_/g,' ').replace(/\b\w/g,function(x){return x.toUpperCase()})}
 function fmt(v){if(!v)return '-';var d=new Date(String(v).replace(' ','T'));return isNaN(d.getTime())?esc(v):d.toLocaleDateString(undefined,{day:'2-digit',month:'short',year:'numeric'})}
+function setActionLoading(el,loading){if(!el)return;if(loading){el.classList.add('is-loading');el.setAttribute('aria-busy','true');if(el.tagName==='BUTTON')el.disabled=true}else{el.classList.remove('is-loading');el.removeAttribute('aria-busy');if(el.tagName==='BUTTON')el.disabled=false}}
 function notify(m,ok){toast.textContent=m;toast.style.background=ok?'#5d971b':'#e45b66';toast.classList.add('show');setTimeout(function(){toast.classList.remove('show')},3000)}
 function fail(m){notify(m,false);content.innerHTML='<section class="fd-card mjv-card"><div class="mjv-empty"><i class="bi bi-exclamation-circle"></i>'+esc(m)+'</div></section>'}
 function parse(r){return r.text().then(function(raw){var d,t=(raw||'').trim();try{d=t?JSON.parse(t):{}}catch(e){throw new Error('Invalid server response.')}if(!r.ok||!d.success)throw new Error(d.message||'Request failed.');return d})}
 function postTravel(action,extra){var fd=new FormData();fd.append('action',action);fd.append('job_id',jobId);fd.append('csrf_token',csrfToken);Object.keys(extra||{}).forEach(function(k){if(extra[k]!==null&&typeof extra[k]!=='undefined')fd.append(k,extra[k])});return fetch('api/job-travel.php',{method:'POST',body:fd,credentials:'same-origin',headers:{'X-Requested-With':'XMLHttpRequest','Accept':'application/json'}}).then(parse)}
 function geoPayload(pos){var c=pos.coords||{};return{latitude:c.latitude,longitude:c.longitude,accuracy:c.accuracy||'',heading:c.heading==null?'':c.heading,speed:c.speed==null?'':c.speed}}
 function syncWorkActions(travelStatus){var workBtn=document.getElementById('updateWorkButton'),updateBtn=document.getElementById('updateJobButton');if(workBtn)workBtn.style.display='none';if(updateBtn)updateBtn.style.display='none';if(!currentJob)return;var jobStatus=String(currentJob.status||'');var terminal=['cancelled','completed','ready_to_invoice','invoiced','closed','archived'].indexOf(jobStatus)!==-1;if(terminal||travelStatus!=='arrived')return;if(Number(currentJob.workflow_id||0)>0){if(workBtn){workBtn.href='update-workflow.php?id='+Number(currentJob.id||jobId);workBtn.style.display='inline-flex'}}else if(updateBtn){updateBtn.href='update-workflow.php?id='+Number(currentJob.id||jobId);updateBtn.style.display='inline-flex'}}
-function setTravelUi(status){var startBtn=document.getElementById('startTravellingButton'),mapsBtn=document.getElementById('openMapsButton'),arrivedBtn=document.getElementById('arrivedButton'),txt=document.getElementById('travelButtonText'),badge=document.getElementById('travelStateBadge');trackingActive=status==='on_the_way';if(startBtn){startBtn.style.display=(status==='not_started'||!status)?'inline-flex':'none'}if(mapsBtn){mapsBtn.style.display=status==='on_the_way'?'inline-flex':'none'}if(arrivedBtn){arrivedBtn.style.display=status==='on_the_way'?'inline-flex':'none'}if(txt)txt.textContent='Start Travelling';if(badge){badge.textContent=status?title(status):'Not Started';badge.className='mjv-travel-state'+(status==='arrived'?' arrived':'')}syncWorkActions(status)}
-function startWatcher(){if(!navigator.geolocation){notify('Location tracking is not supported on this device.',false);return}if(watchId!==null)return;watchId=navigator.geolocation.watchPosition(function(pos){if(!trackingActive)return;var now=Date.now();if(now-lastSentAt<8000)return;lastSentAt=now;postTravel('location',geoPayload(pos)).catch(function(){})},function(err){notify(err&&err.message?err.message:'Unable to read live location.',false)},{enableHighAccuracy:true,maximumAge:5000,timeout:15000})}
-function stopWatcher(){if(watchId!==null&&navigator.geolocation){navigator.geolocation.clearWatch(watchId);watchId=null}}
-function startTravelling(){if(!navigator.geolocation){notify('Location permission is required to start travelling.',false);return}var btn=document.getElementById('startTravellingButton');if(btn)btn.disabled=true;navigator.geolocation.getCurrentPosition(function(pos){postTravel('start',geoPayload(pos)).then(function(d){setTravelUi('on_the_way');startWatcher();notify(d.message||'Marked On the Way. Customer live tracking is active.',true)}).catch(function(e){notify(e.message,false)}).finally(function(){if(btn)btn.disabled=false})},function(err){if(btn)btn.disabled=false;notify(err&&err.message?err.message:'Please allow location access to start travelling.',false)},{enableHighAccuracy:true,maximumAge:0,timeout:20000})}
-function markArrived(){var btn=document.getElementById('arrivedButton'),txt=document.getElementById('arrivedButtonText');if(!btn||btn.disabled)return;btn.disabled=true;if(txt)txt.textContent='Marking Arrived...';postTravel('arrived',{}).then(function(d){trackingActive=false;stopWatcher();if(currentJob&&d.job_status)currentJob.status=d.job_status;var statusBadge=document.querySelector('.mjv-badge');if(statusBadge&&d.job_status)statusBadge.textContent=title(d.job_status);setTravelUi('arrived');notify(d.message||'Marked Arrived. You can now update the job.',true)}).catch(function(e){notify(e.message,false)}).finally(function(){btn.disabled=false;if(txt)txt.textContent='Arrived'})}
-function loadTravel(){return postTravel('get',{}).then(function(d){var t=d.travel||null;var status=t&&t.status?t.status:'not_started';setTravelUi(status);if(status==='on_the_way')startWatcher()}).catch(function(){setTravelUi('not_started')})}
+function makeArrivedInteractive(shouldFocus){
+    var btn=document.getElementById('arrivedButton');
+    if(!btn)return;
+    btn.disabled=false;
+    btn.removeAttribute('disabled');
+    btn.setAttribute('aria-disabled','false');
+    btn.tabIndex=0;
+    btn.style.pointerEvents='auto';
+    btn.style.cursor='pointer';
+    if(shouldFocus){
+        window.requestAnimationFrame(function(){
+            window.setTimeout(function(){
+                try{btn.focus({preventScroll:true})}catch(e){try{btn.focus()}catch(ignore){}}
+            },0);
+        });
+    }
+}
+function setTravelUi(status,focusArrived){
+    var startBtn=document.getElementById('startTravellingButton'),
+        mapsBtn=document.getElementById('openMapsButton'),
+        arrivedBtn=document.getElementById('arrivedButton'),
+        txt=document.getElementById('travelButtonText'),
+        badge=document.getElementById('travelStateBadge');
+    trackingActive=status==='on_the_way';
+    if(startBtn){
+        startBtn.style.display=(status==='not_started'||!status)?'inline-flex':'none';
+        if(status==='on_the_way' && document.activeElement===startBtn && startBtn.blur)startBtn.blur();
+    }
+    if(mapsBtn){mapsBtn.style.display=status==='on_the_way'?'inline-flex':'none';if(status==='on_the_way'){mapsBtn.style.pointerEvents='auto';mapsBtn.style.cursor='pointer';mapsBtn.tabIndex=0;mapsBtn.setAttribute('aria-disabled','false')}}
+    if(arrivedBtn){
+        arrivedBtn.style.display=status==='on_the_way'?'inline-flex':'none';
+        if(status==='on_the_way')makeArrivedInteractive(!!focusArrived);
+    }
+    if(txt)txt.textContent='Start Travelling';
+    if(badge){
+        badge.textContent=status?title(status):'Not Started';
+        badge.className='mjv-travel-state'+(status==='arrived'?' arrived':'');
+    }
+    syncWorkActions(status);
+}
+function startWatcher(){
+    if(!navigator.geolocation){notify('Location tracking is not supported on this device.',false);return}
+    if(watchId!==null)return;
+    watchId=navigator.geolocation.watchPosition(function(pos){
+        if(!trackingActive)return;
+        var now=Date.now();
+        if(now-lastSentAt<8000)return;
+        lastSentAt=now;
+        postTravel('location',geoPayload(pos)).catch(function(){})
+    },function(err){
+        if(trackingActive)notify(err&&err.message?err.message:'Unable to read live location.',false)
+    },{enableHighAccuracy:true,maximumAge:5000,timeout:15000})
+}
+function stopWatcher(){
+    if(watchId!==null&&navigator.geolocation){navigator.geolocation.clearWatch(watchId);watchId=null}
+}
+function startTravelling(){
+    if(!navigator.geolocation){notify('Location permission is required to start travelling.',false);return}
+    var btn=document.getElementById('startTravellingButton');
+    setActionLoading(btn,true);
+    navigator.geolocation.getCurrentPosition(function(pos){
+        postTravel('start',geoPayload(pos)).then(function(d){
+            if(currentJob&&d.job_status)currentJob.status=d.job_status;
+            setTravelUi('on_the_way',true);
+            startWatcher();
+            notify(d.message||'Marked On the Way. Customer live tracking is active.',true)
+        }).catch(function(e){
+            notify(e.message,false)
+        }).finally(function(){
+            setActionLoading(btn,false);
+            makeArrivedInteractive(false)
+        })
+    },function(err){
+        setActionLoading(btn,false);
+        notify(err&&err.message?err.message:'Please allow location access to start travelling.',false)
+    },{enableHighAccuracy:true,maximumAge:0,timeout:20000})
+}
+function markArrived(){
+    var btn=document.getElementById('arrivedButton'),txt=document.getElementById('arrivedButtonText');
+    if(!btn||btn.disabled)return;
+
+    /* Stop new live-location requests before the Arrived request. */
+    trackingActive=false;
+    stopWatcher();
+    setActionLoading(btn,true);
+    btn.setAttribute('aria-disabled','true');
+    if(txt)txt.textContent='Marking Arrived...';
+
+    postTravel('arrived',{}).then(function(d){
+        if(currentJob&&d.job_status)currentJob.status=d.job_status;
+        var statusBadge=document.querySelector('.mjv-badge');
+        if(statusBadge&&d.job_status)statusBadge.textContent=title(d.job_status);
+        setTravelUi('arrived',false);
+        notify(d.message||'Marked Arrived. You can now update the job.',true)
+    }).catch(function(e){
+        /* Arrived failed: return to a usable travelling state without refresh. */
+        setTravelUi('on_the_way',true);
+        startWatcher();
+        notify(e.message,false)
+    }).finally(function(){
+        setActionLoading(btn,false);
+        if(txt)txt.textContent='Arrived';
+        if(btn && btn.style.display!=='none')makeArrivedInteractive(false)
+    })
+}
+function loadTravel(){
+    return postTravel('get',{}).then(function(d){
+        var t=d.travel||null;
+        var status=t&&t.status?t.status:'not_started';
+        setTravelUi(status,false);
+        if(status==='on_the_way')startWatcher()
+    }).catch(function(){setTravelUi('not_started',false)})
+}
 
 if(jobId<=0){fail('Invalid job.');return}
 var fd=new FormData();fd.append('action','get');fd.append('job_id',jobId);fd.append('csrf_token',csrfToken);
@@ -4183,7 +4291,7 @@ fetch('api/my-jobs.php',{method:'POST',body:fd,credentials:'same-origin',headers
 
 function openUpdateJob(){var m=document.getElementById('updateJobModal');if(m)m.classList.add('show')}
 function closeUpdateJob(){var m=document.getElementById('updateJobModal');if(m)m.classList.remove('show')}
-function saveJobUpdate(e){e.preventDefault();var btn=document.getElementById('saveJobUpdate'),status=document.getElementById('jobProgressStatus').value,remarks=document.getElementById('jobProgressRemarks').value.trim();if(btn)btn.disabled=true;postTravel('update_job',{job_status:status,remarks:remarks}).then(function(d){if(currentJob)currentJob.status=d.job_status||status;var b=document.querySelector('.mjv-badge');if(b)b.textContent=title(d.job_status||status);closeUpdateJob();notify(d.message||'Job updated successfully.',true);if((d.job_status||status)==='completed'){syncWorkActions('arrived')}}).catch(function(err){notify(err.message,false)}).finally(function(){if(btn)btn.disabled=false})}
+function saveJobUpdate(e){e.preventDefault();var btn=document.getElementById('saveJobUpdate'),status=document.getElementById('jobProgressStatus').value,remarks=document.getElementById('jobProgressRemarks').value.trim();setActionLoading(btn,true);postTravel('update_job',{job_status:status,remarks:remarks}).then(function(d){if(currentJob)currentJob.status=d.job_status||status;var b=document.querySelector('.mjv-badge');if(b)b.textContent=title(d.job_status||status);closeUpdateJob();notify(d.message||'Job updated successfully.',true);if((d.job_status||status)==='completed'){syncWorkActions('arrived')}}).catch(function(err){notify(err.message,false)}).finally(function(){setActionLoading(btn,false)})}
 
 var closeUpdateJobModal=document.getElementById('closeUpdateJobModal');if(closeUpdateJobModal)closeUpdateJobModal.addEventListener('click',closeUpdateJob);
 var cancelUpdateJob=document.getElementById('cancelUpdateJob');if(cancelUpdateJob)cancelUpdateJob.addEventListener('click',closeUpdateJob);
@@ -4191,6 +4299,9 @@ var updateJobForm=document.getElementById('updateJobForm');if(updateJobForm)upda
 var updateJobModal=document.getElementById('updateJobModal');if(updateJobModal)updateJobModal.addEventListener('click',function(e){if(e.target===updateJobModal)closeUpdateJob()});
 document.getElementById('startTravellingButton').addEventListener('click',startTravelling);
 document.getElementById('arrivedButton').addEventListener('click',markArrived);
+var openMapsButton=document.getElementById('openMapsButton');if(openMapsButton)openMapsButton.addEventListener('click',function(){setActionLoading(openMapsButton,true);window.setTimeout(function(){setActionLoading(openMapsButton,false)},900)});
+var updateWorkButton=document.getElementById('updateWorkButton');if(updateWorkButton)updateWorkButton.addEventListener('click',function(){setActionLoading(updateWorkButton,true)});
+var updateJobButton=document.getElementById('updateJobButton');if(updateJobButton)updateJobButton.addEventListener('click',function(){setActionLoading(updateJobButton,true)});
 window.addEventListener('beforeunload',function(){stopWatcher()});
 })();
 </script>

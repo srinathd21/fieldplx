@@ -1,5 +1,5 @@
 <?php
-/* FieldPlx Products API - Products table aligned - Version 1.1.0 - 2026-08-28 */
+/* FieldPlx Products API - Version 2.0.0 - 2026-09-03 - Import Export Support */
 require_once __DIR__ . '/../includes/auth.php';
 require_once __DIR__ . '/../includes/db.php';
 
@@ -166,6 +166,168 @@ try {
             )
         ));
     }
+
+
+    if ($action === 'export') {
+        $search = trim((string)(isset($_POST['search']) ? $_POST['search'] : ''));
+        $status = trim((string)(isset($_POST['status']) ? $_POST['status'] : ''));
+
+        if ($status !== '' && !in_array($status, array('active', 'inactive', 'archived'), true)) {
+            pmOut(422, false, 'Invalid status filter.');
+        }
+
+        $where = 'p.tenant_id = :tenant_id AND p.deleted_at IS NULL';
+        $params = array(':tenant_id' => $tenantId);
+        if ($search !== '') {
+            $where .= ' AND (p.name LIKE :search_name OR p.sku LIKE :search_sku OR p.description LIKE :search_desc)';
+            $like = '%' . $search . '%';
+            $params[':search_name'] = $like;
+            $params[':search_sku'] = $like;
+            $params[':search_desc'] = $like;
+        }
+        if ($status !== '') {
+            $where .= ' AND p.status = :status';
+            $params[':status'] = $status;
+        }
+
+        $st = $pdo->prepare('SELECT p.id, p.sku, p.name, p.description, p.unit_name, p.base_unit_price,
+                                    p.markup_type, p.markup_value, p.selling_price, p.tax_percent,
+                                    p.status, p.created_at, p.updated_at
+                             FROM products p
+                             WHERE ' . $where . '
+                             ORDER BY p.name ASC, p.id ASC');
+        $st->execute($params);
+        pmOut(200, true, 'Products prepared for export.', array('products' => $st->fetchAll(PDO::FETCH_ASSOC)));
+    }
+
+    if ($action === 'import') {
+        $rawRows = isset($_POST['rows_json']) ? (string)$_POST['rows_json'] : '';
+        $rows = json_decode($rawRows, true);
+        if (!is_array($rows)) pmOut(422, false, 'Invalid product import data.');
+        if (count($rows) > 1000) pmOut(422, false, 'Import a maximum of 1000 products at one time.');
+
+        $insert = $pdo->prepare('INSERT INTO products
+            (tenant_id, sku, name, description, unit_name, base_unit_price,
+             markup_type, markup_value, selling_price, tax_percent, status,
+             created_by, created_at, updated_at, deleted_at)
+            VALUES
+            (:tenant_id, :sku, :name, :description, :unit_name, :base_unit_price,
+             :markup_type, :markup_value, :selling_price, :tax_percent, :status,
+             :created_by, NOW(), NOW(), NULL)');
+        $skuCheck = $pdo->prepare('SELECT id, name, status FROM products
+                                  WHERE tenant_id = :tenant_id AND sku = :sku AND deleted_at IS NULL
+                                  LIMIT 1');
+
+        $imported = 0;
+        $existing = 0;
+        $failed = 0;
+        $results = array();
+
+        foreach ($rows as $index => $row) {
+            $rowNo = $index + 1;
+            if (!is_array($row)) {
+                $failed++;
+                $results[] = array('row' => $rowNo, 'status' => 'Failed', 'message' => 'Invalid row format.', 'input' => array());
+                continue;
+            }
+
+            $name = trim((string)(isset($row['name']) ? $row['name'] : ''));
+            $sku = trim((string)(isset($row['sku']) ? $row['sku'] : ''));
+            $description = trim((string)(isset($row['description']) ? $row['description'] : ''));
+            $unitName = trim((string)(isset($row['unit_name']) ? $row['unit_name'] : 'unit'));
+            $markupType = strtolower(trim((string)(isset($row['markup_type']) ? $row['markup_type'] : 'percentage')));
+            $status = strtolower(trim((string)(isset($row['status']) ? $row['status'] : 'active')));
+            $baseRaw = str_replace(',', '', trim((string)(isset($row['base_unit_price']) ? $row['base_unit_price'] : '0')));
+            $markupRaw = str_replace(',', '', trim((string)(isset($row['markup_value']) ? $row['markup_value'] : '0')));
+            $taxRaw = str_replace(',', '', trim((string)(isset($row['tax_percent']) ? $row['tax_percent'] : '0')));
+
+            $input = array(
+                'sku' => $sku,
+                'name' => $name,
+                'description' => $description,
+                'unit_name' => $unitName,
+                'base_unit_price' => $baseRaw,
+                'markup_type' => $markupType,
+                'markup_value' => $markupRaw,
+                'tax_percent' => $taxRaw,
+                'status' => $status
+            );
+
+            $error = '';
+            if ($name === '') $error = 'Product Name is required.';
+            elseif ($baseRaw === '' || !is_numeric($baseRaw) || (float)$baseRaw < 0) $error = 'Base Price must be zero or a positive number.';
+            elseif (!in_array($markupType, array('percentage', 'fixed'), true)) $error = 'Markup Type must be percentage or fixed.';
+            elseif ($markupRaw === '' || !is_numeric($markupRaw) || (float)$markupRaw < 0) $error = 'Markup Value must be zero or a positive number.';
+            elseif ($taxRaw === '' || !is_numeric($taxRaw) || (float)$taxRaw < 0 || (float)$taxRaw > 100) $error = 'Tax Percent must be between 0 and 100.';
+            elseif (!in_array($status, array('active', 'inactive', 'archived'), true)) $error = 'Status must be active, inactive or archived.';
+
+            if ($error !== '') {
+                $failed++;
+                $results[] = array('row' => $rowNo, 'status' => 'Failed', 'message' => $error, 'input' => $input);
+                continue;
+            }
+
+            if ($unitName === '') $unitName = 'unit';
+
+            if ($sku !== '') {
+                $skuCheck->execute(array(':tenant_id' => $tenantId, ':sku' => $sku));
+                $found = $skuCheck->fetch(PDO::FETCH_ASSOC);
+                if ($found) {
+                    $existing++;
+                    $results[] = array(
+                        'row' => $rowNo,
+                        'status' => 'Existing',
+                        'message' => 'SKU already exists. This row was skipped.',
+                        'input' => $input,
+                        'existing' => array('id' => (int)$found['id'], 'name' => (string)$found['name'], 'sku' => $sku, 'status' => (string)$found['status'])
+                    );
+                    continue;
+                }
+            }
+
+            $baseUnitPrice = (float)$baseRaw;
+            $markupValue = (float)$markupRaw;
+            $taxPercent = (float)$taxRaw;
+            $sellingPrice = pmSellingPrice($baseUnitPrice, $markupType, $markupValue);
+
+            try {
+                $insert->execute(array(
+                    ':tenant_id' => $tenantId,
+                    ':sku' => $sku !== '' ? $sku : null,
+                    ':name' => $name,
+                    ':description' => $description !== '' ? $description : null,
+                    ':unit_name' => $unitName,
+                    ':base_unit_price' => number_format($baseUnitPrice, 2, '.', ''),
+                    ':markup_type' => $markupType,
+                    ':markup_value' => number_format($markupValue, 2, '.', ''),
+                    ':selling_price' => number_format($sellingPrice, 2, '.', ''),
+                    ':tax_percent' => number_format($taxPercent, 3, '.', ''),
+                    ':status' => $status,
+                    ':created_by' => $userId
+                ));
+                $imported++;
+                $results[] = array(
+                    'row' => $rowNo,
+                    'status' => 'Imported',
+                    'message' => 'Product imported successfully. Selling Price: ' . number_format($sellingPrice, 2, '.', ''),
+                    'input' => $input,
+                    'id' => (int)$pdo->lastInsertId()
+                );
+            } catch (Throwable $rowError) {
+                $failed++;
+                $results[] = array('row' => $rowNo, 'status' => 'Failed', 'message' => 'Unable to import this row.', 'input' => $input);
+                error_log('FieldPlx product import row ' . $rowNo . ': ' . $rowError->getMessage());
+            }
+        }
+
+        pmOut(200, true, 'Product import completed.', array(
+            'imported' => $imported,
+            'existing' => $existing,
+            'failed' => $failed,
+            'results' => $results
+        ));
+    }
+
 
     if ($action === 'get') {
         $id = max(0, (int)(isset($_POST['id']) ? $_POST['id'] : 0));

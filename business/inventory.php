@@ -1,20 +1,95 @@
 <?php
-/* FieldPlx Inventory - Version 1.1.0 - 2026-08-29 */
+/* FieldPlx Inventory Manage Page - Version 2.3.0 - 2026-09-03 - Stock Add Remove + Separate Bulk Page */
 require_once __DIR__ . '/includes/auth.php';
 
 $pageTitle = 'Inventory';
 $activePage = 'inventory';
 
 if (session_status() === PHP_SESSION_NONE) {
-    session_start();
+  session_start();
 }
 if (empty($_SESSION['inventory_csrf_token'])) {
-    $_SESSION['inventory_csrf_token'] = bin2hex(random_bytes(32));
+  $_SESSION['inventory_csrf_token'] = bin2hex(random_bytes(32));
 }
 $inventoryCsrfToken = (string) $_SESSION['inventory_csrf_token'];
+
+/* Inventory summary statistics are loaded directly on this page. */
+$inventoryStats = array(
+  'total_products' => 0,
+  'in_stock' => 0,
+  'low_stock' => 0,
+  'out_of_stock' => 0,
+  'inventory_value' => 0.0
+);
+$inventoryCurrency = array('symbol' => '', 'position' => 'before', 'decimals' => 2);
+$inventoryStatsTenantId = isset($_SESSION['tenant_id']) ? (int) $_SESSION['tenant_id'] : (isset($_SESSION['business_id']) ? (int) $_SESSION['business_id'] : 0);
+$inventoryStatsPdo = null;
+if (isset($pdo) && $pdo instanceof PDO) {
+  $inventoryStatsPdo = $pdo;
+} elseif (isset($db) && $db instanceof PDO) {
+  $inventoryStatsPdo = $db;
+}
+
+if ($inventoryStatsTenantId > 0 && $inventoryStatsPdo instanceof PDO) {
+  try {
+    $inventoryStatsStmt = $inventoryStatsPdo->prepare(
+      "SELECT
+                COUNT(DISTINCT p.id) AS total_products,
+                COUNT(DISTINCT CASE WHEN (pi.quantity_on_hand - pi.quantity_reserved) > pi.reorder_level THEN p.id END) AS in_stock,
+                COUNT(DISTINCT CASE WHEN (pi.quantity_on_hand - pi.quantity_reserved) > 0 AND (pi.quantity_on_hand - pi.quantity_reserved) <= pi.reorder_level THEN p.id END) AS low_stock,
+                COUNT(DISTINCT CASE WHEN (pi.quantity_on_hand - pi.quantity_reserved) <= 0 THEN p.id END) AS out_of_stock,
+                COALESCE(SUM(GREATEST(pi.quantity_on_hand, 0) * p.base_unit_price), 0) AS inventory_value
+             FROM product_inventory pi
+             INNER JOIN products p ON p.id = pi.product_id AND p.tenant_id = pi.tenant_id
+             WHERE p.tenant_id = :tenant_id
+               AND p.deleted_at IS NULL
+               AND p.status = 'active'
+               AND p.track_inventory = 1
+               AND pi.status = 'active'"
+    );
+    $inventoryStatsStmt->execute(array(':tenant_id' => $inventoryStatsTenantId));
+    $inventoryStatsRow = $inventoryStatsStmt->fetch(PDO::FETCH_ASSOC);
+    if ($inventoryStatsRow) {
+      $inventoryStats['total_products'] = (int) $inventoryStatsRow['total_products'];
+      $inventoryStats['in_stock'] = (int) $inventoryStatsRow['in_stock'];
+      $inventoryStats['low_stock'] = (int) $inventoryStatsRow['low_stock'];
+      $inventoryStats['out_of_stock'] = (int) $inventoryStatsRow['out_of_stock'];
+      $inventoryStats['inventory_value'] = (float) $inventoryStatsRow['inventory_value'];
+    }
+
+    $inventoryCurrencyStmt = $inventoryStatsPdo->prepare(
+      "SELECT c.symbol, c.symbol_position, c.decimal_places
+             FROM tenants t
+             LEFT JOIN currencies c ON c.id = t.currency_id
+             WHERE t.id = :tenant_id
+             LIMIT 1"
+    );
+    $inventoryCurrencyStmt->execute(array(':tenant_id' => $inventoryStatsTenantId));
+    $inventoryCurrencyRow = $inventoryCurrencyStmt->fetch(PDO::FETCH_ASSOC);
+    if ($inventoryCurrencyRow) {
+      $inventoryCurrency['symbol'] = isset($inventoryCurrencyRow['symbol']) ? (string) $inventoryCurrencyRow['symbol'] : '';
+      $inventoryCurrency['position'] = isset($inventoryCurrencyRow['symbol_position']) ? (string) $inventoryCurrencyRow['symbol_position'] : 'before';
+      $inventoryCurrency['decimals'] = isset($inventoryCurrencyRow['decimal_places']) ? (int) $inventoryCurrencyRow['decimal_places'] : 2;
+    }
+  } catch (Throwable $inventoryStatsError) {
+    error_log('FieldPlx inventory direct stats error: ' . $inventoryStatsError->getMessage());
+  }
+}
+
+function fdInventoryMoney($amount, $currency)
+{
+  $decimals = isset($currency['decimals']) ? (int) $currency['decimals'] : 2;
+  $symbol = isset($currency['symbol']) ? (string) $currency['symbol'] : '';
+  $position = isset($currency['position']) ? (string) $currency['position'] : 'before';
+  $number = number_format((float) $amount, $decimals, '.', ',');
+  if ($symbol === '')
+    return $number;
+  return $position === 'after' ? $number . ' ' . $symbol : $symbol . $number;
+}
 ?>
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8">
   <meta content="width=device-width, initial-scale=1" name="viewport">
@@ -3896,12 +3971,12 @@ $inventoryCsrfToken = (string) $_SESSION['inventory_csrf_token'];
       }
     }
 
-    
+
 
 
     /* Customers page additions */
-    
-a,
+
+    a,
     a:link,
     a:visited,
     a:hover,
@@ -3910,8 +3985,8 @@ a,
       text-decoration: none !important
     }
 
-    
-.fd-client-type {
+
+    .fd-client-type {
       display: inline-flex;
       align-items: center;
       padding: 5px 7px;
@@ -3920,8 +3995,8 @@ a,
       font-weight: 600
     }
 
-    
-.fd-client-type.client,
+
+    .fd-client-type.client,
     .fd-client-type.active {
       color: #5d971b;
       background: #f0f8e5
@@ -3943,8 +4018,8 @@ a,
       background: #fff7df
     }
 
-    
-.fd-client-checks {
+
+    .fd-client-checks {
       grid-column: 1/-1;
       display: flex;
       flex-wrap: wrap;
@@ -3970,7 +4045,7 @@ a,
       accent-color: var(--fd-green)
     }
 
-    
+
 
 
     /* Customers table font + alignment correction */
@@ -4199,25 +4274,636 @@ a,
     }
 
     @media(max-width:767.98px) {
-      .fd-inventory-stat-money { font-size: 21px; }
+      .fd-inventory-stat-money {
+        font-size: 21px;
+      }
     }
 
-    /* Inventory stock adjustment modal */
-    .fd-inventory-adjust-modal { width: min(640px, 100%); }
-    .fd-inventory-adjust-current {
-      min-height: 68px; padding: 12px 14px; display: grid; grid-template-columns: repeat(3,minmax(0,1fr));
-      gap: 10px; border: 1px solid var(--fd-border); border-radius: 9px; background: #f8fafc;
-    }
-    .fd-inventory-adjust-current div { min-width: 0; }
-    .fd-inventory-adjust-current small,.fd-inventory-adjust-current strong { display:block; }
-    .fd-inventory-adjust-current small { color: var(--fd-muted); font-size: 8.5px; }
-    .fd-inventory-adjust-current strong { margin-top: 5px; color: var(--fd-navy); font-size: 14px; }
-    .fd-inventory-adjust-help { margin-top: 5px; color: var(--fd-muted); font-size: 8.5px; line-height: 1.45; }
-    .fd-inventory-adjust-preview { padding: 10px 12px; border-radius: 8px; color: #43546c; background: var(--fd-green-soft); font-size: 9.5px; }
-    @media(max-width:575.98px){ .fd-inventory-adjust-current{grid-template-columns:1fr;} }
 
+    /* ==========================================================
+       Inventory manage page - Version 2.0.0
+       Same manage UI as Customers / Products / Quotations.
+       ========================================================== */
+    .fieldplx-topbar {
+      position: fixed !important;
+      top: 0 !important;
+      right: 0 !important;
+      z-index: 1030 !important;
+    }
+
+    .fieldplx-main-content {
+      padding-top: var(--fieldplx-topbar-height);
+    }
+
+    .fd-inventory-header {
+      min-width: 0;
+      position: relative;
+      z-index: 20;
+      overflow: visible;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+
+    .fd-inventory-header>div:first-child {
+      min-width: 0;
+      flex: 1 1 auto;
+    }
+
+    .fd-inventory-title {
+      margin: 0 0 7px;
+      color: var(--fd-text);
+      font-size: 21px;
+      line-height: 1.2;
+      font-weight: 700;
+    }
+
+    .fd-inventory-subtitle {
+      margin: 0;
+      max-width: 820px;
+      color: var(--fd-muted);
+      font-size: 11px;
+      line-height: 1.55;
+    }
+
+    .fd-inventory-header-actions {
+      min-width: 0;
+      flex: 0 0 auto;
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 8px;
+      flex-wrap: nowrap;
+    }
+
+    .fd-inventory-header-actions .fd-team-button {
+      flex: 0 0 auto;
+      white-space: nowrap;
+    }
+
+    .fd-inventory-more {
+      position: relative;
+      z-index: 30;
+    }
+
+    .fd-inventory-more-menu {
+      width: 205px;
+      padding: 6px;
+      position: absolute;
+      top: calc(100% + 7px);
+      right: 0;
+      z-index: 40;
+      display: none;
+      border: 1px solid #e5e7eb;
+      border-radius: 11px;
+      background: #fff;
+      box-shadow: 0 16px 38px rgba(15, 23, 42, .15);
+    }
+
+    .fd-inventory-more.open .fd-inventory-more-menu {
+      display: block;
+    }
+
+    .fd-inventory-more-item {
+      text-decoration: none;
+      width: 100%;
+      padding: 9px 10px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: #334155;
+      text-align: left;
+      text-decoration: none !important;
+      font: inherit;
+      cursor: pointer;
+    }
+
+    .fd-inventory-more-item:hover {
+      background: #f7fbed;
+      color: var(--fd-green-dark);
+    }
+
+    .fd-inventory-more-item+.fd-inventory-more-item {
+      text-decoration: none;
+      margin-top: 2px;
+    }
+
+    .fd-inventory-manage-summary {
+      margin-bottom: 16px;
+    }
+
+    .fd-inventory-manage-summary>div {
+      display: flex;
+    }
+
+    .fd-inventory-summary-card {
+      width: 100%;
+      min-height: 134px;
+      padding: 15px 18px;
+      position: relative;
+      overflow: visible;
+      border: 1px solid #dfe6ef;
+      border-radius: 12px;
+      background: #fff;
+      box-shadow: 0 3px 12px rgba(24, 45, 76, .035);
+    }
+
+    .fd-inventory-summary-title {
+      margin: 0;
+      color: #10213c;
+      font-size: 15px;
+      line-height: 1.2;
+      font-weight: 700;
+    }
+
+    .fd-inventory-summary-period {
+      display: block;
+      margin-top: 3px;
+      color: #7f8da1;
+      font-size: 10px;
+      line-height: 1.2;
+    }
+
+    .fd-inventory-summary-arrow {
+      position: absolute;
+      top: 15px;
+      right: 16px;
+      color: #8191a6;
+      font-size: 15px;
+      line-height: 1;
+    }
+
+    .fd-inventory-summary-number-row {
+      min-height: 67px;
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
+      padding-top: 10px;
+    }
+
+    .fd-inventory-summary-value {
+      color: #030d1b;
+      font-size: 31px;
+      line-height: 1;
+      font-weight: 700;
+      letter-spacing: -.45px;
+    }
+
+    .fd-inventory-summary-value.money {
+      font-size: 25px;
+      letter-spacing: -.3px;
+    }
+
+    .fd-inventory-overview-list {
+      margin-top: 7px;
+      display: grid;
+      gap: 5px;
+    }
+
+    .fd-inventory-overview-row {
+      min-height: 14px;
+      display: grid;
+      grid-template-columns: 7px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 6px;
+      color: #5d6c82;
+      font-size: 9.5px;
+      line-height: 1.15;
+    }
+
+    .fd-inventory-overview-row strong {
+      color: #17243a;
+      font-size: 9.5px;
+      font-weight: 700;
+    }
+
+    .fd-inventory-overview-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #91a0b4;
+    }
+
+    .fd-inventory-overview-dot.total {
+      background: #123f73;
+    }
+
+    .fd-inventory-overview-dot.in {
+      background: #68aa1d;
+    }
+
+    .fd-inventory-overview-dot.low {
+      background: #d6a825;
+    }
+
+    .fd-inventory-overview-dot.out {
+      background: #e45b66;
+    }
+
+    .fd-inventory-table th {
+      padding: 12px 14px !important;
+      color: #5f6f86 !important;
+      font-size: 9px !important;
+      font-weight: 700 !important;
+      text-align: left !important;
+      white-space: nowrap !important;
+    }
+
+    .fd-inventory-table td {
+      padding: 12px 14px !important;
+      color: #33445f !important;
+      font-size: 9.5px !important;
+      line-height: 1.45 !important;
+      text-align: left !important;
+      vertical-align: middle !important;
+    }
+
+    .fd-inventory-table th:first-child,
+    .fd-inventory-table td:first-child {
+      width: 58px;
+      text-align: center !important;
+    }
+
+    @media (max-width: 991.98px) {
+      .fd-inventory-header {
+        align-items: flex-start;
+      }
+
+      .fd-inventory-header-actions {
+        flex-wrap: wrap;
+      }
+
+      .fd-inventory-summary-card {
+        min-height: 126px;
+      }
+    }
+
+    .fd-inventory-remove-button {
+      border-color: #f1cfd3 !important;
+      color: #b9444d !important;
+      background: #fff !important;
+    }
+
+    .fd-inventory-remove-button:hover {
+      border-color: #e9b8bd !important;
+      color: #a83d45 !important;
+      background: #fff6f7 !important;
+    }
+
+    .fd-inventory-row-actions {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .fd-inventory-adjust-icon.add:hover {
+      color: var(--fd-green-dark);
+      background: var(--fd-green-soft);
+    }
+
+    .fd-inventory-adjust-icon.remove:hover {
+      color: #b9444d;
+      background: #fff0f1;
+    }
+
+    .fd-inventory-adjust-modal {
+      width: min(720px, 100%);
+    }
+
+    .fd-inventory-adjust-mode {
+      grid-column: 1/-1;
+      display: flex;
+      gap: 8px;
+      padding: 4px 0 1px;
+    }
+
+    .fd-inventory-mode-pill {
+      min-height: 36px;
+      padding: 0 12px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      border: 1px solid #dfe5ec;
+      border-radius: 8px;
+      color: #52627a;
+      background: #fff;
+      font-size: 9.5px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .fd-inventory-mode-pill.active.add {
+      border-color: #bcd99a;
+      color: #5d971b;
+      background: #f3faeb;
+    }
+
+    .fd-inventory-mode-pill.active.remove {
+      border-color: #efc4c8;
+      color: #b9444d;
+      background: #fff3f4;
+    }
+
+    .fd-inventory-stock-preview {
+      grid-column: 1/-1;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      padding: 11px;
+      border: 1px solid #e4eaf0;
+      border-radius: 9px;
+      background: #f8fafc;
+    }
+
+    .fd-inventory-stock-preview div {
+      min-width: 0;
+    }
+
+    .fd-inventory-stock-preview span,
+    .fd-inventory-stock-preview strong {
+      display: block;
+    }
+
+    .fd-inventory-stock-preview span {
+      color: #7a8799;
+      font-size: 8px;
+    }
+
+    .fd-inventory-stock-preview strong {
+      margin-top: 4px;
+      color: #10213c;
+      font-size: 13px;
+    }
+
+    .fd-inventory-stock-preview strong.result-add {
+      color: #5d971b;
+    }
+
+    .fd-inventory-stock-preview strong.result-remove {
+      color: #b9444d;
+    }
+
+    .fd-inventory-adjust-help {
+      grid-column: 1/-1;
+      margin-top: -2px;
+      color: #7d899b;
+      font-size: 8.5px;
+      line-height: 1.5;
+    }
+
+    .fd-inventory-adjust-error {
+      display: none;
+      grid-column: 1/-1;
+      padding: 8px 10px;
+      border: 1px solid #f0c9cd;
+      border-radius: 8px;
+      color: #a63f47;
+      background: #fff5f6;
+      font-size: 9px;
+      line-height: 1.45;
+    }
+
+    .fd-inventory-adjust-error.show {
+      display: block;
+    }
+
+    .fd-inventory-more-divider {
+      height: 1px;
+      margin: 5px 7px;
+      background: #edf1f5;
+    }
+
+    .fd-inventory-bulk-modal {
+      width: min(1180px, 100%);
+    }
+
+    .fd-inventory-bulk-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+
+    .fd-inventory-bulk-toolbar .fd-inventory-adjust-mode {
+      margin-right: auto;
+      padding: 0;
+    }
+
+    .fd-inventory-bulk-table-wrap {
+      max-height: 520px;
+      overflow: auto;
+      border: 1px solid #e1e7ee;
+      border-radius: 9px;
+      background: #fff;
+    }
+
+    .fd-inventory-bulk-table {
+      width: 100%;
+      min-width: 1040px;
+      border-collapse: collapse;
+      white-space: nowrap;
+    }
+
+    .fd-inventory-bulk-table th {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      padding: 9px 8px;
+      border-bottom: 1px solid #dfe6ed;
+      background: #f8fafc;
+      color: #66758a;
+      font-size: 8.5px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .fd-inventory-bulk-table td {
+      padding: 7px 8px;
+      border-bottom: 1px solid #eef2f5;
+      color: #33445f;
+      font-size: 9px;
+      vertical-align: middle;
+    }
+
+    .fd-inventory-bulk-table tr.invalid td {
+      background: #fff7f8;
+    }
+
+    .fd-inventory-bulk-select,
+    .fd-inventory-bulk-input {
+      width: 100%;
+      height: 34px;
+      padding: 5px 7px;
+      border: 1px solid #dce4ec;
+      border-radius: 7px;
+      background: #fff;
+      color: #2d3e56;
+      font-size: 9px;
+      outline: 0;
+    }
+
+    .fd-inventory-bulk-select:focus,
+    .fd-inventory-bulk-input:focus {
+      border-color: #a9cd7d;
+      box-shadow: 0 0 0 2px rgba(116, 184, 36, .10);
+    }
+
+    .fd-inventory-bulk-product {
+      min-width: 230px;
+    }
+
+    .fd-inventory-bulk-branch {
+      min-width: 165px;
+    }
+
+    .fd-inventory-bulk-qty {
+      width: 100px;
+      min-width: 100px;
+    }
+
+    .fd-inventory-bulk-notes {
+      min-width: 180px;
+    }
+
+    .fd-inventory-bulk-number {
+      color: #17243a;
+      font-weight: 700;
+    }
+
+    .fd-inventory-bulk-result.add {
+      color: #5d971b;
+    }
+
+    .fd-inventory-bulk-result.remove {
+      color: #b9444d;
+    }
+
+    .fd-inventory-bulk-row-remove {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border: 0;
+      border-radius: 6px;
+      background: transparent;
+      color: #8a96a7;
+      cursor: pointer;
+    }
+
+    .fd-inventory-bulk-row-remove:hover {
+      color: #b9444d;
+      background: #fff0f1;
+    }
+
+    .fd-inventory-bulk-summary {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+      margin-top: 10px;
+      padding: 9px 11px;
+      border: 1px solid #e3e9ef;
+      border-radius: 8px;
+      background: #f9fbfc;
+      color: #69788c;
+      font-size: 8.5px;
+    }
+
+    .fd-inventory-bulk-summary strong {
+      color: #10213c;
+      font-size: 9.5px;
+    }
+
+    .fd-inventory-bulk-error {
+      display: none;
+      margin-top: 9px;
+      padding: 8px 10px;
+      border: 1px solid #f0c9cd;
+      border-radius: 8px;
+      color: #a63f47;
+      background: #fff5f6;
+      font-size: 9px;
+      line-height: 1.45;
+    }
+
+    .fd-inventory-bulk-error.show {
+      display: block;
+    }
+
+    @media(max-width:767.98px) {
+      .fd-inventory-stock-preview {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .fd-inventory-adjust-mode {
+        flex-wrap: wrap;
+      }
+
+      .fd-inventory-mode-pill {
+        flex: 1;
+      }
+    }
+
+    @media (max-width: 767.98px) {
+      .fieldplx-main-content {
+        padding-top: 64px;
+      }
+
+      .fd-inventory-header {
+        flex-direction: column;
+      }
+
+      .fd-inventory-header-actions {
+        width: 100%;
+        margin-left: 0;
+        justify-content: flex-start;
+      }
+
+      .fd-inventory-table th,
+      .fd-inventory-table td {
+        padding: 10px 11px !important;
+      }
+    }
+
+    @media (max-width: 575.98px) {
+      .fd-inventory-summary-card {
+        min-height: 122px;
+      }
+
+      .fd-inventory-summary-value {
+        font-size: 28px;
+      }
+
+      .fd-inventory-summary-value.money {
+        font-size: 22px;
+      }
+
+      .fd-inventory-header-actions>.fd-team-button,
+      .fd-inventory-header-actions>.fd-inventory-more {
+        flex: 1 1 calc(50% - 4px);
+      }
+
+      .fd-inventory-header-actions .fd-team-button {
+        width: 100%;
+      }
+
+      .fd-inventory-more-menu {
+        left: 0;
+        right: auto;
+        max-width: min(215px, calc(100vw - 24px));
+      }
+    }
   </style>
 </head>
+
 <body>
   <?php require_once __DIR__ . '/includes/nav.php'; ?>
   <div class="fieldplx-main-layout">
@@ -4225,56 +4911,87 @@ a,
     <main class="fieldplx-main-content">
       <div class="fieldplx-content-wrapper">
         <div class="fd-dashboard">
-          <section class="fd-teams-header">
+          <section class="fd-inventory-header">
             <div>
-              <h1 class="fd-teams-title">Inventory</h1>
-              <p class="fd-teams-subtitle">Monitor tracked products, branch stock levels, reorder risk and current inventory value.</p>
+              <h1 class="fd-inventory-title">Inventory</h1>
+              <p class="fd-inventory-subtitle">Manage stock quantities for existing products. Add or remove stock here;
+                product creation remains in the Products module.</p>
             </div>
-            <div class="fd-teams-actions">
-              <button type="button" class="fd-team-button" id="refreshButton"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
-              <button type="button" class="fd-team-button primary" id="adjustStockButton"><i class="bi bi-sliders"></i> Adjust Stock</button>
+            <div class="fd-inventory-header-actions">
+              <button type="button" class="fd-team-button primary" id="addStockButton"><i class="bi bi-plus-circle"></i>
+                Add Stock</button>
+              <button type="button" class="fd-team-button fd-inventory-remove-button" id="removeStockButton"><i
+                  class="bi bi-dash-circle"></i> Remove Stock</button>
+              <div class="fd-inventory-more" id="inventoryMoreActions">
+                <button type="button" class="fd-team-button" id="inventoryMoreActionsButton" aria-expanded="false"><i
+                    class="bi bi-three-dots"></i> More Actions <i class="bi bi-chevron-down"></i></button>
+                <div class="fd-inventory-more-menu" role="menu" aria-label="Inventory actions">
+                  <a class="fd-inventory-more-item" href="bulk-stock-adjustment.php?mode=add" role="menuitem"><i
+                      class="bi bi-plus-square"></i> Bulk Add Stock</a>
+                  <a class="fd-inventory-more-item" href="bulk-stock-adjustment.php?mode=remove" role="menuitem"><i
+                      class="bi bi-dash-square"></i> Bulk Remove Stock</a>
+                  <div class="fd-inventory-more-divider"></div>
+                  <button class="fd-inventory-more-item" type="button" id="exportInventoryButton" role="menuitem"><i
+                      class="bi bi-download"></i> Export Inventory</button>
+                </div>
+              </div>
             </div>
           </section>
 
-          <section class="row g-3 fd-teams-summary">
+          <section class="row g-3 fd-inventory-manage-summary">
             <div class="col-xl-3 col-md-6">
-              <article class="fd-team-stat-card">
-                <div class="fd-team-stat-row">
-                  <span class="fd-team-stat-icon"><i class="bi bi-box-seam"></i></span>
-                  <div><span class="fd-team-stat-label">Total Products</span><strong class="fd-team-stat-value" id="statTotal">0</strong></div>
+              <article class="fd-inventory-summary-card">
+                <h2 class="fd-inventory-summary-title">Overview</h2>
+                <div class="fd-inventory-overview-list">
+                  <div class="fd-inventory-overview-row"><span
+                      class="fd-inventory-overview-dot total"></span><span>Total
+                      Products</span><strong><?= (int) $inventoryStats['total_products'] ?></strong></div>
+                  <div class="fd-inventory-overview-row"><span class="fd-inventory-overview-dot in"></span><span>In
+                      Stock</span><strong><?= (int) $inventoryStats['in_stock'] ?></strong></div>
+                  <div class="fd-inventory-overview-row"><span class="fd-inventory-overview-dot low"></span><span>Low
+                      Stock</span><strong><?= (int) $inventoryStats['low_stock'] ?></strong></div>
+                  <div class="fd-inventory-overview-row"><span class="fd-inventory-overview-dot out"></span><span>Out of
+                      Stock</span><strong><?= (int) $inventoryStats['out_of_stock'] ?></strong></div>
                 </div>
               </article>
             </div>
             <div class="col-xl-3 col-md-6">
-              <article class="fd-team-stat-card">
-                <div class="fd-team-stat-row">
-                  <span class="fd-team-stat-icon"><i class="bi bi-exclamation-triangle"></i></span>
-                  <div><span class="fd-team-stat-label">Low Stock</span><strong class="fd-team-stat-value" id="statLow">0</strong></div>
+              <article class="fd-inventory-summary-card">
+                <span class="fd-inventory-summary-arrow"><i class="bi bi-arrow-up-right"></i></span>
+                <h2 class="fd-inventory-summary-title">Inventory Value</h2>
+                <span class="fd-inventory-summary-period">Current stock at base cost</span>
+                <div class="fd-inventory-summary-number-row"><strong
+                    class="fd-inventory-summary-value money"><?= htmlspecialchars(fdInventoryMoney($inventoryStats['inventory_value'], $inventoryCurrency), ENT_QUOTES, 'UTF-8') ?></strong>
                 </div>
               </article>
             </div>
             <div class="col-xl-3 col-md-6">
-              <article class="fd-team-stat-card">
-                <div class="fd-team-stat-row">
-                  <span class="fd-team-stat-icon"><i class="bi bi-x-octagon"></i></span>
-                  <div><span class="fd-team-stat-label">Out of Stock</span><strong class="fd-team-stat-value" id="statOut">0</strong></div>
-                </div>
+              <article class="fd-inventory-summary-card">
+                <span class="fd-inventory-summary-arrow"><i class="bi bi-arrow-up-right"></i></span>
+                <h2 class="fd-inventory-summary-title">Low Stock</h2>
+                <span class="fd-inventory-summary-period">At or below reorder level</span>
+                <div class="fd-inventory-summary-number-row"><strong
+                    class="fd-inventory-summary-value"><?= (int) $inventoryStats['low_stock'] ?></strong></div>
               </article>
             </div>
             <div class="col-xl-3 col-md-6">
-              <article class="fd-team-stat-card">
-                <div class="fd-team-stat-row">
-                  <span class="fd-team-stat-icon"><i class="bi bi-cash-stack"></i></span>
-                  <div><span class="fd-team-stat-label">Inventory Value</span><strong class="fd-team-stat-value fd-inventory-stat-money" id="statValue">0.00</strong></div>
-                </div>
+              <article class="fd-inventory-summary-card">
+                <span class="fd-inventory-summary-arrow"><i class="bi bi-arrow-up-right"></i></span>
+                <h2 class="fd-inventory-summary-title">Out of Stock</h2>
+                <span class="fd-inventory-summary-period">No available quantity</span>
+                <div class="fd-inventory-summary-number-row"><strong
+                    class="fd-inventory-summary-value"><?= (int) $inventoryStats['out_of_stock'] ?></strong></div>
               </article>
             </div>
           </section>
 
-          <section class="fd-card fd-teams-card">
+          <section class="fd-card fd-teams-card" id="inventoryCard">
             <div class="fd-teams-toolbar">
-              <div class="fd-team-search"><i class="bi bi-search"></i><input type="search" id="searchInput" placeholder="Search product or SKU..." autocomplete="off"></div>
-              <select class="fd-team-filter" id="branchFilter"><option value="">All Branches</option></select>
+              <div class="fd-team-search"><i class="bi bi-search"></i><input type="search" id="searchInput"
+                  placeholder="Search product or SKU..." autocomplete="off"></div>
+              <select class="fd-team-filter" id="branchFilter">
+                <option value="">All Branches</option>
+              </select>
               <select class="fd-team-filter" id="stockFilter">
                 <option value="">All Stock</option>
                 <option value="in_stock">In Stock</option>
@@ -4282,7 +4999,14 @@ a,
                 <option value="out_stock">Out of Stock</option>
               </select>
               <div class="fd-team-toolbar-spacer"></div>
-              <button type="button" class="fd-team-button" id="clearFilters"><i class="bi bi-x-circle"></i> Clear</button>
+              <button type="button" class="fd-team-button" id="clearFilters"><i class="bi bi-x-circle"></i>
+                Clear</button>
+              <select class="fd-team-filter" id="perPage">
+                <option value="10">10 / page</option>
+                <option value="25">25 / page</option>
+                <option value="50">50 / page</option>
+                <option value="100">100 / page</option>
+              </select>
             </div>
 
             <div class="fd-team-table-wrap">
@@ -4304,7 +5028,9 @@ a,
                   </tr>
                 </thead>
                 <tbody id="inventoryList">
-                  <tr><td colspan="12" class="fd-team-empty">Loading inventory...</td></tr>
+                  <tr>
+                    <td colspan="12" class="fd-team-empty">Loading inventory...</td>
+                  </tr>
                 </tbody>
               </table>
             </div>
@@ -4313,41 +5039,144 @@ a,
               <span id="countText">Showing 0 inventory records</span>
               <div class="fd-team-pagination-actions">
                 <button type="button" class="fd-team-button" id="prevPage"><i class="bi bi-chevron-left"></i></button>
+                <span id="pageText" style="min-width:72px;text-align:center">Page 1 of 1</span>
                 <button type="button" class="fd-team-button" id="nextPage"><i class="bi bi-chevron-right"></i></button>
               </div>
             </div>
           </section>
         </div>
 
-
-        <div class="fd-team-modal-backdrop" id="adjustStockModal" aria-hidden="true">
-          <section class="fd-team-modal fd-inventory-adjust-modal" role="dialog" aria-modal="true" aria-labelledby="adjustStockTitle">
+        <div class="fd-team-modal-backdrop" id="stockAdjustModal" aria-hidden="true">
+          <section class="fd-team-modal fd-inventory-adjust-modal" role="dialog" aria-modal="true"
+            aria-labelledby="stockAdjustTitle">
             <div class="fd-team-modal-header">
-              <span class="fd-team-modal-icon"><i class="bi bi-sliders"></i></span>
-              <div class="fd-team-modal-heading"><h3 id="adjustStockTitle">Adjust Stock</h3><p>Add, remove, or set the physical stock for a tracked product.</p></div>
-              <button type="button" class="fd-team-modal-close" id="adjustStockClose" aria-label="Close"><i class="bi bi-x-lg"></i></button>
+              <span class="fd-team-modal-icon" id="stockAdjustIcon"><i class="bi bi-plus-circle"></i></span>
+              <div class="fd-team-modal-heading">
+                <h3 id="stockAdjustTitle">Add Stock</h3>
+                <p id="stockAdjustSubtitle">Increase stock for an existing product and branch. Inventory tracking is
+                  enabled automatically when stock is first added.</p>
+              </div>
+              <button type="button" class="fd-team-modal-close" id="stockAdjustClose" aria-label="Close"><i
+                  class="bi bi-x-lg"></i></button>
             </div>
-            <form id="adjustStockForm">
+            <form id="stockAdjustForm">
               <div class="fd-team-modal-body">
                 <div class="fd-team-form-grid">
-                  <div class="fd-team-field full"><label>Product *</label><select id="adjustProductId" name="product_id" required><option value="">Select Product</option></select></div>
-                  <div class="fd-team-field"><label>Branch *</label><select id="adjustBranchId" name="branch_id" required><option value="">Select Branch</option></select></div>
-                  <div class="fd-team-field"><label>Adjustment Type *</label><select id="adjustType" name="adjustment_type" required><option value="add">Add Stock</option><option value="remove">Remove Stock</option><option value="set">Set Stock On Hand</option></select></div>
-                  <div class="fd-team-field"><label id="adjustQtyLabel">Quantity to Add *</label><input type="number" id="adjustQuantity" name="quantity" min="0.001" step="0.001" required placeholder="0.000"><div class="fd-inventory-adjust-help" id="adjustQtyHelp">Adds this quantity to the current stock on hand.</div></div>
-                  <div class="fd-team-field"><label>Reason / Reference</label><input type="text" id="adjustNotes" name="notes" maxlength="500" placeholder="Stock count, purchase receipt, correction..."></div>
-                  <div class="fd-team-field full">
-                    <div class="fd-inventory-adjust-current">
-                      <div><small>Current On Hand</small><strong id="adjustCurrentOnHand">0.000</strong></div>
-                      <div><small>Reserved</small><strong id="adjustCurrentReserved">0.000</strong></div>
-                      <div><small>Available</small><strong id="adjustCurrentAvailable">0.000</strong></div>
-                    </div>
+                  <input type="hidden" id="stockAdjustmentType" value="add">
+                  <div class="fd-inventory-adjust-mode">
+                    <button type="button" class="fd-inventory-mode-pill add active" data-stock-mode="add"><i
+                        class="bi bi-plus-circle"></i> Add Stock</button>
+                    <button type="button" class="fd-inventory-mode-pill remove" data-stock-mode="remove"><i
+                        class="bi bi-dash-circle"></i> Remove Stock</button>
                   </div>
-                  <div class="fd-team-field full"><div class="fd-inventory-adjust-preview" id="adjustPreview">Select a product and branch to preview the new stock balance.</div></div>
+                  <div class="fd-team-field">
+                    <label for="stockProductId">Product *</label>
+                    <select id="stockProductId" required>
+                      <option value="">Select Product</option>
+                    </select>
+                  </div>
+                  <div class="fd-team-field">
+                    <label for="stockBranchId">Branch *</label>
+                    <select id="stockBranchId" required>
+                      <option value="">Select Branch</option>
+                    </select>
+                  </div>
+                  <div class="fd-inventory-stock-preview">
+                    <div><span>On Hand</span><strong id="stockPreviewOnHand">0.000</strong></div>
+                    <div><span>Reserved</span><strong id="stockPreviewReserved">0.000</strong></div>
+                    <div><span>Available</span><strong id="stockPreviewAvailable">0.000</strong></div>
+                    <div><span>After Adjustment</span><strong id="stockPreviewResult">0.000</strong></div>
+                  </div>
+                  <div class="fd-team-field">
+                    <label for="stockQuantity">Quantity *</label>
+                    <input type="number" id="stockQuantity" min="0.001" step="0.001" inputmode="decimal"
+                      placeholder="0.000" required>
+                  </div>
+                  <div class="fd-team-field">
+                    <label>Unit</label>
+                    <input type="text" id="stockUnit" value="-" readonly>
+                  </div>
+                  <div class="fd-team-field full">
+                    <label for="stockNotes">Notes</label>
+                    <textarea id="stockNotes" maxlength="1000"
+                      placeholder="Optional reason / stock adjustment note"></textarea>
+                  </div>
+                  <div class="fd-inventory-adjust-help" id="stockAdjustHelp">Only stock quantity is changed here.
+                    Product master details are not created or edited from Inventory.</div>
+                  <div class="fd-inventory-adjust-error" id="stockAdjustError"></div>
                 </div>
               </div>
               <div class="fd-team-modal-footer">
-                <button type="button" class="fd-team-button" id="adjustCancel">Cancel</button>
-                <button type="submit" class="fd-team-button primary" id="adjustSave"><i class="bi bi-check2-circle"></i> Save Adjustment</button>
+                <button type="button" class="fd-team-button" id="stockAdjustCancel">Cancel</button>
+                <button type="submit" class="fd-team-button primary" id="stockAdjustSave"><span
+                    class="fd-team-loader"></span><i class="bi bi-check2-circle"></i> <span id="stockAdjustSaveText">Add
+                    Stock</span></button>
+              </div>
+            </form>
+          </section>
+        </div>
+
+        <div class="fd-team-modal-backdrop" id="bulkStockAdjustModal" aria-hidden="true">
+          <section class="fd-team-modal fd-inventory-bulk-modal" role="dialog" aria-modal="true"
+            aria-labelledby="bulkStockTitle">
+            <div class="fd-team-modal-header">
+              <span class="fd-team-modal-icon" id="bulkStockIcon"><i class="bi bi-plus-square"></i></span>
+              <div class="fd-team-modal-heading">
+                <h3 id="bulkStockTitle">Bulk Add Stock</h3>
+                <p id="bulkStockSubtitle">Increase stock for multiple existing products / branches in one transaction.
+                </p>
+              </div>
+              <button type="button" class="fd-team-modal-close" id="bulkStockClose" aria-label="Close"><i
+                  class="bi bi-x-lg"></i></button>
+            </div>
+            <form id="bulkStockForm">
+              <div class="fd-team-modal-body">
+                <input type="hidden" id="bulkAdjustmentType" value="add">
+                <div class="fd-inventory-bulk-toolbar">
+                  <div class="fd-inventory-adjust-mode">
+                    <button type="button" class="fd-inventory-mode-pill add active" data-bulk-stock-mode="add"><i
+                        class="bi bi-plus-square"></i> Bulk Add</button>
+                    <button type="button" class="fd-inventory-mode-pill remove" data-bulk-stock-mode="remove"><i
+                        class="bi bi-dash-square"></i> Bulk Remove</button>
+                  </div>
+                  <button type="button" class="fd-team-button" id="bulkAddRow"><i class="bi bi-plus"></i> Add
+                    Row</button>
+                  <button type="button" class="fd-team-button" id="bulkAddFiveRows"><i class="bi bi-plus-square"></i>
+                    Add 5 Rows</button>
+                  <button type="button" class="fd-team-button danger" id="bulkClearRows"><i class="bi bi-trash3"></i>
+                    Clear</button>
+                </div>
+                <div class="fd-inventory-bulk-table-wrap">
+                  <table class="fd-inventory-bulk-table">
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>Product *</th>
+                        <th>Branch *</th>
+                        <th>On Hand</th>
+                        <th>Reserved</th>
+                        <th>Available</th>
+                        <th>Quantity *</th>
+                        <th>After</th>
+                        <th>Notes</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody id="bulkStockRows"></tbody>
+                  </table>
+                </div>
+                <div class="fd-inventory-bulk-summary">
+                  <span>Ready rows: <strong id="bulkReadyCount">0</strong></span>
+                  <span>Total quantity: <strong id="bulkTotalQuantity">0.000</strong></span>
+                  <span>Products are not created or edited from this bulk stock screen.</span>
+                </div>
+                <div class="fd-inventory-bulk-error" id="bulkStockError"></div>
+              </div>
+              <div class="fd-team-modal-footer">
+                <button type="button" class="fd-team-button" id="bulkStockCancel">Cancel</button>
+                <button type="submit" class="fd-team-button primary" id="bulkStockSave"><span
+                    class="fd-team-loader"></span><i class="bi bi-check2-circle"></i> <span id="bulkStockSaveText">Apply
+                    Bulk Add</span></button>
               </div>
             </form>
           </section>
@@ -4355,37 +5184,145 @@ a,
 
         <div class="fd-team-toast info" id="toast">
           <span class="fd-team-toast-message" id="toastMessage">Notification</span>
-          <button type="button" class="fd-team-toast-close" id="toastClose" aria-label="Close"><i class="bi bi-x"></i></button>
+          <button type="button" class="fd-team-toast-close" id="toastClose" aria-label="Close"><i
+              class="bi bi-x"></i></button>
         </div>
       </div>
     </main>
   </div>
   <?php require_once __DIR__ . '/includes/footer.php'; ?>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-<script>
-(function(){
-'use strict';
-var csrfToken=<?= json_encode($inventoryCsrfToken) ?>,apiUrl='api/inventory.php',state={page:1,perPage:10,search:'',branchId:'',stock:''},currency={symbol:'',position:'before',decimals:2},searchTimer=null,toastTimer=null,adjustMeta={products:[],branches:[]};
-function el(id){return document.getElementById(id)}
-function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;')}
-function parseResponse(r){return r.text().then(function(raw){var d,text=String(raw||'').trim();try{d=text?JSON.parse(text):{}}catch(e){throw new Error(text.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim()||'Invalid server response.')}if(!r.ok||!d.success)throw new Error(d.message||('Request failed. HTTP '+r.status));return d})}
-function request(fd){fd.append('csrf_token',csrfToken);return fetch(apiUrl,{method:'POST',body:fd,credentials:'same-origin',cache:'no-store',headers:{'X-Requested-With':'XMLHttpRequest','Accept':'application/json'}}).then(parseResponse)}
-function notify(type,msg){if(toastTimer)clearTimeout(toastTimer);var t=el('toast');t.className='fd-team-toast '+(type||'info')+' show';el('toastMessage').textContent=msg||'Notification';toastTimer=setTimeout(function(){t.classList.remove('show')},3000)}
-function money(v){var n=Number(v||0),d=Number(currency.decimals||2);var text=n.toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d});return currency.position==='after'?text+(currency.symbol?' '+currency.symbol:''):(currency.symbol||'')+text}
-function fillBranches(rows){var current=state.branchId,html='<option value="">All Branches</option>';(rows||[]).forEach(function(r){html+='<option value="'+Number(r.id)+'">'+esc(r.name)+'</option>'});el('branchFilter').innerHTML=html;el('branchFilter').value=current}
-function statusBadge(s){var label=s==='low_stock'?'Low Stock':s==='out_stock'?'Out of Stock':'In Stock';return '<span class="fd-team-badge '+(s==='low_stock'?'low-stock':s==='out_stock'?'out-stock':'active')+'">'+label+'</span>'}
-function render(rows,p){var body=el('inventoryList');if(!rows.length){body.innerHTML='<tr><td colspan="12" class="fd-team-empty"><i class="bi bi-box-seam"></i> No inventory records found.</td></tr>';return}var h='',start=Number(p.from||1);rows.forEach(function(r,i){var image=r.image_path?'<img src="'+esc(r.image_path)+'" alt="">':'<i class="bi bi-box-seam"></i>';h+='<tr><td>'+Number(start+i)+'</td><td><div class="fd-team-name"><span class="fd-team-name-icon fd-inventory-product-icon">'+image+'</span><div class="fd-inventory-product-copy"><strong>'+esc(r.name)+'</strong><small>'+esc(r.sku||'No SKU')+' · '+esc(r.unit_name||'Unit')+'</small></div></div></td><td>'+esc(r.branch_name||'Business Default')+'</td><td><span class="fd-inventory-stock-number">'+Number(r.quantity_on_hand||0).toFixed(3)+'</span></td><td>'+Number(r.quantity_reserved||0).toFixed(3)+'</td><td><span class="fd-inventory-stock-number">'+Number(r.available_quantity||0).toFixed(3)+'</span></td><td>'+Number(r.reorder_level||0).toFixed(3)+'</td><td>'+Number(r.minimum_stock||0).toFixed(3)+'</td><td>'+esc(money(r.base_unit_price))+'</td><td><strong class="fd-inventory-money">'+esc(money(r.inventory_value))+'</strong></td><td>'+statusBadge(r.stock_status)+'</td><td><a class="fd-team-icon-button" href="product-form.php?id='+Number(r.product_id)+'" title="Edit Product"><i class="bi bi-pencil"></i></a></td></tr>'});body.innerHTML=h}
+  <script>
+    (function () {
+      'use strict';
+      var csrfToken = <?= json_encode($inventoryCsrfToken) ?>;
+      var apiUrl = 'api/inventory.php';
+      var state = { page: 1, perPage: 10, search: '', branchId: '', stock: '', pages: 1, total: 0 };
+      var currency = { symbol: '', position: 'before', decimals: 2 };
+      var searchTimer = null, toastTimer = null;
+      function el(id) { return document.getElementById(id) }
+      function esc(v) { return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;') }
+      function parseResponse(r) { return r.text().then(function (raw) { var d, text = String(raw || '').trim(); try { d = text ? JSON.parse(text) : {} } catch (e) { throw new Error(text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim() || 'Invalid server response.') } if (!r.ok || !d.success) throw new Error(d.message || ('Request failed. HTTP ' + r.status)); return d }) }
+      function request(fd) { fd.append('csrf_token', csrfToken); return fetch(apiUrl, { method: 'POST', body: fd, credentials: 'same-origin', cache: 'no-store', headers: { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' } }).then(parseResponse) }
+      function notify(type, msg) { if (toastTimer) clearTimeout(toastTimer); var t = el('toast'); t.className = 'fd-team-toast ' + (type || 'info') + ' show'; el('toastMessage').textContent = msg || 'Notification'; toastTimer = setTimeout(function () { t.classList.remove('show') }, 3000) }
+      function money(v) { var n = Number(v || 0), d = Number(currency.decimals || 2); var text = n.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d }); return currency.position === 'after' ? text + (currency.symbol ? ' ' + currency.symbol : '') : (currency.symbol || '') + text }
+      function fillBranches(rows) { var current = state.branchId, html = '<option value="">All Branches</option>'; (rows || []).forEach(function (r) { html += '<option value="' + Number(r.id) + '">' + esc(r.name) + '</option>' }); el('branchFilter').innerHTML = html; el('branchFilter').value = current }
+      function statusBadge(s) { var label = s === 'low_stock' ? 'Low Stock' : s === 'out_stock' ? 'Out of Stock' : 'In Stock'; return '<span class="fd-team-badge ' + (s === 'low_stock' ? 'low-stock' : s === 'out_stock' ? 'out-stock' : 'active') + '">' + label + '</span>' }
+      function render(rows, p) { var body = el('inventoryList'); if (!rows.length) { body.innerHTML = '<tr><td colspan="12" class="fd-team-empty"><i class="bi bi-box-seam"></i> No inventory records found.</td></tr>'; return } var h = '', start = Number(p.from || 1); rows.forEach(function (r, i) { var image = r.image_path ? '<img src="' + esc(r.image_path) + '" alt="">' : '<i class="bi bi-box-seam"></i>'; h += '<tr><td>' + Number(start + i) + '</td><td><div class="fd-team-name"><span class="fd-team-name-icon fd-inventory-product-icon">' + image + '</span><div class="fd-inventory-product-copy"><strong>' + esc(r.name) + '</strong><small>' + esc(r.sku || 'No SKU') + ' · ' + esc(r.unit_name || 'Unit') + '</small></div></div></td><td>' + esc(r.branch_name || 'Business Default') + '</td><td><span class="fd-inventory-stock-number">' + Number(r.quantity_on_hand || 0).toFixed(3) + '</span></td><td>' + Number(r.quantity_reserved || 0).toFixed(3) + '</td><td><span class="fd-inventory-stock-number">' + Number(r.available_quantity || 0).toFixed(3) + '</span></td><td>' + Number(r.reorder_level || 0).toFixed(3) + '</td><td>' + Number(r.minimum_stock || 0).toFixed(3) + '</td><td>' + esc(money(r.base_unit_price)) + '</td><td><strong class="fd-inventory-money">' + esc(money(r.inventory_value)) + '</strong></td><td>' + statusBadge(r.stock_status) + '</td><td><div class="fd-inventory-row-actions"><button type="button" class="fd-team-icon-button fd-inventory-adjust-icon add" data-stock-action="add" data-product-id="' + Number(r.product_id) + '" data-branch-id="' + Number(r.branch_id) + '" title="Add Stock" aria-label="Add Stock"><i class="bi bi-plus-circle"></i></button><button type="button" class="fd-team-icon-button fd-inventory-adjust-icon remove" data-stock-action="remove" data-product-id="' + Number(r.product_id) + '" data-branch-id="' + Number(r.branch_id) + '" title="Remove Stock" aria-label="Remove Stock"><i class="bi bi-dash-circle"></i></button></div></td></tr>' }); body.innerHTML = h }
+      function load() { var fd = new FormData(); fd.append('action', 'list'); fd.append('page', state.page); fd.append('per_page', state.perPage); fd.append('search', state.search); fd.append('branch_id', state.branchId); fd.append('stock_status', state.stock); el('inventoryList').innerHTML = '<tr><td colspan="12" class="fd-team-empty">Loading inventory...</td></tr>'; request(fd).then(function (d) { var p = d.pagination || {}; currency = d.currency || currency; fillBranches(d.branches || []); render(d.inventory || [], p); state.page = Number(p.page || 1); state.pages = Number(p.pages || 1); state.total = Number(p.total || 0); el('countText').textContent = state.total ? ('Showing ' + Number(p.from || 0) + '-' + Number(p.to || 0) + ' of ' + state.total + ' inventory records') : 'Showing 0 inventory records'; el('pageText').textContent = 'Page ' + state.page + ' of ' + state.pages; el('prevPage').disabled = state.page <= 1; el('nextPage').disabled = state.page >= state.pages }).catch(function (e) { el('inventoryList').innerHTML = '<tr><td colspan="12" class="fd-team-empty">' + esc(e.message) + '</td></tr>'; notify('error', e.message) }) }
 
-function openAdjustModal(){el('adjustStockForm').reset();el('adjustType').value='add';el('adjustCurrentOnHand').textContent='0.000';el('adjustCurrentReserved').textContent='0.000';el('adjustCurrentAvailable').textContent='0.000';el('adjustPreview').textContent='Select a product and branch to preview the new stock balance.';updateAdjustLabels();var fd=new FormData();fd.append('action','adjust_meta');request(fd).then(function(d){adjustMeta.products=d.products||[];adjustMeta.branches=d.branches||[];var ph='<option value="">Select Product</option>';adjustMeta.products.forEach(function(p){ph+='<option value="'+Number(p.id)+'">'+esc(p.name)+(p.sku?' · '+esc(p.sku):'')+'</option>'});el('adjustProductId').innerHTML=ph;var bh='<option value="">Select Branch</option>';adjustMeta.branches.forEach(function(b){bh+='<option value="'+Number(b.id)+'">'+esc(b.name)+'</option>'});el('adjustBranchId').innerHTML=bh;el('adjustStockModal').classList.add('show');el('adjustStockModal').setAttribute('aria-hidden','false');document.body.style.overflow='hidden'}).catch(function(e){notify('error',e.message)})}
-function closeAdjustModal(){el('adjustStockModal').classList.remove('show');el('adjustStockModal').setAttribute('aria-hidden','true');document.body.style.overflow=''}
-function selectedAdjustmentInventory(){var pid=Number(el('adjustProductId').value||0),bid=Number(el('adjustBranchId').value||0),p=null;if(!pid||!bid)return null;(adjustMeta.products||[]).some(function(x){if(Number(x.id)===pid){p=x;return true}return false});if(!p)return null;var inv=null;(p.inventories||[]).some(function(x){if(Number(x.branch_id)===bid){inv=x;return true}return false});return inv||{quantity_on_hand:0,quantity_reserved:0,reorder_level:0,minimum_stock:0}}
-function updateAdjustLabels(){var type=el('adjustType').value;if(type==='remove'){el('adjustQtyLabel').textContent='Quantity to Remove *';el('adjustQtyHelp').textContent='Removes this quantity from stock on hand. Reserved stock cannot be made unavailable.'}else if(type==='set'){el('adjustQtyLabel').textContent='New Stock On Hand *';el('adjustQtyHelp').textContent='Sets the physical stock on hand to the exact quantity entered.'}else{el('adjustQtyLabel').textContent='Quantity to Add *';el('adjustQtyHelp').textContent='Adds this quantity to the current stock on hand.'}updateAdjustPreview()}
-function updateAdjustPreview(){var inv=selectedAdjustmentInventory(),qty=Number(el('adjustQuantity').value||0),type=el('adjustType').value;if(!inv){el('adjustCurrentOnHand').textContent='0.000';el('adjustCurrentReserved').textContent='0.000';el('adjustCurrentAvailable').textContent='0.000';el('adjustPreview').textContent='Select a product and branch to preview the new stock balance.';return}var current=Number(inv.quantity_on_hand||0),reserved=Number(inv.quantity_reserved||0),next=type==='add'?current+qty:type==='remove'?current-qty:qty;el('adjustCurrentOnHand').textContent=current.toFixed(3);el('adjustCurrentReserved').textContent=reserved.toFixed(3);el('adjustCurrentAvailable').textContent=(current-reserved).toFixed(3);el('adjustPreview').textContent='New stock on hand: '+next.toFixed(3)+' · New available: '+(next-reserved).toFixed(3)}
-function saveAdjustment(e){e.preventDefault();if(!el('adjustStockForm').reportValidity())return;var fd=new FormData(el('adjustStockForm'));fd.append('action','adjust_stock');var b=el('adjustSave'),old=b.innerHTML;b.disabled=true;b.innerHTML='<span class="spinner-border spinner-border-sm"></span> Saving...';request(fd).then(function(d){notify('success',d.message||'Stock adjusted successfully.');closeAdjustModal();load()}).catch(function(er){notify('error',er.message)}).finally(function(){b.disabled=false;b.innerHTML=old})}
 
-function load(){var fd=new FormData();fd.append('action','list');fd.append('page',state.page);fd.append('per_page',state.perPage);fd.append('search',state.search);fd.append('branch_id',state.branchId);fd.append('stock_status',state.stock);el('inventoryList').innerHTML='<tr><td colspan="12" class="fd-team-empty">Loading inventory...</td></tr>';request(fd).then(function(d){var s=d.summary||{},p=d.pagination||{};currency=d.currency||currency;fillBranches(d.branches||[]);render(d.inventory||[],p);el('statTotal').textContent=Number(s.total_products||0);el('statLow').textContent=Number(s.low_stock||0);el('statOut').textContent=Number(s.out_of_stock||0);el('statValue').textContent=money(s.inventory_value||0);el('countText').textContent='Showing '+Number(p.from||0)+'-'+Number(p.to||0)+' of '+Number(p.total||0)+' inventory records';el('prevPage').disabled=state.page<=1;el('nextPage').disabled=state.page>=Number(p.pages||1)}).catch(function(e){el('inventoryList').innerHTML='<tr><td colspan="12" class="fd-team-empty">'+esc(e.message)+'</td></tr>';notify('error',e.message)})}
-el('toastClose').onclick=function(){el('toast').classList.remove('show')};el('refreshButton').onclick=load;el('adjustStockButton').onclick=openAdjustModal;el('adjustStockClose').onclick=closeAdjustModal;el('adjustCancel').onclick=closeAdjustModal;el('adjustStockModal').onclick=function(e){if(e.target===this)closeAdjustModal()};el('adjustProductId').onchange=updateAdjustPreview;el('adjustBranchId').onchange=updateAdjustPreview;el('adjustType').onchange=updateAdjustLabels;el('adjustQuantity').addEventListener('input',updateAdjustPreview);el('adjustStockForm').addEventListener('submit',saveAdjustment);el('searchInput').addEventListener('input',function(e){if(searchTimer)clearTimeout(searchTimer);searchTimer=setTimeout(function(){state.search=e.target.value.trim();state.page=1;load()},250)});el('branchFilter').onchange=function(e){state.branchId=e.target.value;state.page=1;load()};el('stockFilter').onchange=function(e){state.stock=e.target.value;state.page=1;load()};el('clearFilters').onclick=function(){el('searchInput').value='';el('branchFilter').value='';el('stockFilter').value='';state.search='';state.branchId='';state.stock='';state.page=1;load()};el('prevPage').onclick=function(){if(state.page>1){state.page--;load()}};el('nextPage').onclick=function(){state.page++;load()};load();
-})();
-</script>
+      var stockAdjustModal = el('stockAdjustModal');
+      var stockAdjustMeta = { loaded: false, products: [], branches: [] };
+      function stockProductById(id) { id = Number(id || 0); for (var i = 0; i < stockAdjustMeta.products.length; i++) { if (Number(stockAdjustMeta.products[i].id) === id) return stockAdjustMeta.products[i] } return null }
+      function stockInventoryFor(productId, branchId) { var p = stockProductById(productId), rows = p && p.inventories ? p.inventories : []; for (var i = 0; i < rows.length; i++) { if (Number(rows[i].branch_id) === Number(branchId)) return rows[i] } return { quantity_on_hand: 0, quantity_reserved: 0, reorder_level: 0, minimum_stock: 0 } }
+      function fillStockAdjustMeta() {
+        var productCurrent = el('stockProductId').value, branchCurrent = el('stockBranchId').value;
+        var productHtml = '<option value="">Select Product</option>', branchHtml = '<option value="">Select Branch</option>';
+        (stockAdjustMeta.products || []).forEach(function (p) { productHtml += '<option value="' + Number(p.id) + '">' + esc(p.name) + (p.sku ? ' · ' + esc(p.sku) : '') + '</option>' });
+        (stockAdjustMeta.branches || []).forEach(function (b) { branchHtml += '<option value="' + Number(b.id) + '">' + esc(b.name) + '</option>' });
+        el('stockProductId').innerHTML = productHtml; el('stockBranchId').innerHTML = branchHtml;
+        if (productCurrent) el('stockProductId').value = productCurrent; if (branchCurrent) el('stockBranchId').value = branchCurrent;
+      }
+      function loadStockAdjustMeta(force) {
+        if (stockAdjustMeta.loaded && !force) return Promise.resolve(stockAdjustMeta);
+        var fd = new FormData(); fd.append('action', 'adjust_meta');
+        return request(fd).then(function (d) { stockAdjustMeta.products = d.products || []; stockAdjustMeta.branches = d.branches || []; stockAdjustMeta.loaded = true; fillStockAdjustMeta(); return stockAdjustMeta })
+      }
+      function setStockMode(mode) {
+        mode = mode === 'remove' ? 'remove' : 'add'; el('stockAdjustmentType').value = mode;
+        document.querySelectorAll('[data-stock-mode]').forEach(function (btn) { btn.classList.toggle('active', btn.getAttribute('data-stock-mode') === mode) });
+        var isRemove = mode === 'remove';
+        el('stockAdjustTitle').textContent = isRemove ? 'Remove Stock' : 'Add Stock';
+        el('stockAdjustSubtitle').textContent = isRemove ? 'Reduce available stock for an existing product and branch.' : 'Increase stock for an existing product and branch. Inventory tracking is enabled automatically when stock is first added.';
+        el('stockAdjustIcon').innerHTML = isRemove ? '<i class="bi bi-dash-circle"></i>' : '<i class="bi bi-plus-circle"></i>';
+        el('stockAdjustSaveText').textContent = isRemove ? 'Remove Stock' : 'Add Stock';
+        el('stockQuantity').value = ''; el('stockNotes').value = ''; el('stockAdjustError').classList.remove('show'); el('stockAdjustError').textContent = '';
+        updateStockPreview();
+      }
+      function updateStockPreview() {
+        var productId = Number(el('stockProductId').value || 0), branchId = Number(el('stockBranchId').value || 0), p = stockProductById(productId), inv = stockInventoryFor(productId, branchId);
+        var onHand = Number(inv.quantity_on_hand || 0), reserved = Number(inv.quantity_reserved || 0), available = Math.max(0, onHand - reserved), qty = Math.max(0, Number(el('stockQuantity').value || 0)), mode = el('stockAdjustmentType').value;
+        var result = mode === 'remove' ? onHand - qty : onHand + qty;
+        el('stockPreviewOnHand').textContent = onHand.toFixed(3); el('stockPreviewReserved').textContent = reserved.toFixed(3); el('stockPreviewAvailable').textContent = available.toFixed(3); el('stockPreviewResult').textContent = result.toFixed(3);
+        el('stockPreviewResult').className = mode === 'remove' ? 'result-remove' : 'result-add';
+        el('stockUnit').value = p ? (p.unit_name || 'unit') : '-';
+        if (mode === 'remove' && qty > available) { el('stockAdjustError').textContent = 'Only ' + available.toFixed(3) + ' available quantity can be removed because ' + reserved.toFixed(3) + ' is reserved.'; el('stockAdjustError').classList.add('show') } else { el('stockAdjustError').classList.remove('show'); el('stockAdjustError').textContent = '' }
+      }
+      function openStockAdjust(mode, productId, branchId) {
+        setStockMode(mode);
+        loadStockAdjustMeta(false).then(function () {
+          if (productId) el('stockProductId').value = String(Number(productId));
+          if (branchId) el('stockBranchId').value = String(Number(branchId));
+          updateStockPreview(); stockAdjustModal.classList.add('show'); stockAdjustModal.setAttribute('aria-hidden', 'false');
+          setTimeout(function () { if (!productId) el('stockProductId').focus(); else el('stockQuantity').focus() }, 30)
+        }).catch(function (e) { notify('error', e.message) })
+      }
+      function closeStockAdjust() { stockAdjustModal.classList.remove('show'); stockAdjustModal.setAttribute('aria-hidden', 'true'); el('stockAdjustForm').reset(); el('stockProductId').value = ''; el('stockBranchId').value = ''; el('stockUnit').value = '-'; el('stockAdjustError').classList.remove('show'); setStockMode('add') }
+      if (el('addStockButton')) el('addStockButton').onclick = function () { openStockAdjust('add', 0, state.branchId) };
+      if (el('removeStockButton')) el('removeStockButton').onclick = function () { openStockAdjust('remove', 0, state.branchId) };
+      el('stockAdjustClose').onclick = closeStockAdjust; el('stockAdjustCancel').onclick = closeStockAdjust;
+      stockAdjustModal.addEventListener('click', function (e) { if (e.target === stockAdjustModal) closeStockAdjust() });
+      document.querySelectorAll('[data-stock-mode]').forEach(function (btn) { btn.onclick = function () { setStockMode(btn.getAttribute('data-stock-mode')) } });
+      el('stockProductId').onchange = updateStockPreview; el('stockBranchId').onchange = updateStockPreview; el('stockQuantity').addEventListener('input', updateStockPreview);
+      el('inventoryList').addEventListener('click', function (e) { var btn = e.target.closest('[data-stock-action]'); if (!btn) return; openStockAdjust(btn.getAttribute('data-stock-action'), btn.getAttribute('data-product-id'), btn.getAttribute('data-branch-id')) });
+      el('stockAdjustForm').addEventListener('submit', function (e) {
+        e.preventDefault();
+        var mode = el('stockAdjustmentType').value, productId = Number(el('stockProductId').value || 0), branchId = Number(el('stockBranchId').value || 0), qty = Number(el('stockQuantity').value || 0), inv = stockInventoryFor(productId, branchId), available = Math.max(0, Number(inv.quantity_on_hand || 0) - Number(inv.quantity_reserved || 0));
+        if (!productId || !branchId) { el('stockAdjustError').textContent = 'Select a product and branch.'; el('stockAdjustError').classList.add('show'); return }
+        if (!(qty > 0)) { el('stockAdjustError').textContent = 'Enter a quantity greater than zero.'; el('stockAdjustError').classList.add('show'); return }
+        if (mode === 'remove' && qty > available) { updateStockPreview(); return }
+        var save = el('stockAdjustSave'), fd = new FormData(); fd.append('action', 'adjust_stock'); fd.append('product_id', productId); fd.append('branch_id', branchId); fd.append('adjustment_type', mode); fd.append('quantity', qty.toFixed(3)); fd.append('notes', el('stockNotes').value.trim()); save.disabled = true; save.classList.add('loading');
+        request(fd).then(function (d) { notify('success', d.message || 'Stock adjusted successfully.'); closeStockAdjust(); stockAdjustMeta.loaded = false; return loadStockAdjustMeta(true) }).then(function () { load() }).catch(function (err) { el('stockAdjustError').textContent = err.message; el('stockAdjustError').classList.add('show') }).finally(function () { save.disabled = false; save.classList.remove('loading') })
+      });
+      document.addEventListener('keydown', function (e) { if (e.key !== 'Escape') return; if (stockAdjustModal.classList.contains('show')) closeStockAdjust(); if (bulkStockModal && bulkStockModal.classList.contains('show')) closeBulkStock() });
+
+      var bulkStockModal = el('bulkStockAdjustModal'), bulkRows = [], bulkMode = 'add';
+      function bulkEmptyRow() { return { product_id: '', branch_id: state.branchId || '', quantity: '', notes: '' } }
+      function bulkProductOptions(selected) { var h = '<option value="">Select Product</option>'; (stockAdjustMeta.products || []).forEach(function (p) { h += '<option value="' + Number(p.id) + '"' + (String(selected) === String(p.id) ? ' selected' : '') + '>' + esc(p.name) + (p.sku ? ' · ' + esc(p.sku) : '') + '</option>' }); return h }
+      function bulkBranchOptions(selected) { var h = '<option value="">Select Branch</option>'; (stockAdjustMeta.branches || []).forEach(function (b) { h += '<option value="' + Number(b.id) + '"' + (String(selected) === String(b.id) ? ' selected' : '') + '>' + esc(b.name) + '</option>' }); return h }
+      function bulkCalc(row) { var productId = Number(row.product_id || 0), branchId = Number(row.branch_id || 0), inv = stockInventoryFor(productId, branchId), onHand = Number(inv.quantity_on_hand || 0), reserved = Number(inv.quantity_reserved || 0), available = Math.max(0, onHand - reserved), qty = Math.max(0, Number(row.quantity || 0)), result = bulkMode === 'remove' ? onHand - qty : onHand + qty, invalid = bulkMode === 'remove' && qty > available; return { onHand: onHand, reserved: reserved, available: available, qty: qty, result: result, invalid: invalid } }
+      function updateBulkSummary() { var ready = 0, total = 0; bulkRows.forEach(function (r) { if (Number(r.product_id || 0) > 0 && Number(r.branch_id || 0) > 0 && Number(r.quantity || 0) > 0) { ready++; total += Number(r.quantity || 0) } }); el('bulkReadyCount').textContent = ready; el('bulkTotalQuantity').textContent = total.toFixed(3) }
+      function renderBulkRows() { var body = el('bulkStockRows'), h = ''; bulkRows.forEach(function (r, i) { var c = bulkCalc(r), cls = c.invalid ? ' class="invalid"' : ''; h += '<tr' + cls + ' data-bulk-row="' + i + '"><td>' + (i + 1) + '</td><td class="fd-inventory-bulk-product"><select class="fd-inventory-bulk-select" data-bulk-field="product_id" data-bulk-index="' + i + '">' + bulkProductOptions(r.product_id) + '</select></td><td class="fd-inventory-bulk-branch"><select class="fd-inventory-bulk-select" data-bulk-field="branch_id" data-bulk-index="' + i + '">' + bulkBranchOptions(r.branch_id) + '</select></td><td><span class="fd-inventory-bulk-number" data-bulk-onhand="' + i + '">' + c.onHand.toFixed(3) + '</span></td><td><span data-bulk-reserved="' + i + '">' + c.reserved.toFixed(3) + '</span></td><td><span data-bulk-available="' + i + '">' + c.available.toFixed(3) + '</span></td><td class="fd-inventory-bulk-qty"><input class="fd-inventory-bulk-input" type="number" min="0.001" step="0.001" inputmode="decimal" placeholder="0.000" value="' + esc(r.quantity) + '" data-bulk-field="quantity" data-bulk-index="' + i + '"></td><td><strong class="fd-inventory-bulk-result ' + bulkMode + '" data-bulk-result="' + i + '">' + c.result.toFixed(3) + '</strong></td><td class="fd-inventory-bulk-notes"><input class="fd-inventory-bulk-input" maxlength="500" placeholder="Optional note" value="' + esc(r.notes) + '" data-bulk-field="notes" data-bulk-index="' + i + '"></td><td><button type="button" class="fd-inventory-bulk-row-remove" data-bulk-remove="' + i + '" title="Remove row"><i class="bi bi-trash"></i></button></td></tr>' }); body.innerHTML = h || '<tr><td colspan="10" class="fd-team-empty">No stock rows. Use Add Row.</td></tr>'; updateBulkSummary() }
+      function updateBulkRowPreview(index) { var row = bulkRows[index]; if (!row) return; var c = bulkCalc(row), tr = el('bulkStockRows').querySelector('tr[data-bulk-row="' + index + '"]'); if (!tr) return; var a = tr.querySelector('[data-bulk-onhand]'), r = tr.querySelector('[data-bulk-reserved]'), v = tr.querySelector('[data-bulk-available]'), x = tr.querySelector('[data-bulk-result]'); if (a) a.textContent = c.onHand.toFixed(3); if (r) r.textContent = c.reserved.toFixed(3); if (v) v.textContent = c.available.toFixed(3); if (x) { x.textContent = c.result.toFixed(3); x.className = 'fd-inventory-bulk-result ' + bulkMode } tr.classList.toggle('invalid', c.invalid); updateBulkSummary() }
+      function setBulkMode(mode) { bulkMode = mode === 'remove' ? 'remove' : 'add'; el('bulkAdjustmentType').value = bulkMode; document.querySelectorAll('[data-bulk-stock-mode]').forEach(function (btn) { btn.classList.toggle('active', btn.getAttribute('data-bulk-stock-mode') === bulkMode) }); var rem = bulkMode === 'remove'; el('bulkStockTitle').textContent = rem ? 'Bulk Remove Stock' : 'Bulk Add Stock'; el('bulkStockSubtitle').textContent = rem ? 'Reduce available stock for multiple existing products / branches in one transaction.' : 'Increase stock for multiple existing products / branches in one transaction.'; el('bulkStockIcon').innerHTML = rem ? '<i class="bi bi-dash-square"></i>' : '<i class="bi bi-plus-square"></i>'; el('bulkStockSaveText').textContent = rem ? 'Apply Bulk Remove' : 'Apply Bulk Add'; el('bulkStockError').classList.remove('show'); el('bulkStockError').textContent = ''; renderBulkRows() }
+      function addBulkRows(count) { for (var i = 0; i < count; i++)bulkRows.push(bulkEmptyRow()); renderBulkRows() }
+      function openBulkStock(mode) { closeMoreActions(); loadStockAdjustMeta(false).then(function () { bulkRows = []; for (var i = 0; i < 5; i++)bulkRows.push(bulkEmptyRow()); setBulkMode(mode); bulkStockModal.classList.add('show'); bulkStockModal.setAttribute('aria-hidden', 'false') }).catch(function (e) { notify('error', e.message) }) }
+      function closeBulkStock() { bulkStockModal.classList.remove('show'); bulkStockModal.setAttribute('aria-hidden', 'true'); bulkRows = []; el('bulkStockError').classList.remove('show'); el('bulkStockError').textContent = '' }
+
+
+      el('bulkStockClose').onclick = closeBulkStock; el('bulkStockCancel').onclick = closeBulkStock; bulkStockModal.addEventListener('click', function (e) { if (e.target === bulkStockModal) closeBulkStock() });
+      document.querySelectorAll('[data-bulk-stock-mode]').forEach(function (btn) { btn.onclick = function () { setBulkMode(btn.getAttribute('data-bulk-stock-mode')) } });
+      el('bulkAddRow').onclick = function () { addBulkRows(1) }; el('bulkAddFiveRows').onclick = function () { addBulkRows(5) }; el('bulkClearRows').onclick = function () { bulkRows = []; addBulkRows(5) };
+      el('bulkStockRows').addEventListener('change', function (e) { var f = e.target.getAttribute('data-bulk-field'), i = Number(e.target.getAttribute('data-bulk-index')); if (!f || !bulkRows[i]) return; bulkRows[i][f] = e.target.value; updateBulkRowPreview(i) });
+      el('bulkStockRows').addEventListener('input', function (e) { var f = e.target.getAttribute('data-bulk-field'), i = Number(e.target.getAttribute('data-bulk-index')); if (!f || !bulkRows[i]) return; bulkRows[i][f] = e.target.value; updateBulkRowPreview(i) });
+      el('bulkStockRows').addEventListener('click', function (e) { var b = e.target.closest('[data-bulk-remove]'); if (!b) return; var i = Number(b.getAttribute('data-bulk-remove')); bulkRows.splice(i, 1); if (!bulkRows.length) bulkRows.push(bulkEmptyRow()); renderBulkRows() });
+      el('bulkStockForm').addEventListener('submit', function (e) {
+        e.preventDefault(); var error = el('bulkStockError'), payload = [], seen = {}, invalid = '';
+        bulkRows.forEach(function (r, i) { var has = String(r.product_id || '') !== '' || String(r.branch_id || '') !== '' || String(r.quantity || '') !== '' || String(r.notes || '').trim() !== ''; if (!has) return; var productId = Number(r.product_id || 0), branchId = Number(r.branch_id || 0), qty = Number(r.quantity || 0), c = bulkCalc(r); if (!productId || !branchId || !(qty > 0)) { if (!invalid) invalid = 'Row ' + (i + 1) + ': select Product, Branch and enter a quantity greater than zero.'; return } var key = productId + ':' + branchId; if (seen[key]) { if (!invalid) invalid = 'Row ' + (i + 1) + ': this Product / Branch is already included in another row.'; return } seen[key] = 1; if (bulkMode === 'remove' && c.invalid) { if (!invalid) invalid = 'Row ' + (i + 1) + ': only ' + c.available.toFixed(3) + ' available quantity can be removed.'; return } payload.push({ product_id: productId, branch_id: branchId, quantity: qty.toFixed(3), notes: String(r.notes || '').trim() }) });
+        if (invalid) { error.textContent = invalid; error.classList.add('show'); return } if (!payload.length) { error.textContent = 'Enter at least one complete stock row.'; error.classList.add('show'); return } error.classList.remove('show'); error.textContent = '';
+        var save = el('bulkStockSave'), fd = new FormData(); fd.append('action', 'bulk_adjust_stock'); fd.append('adjustment_type', bulkMode); fd.append('rows_json', JSON.stringify(payload)); save.disabled = true; save.classList.add('loading'); request(fd).then(function (d) { notify('success', d.message || 'Bulk stock adjustment completed.'); closeBulkStock(); stockAdjustMeta.loaded = false; return loadStockAdjustMeta(true) }).then(function () { load() }).catch(function (err) { error.textContent = err.message; error.classList.add('show') }).finally(function () { save.disabled = false; save.classList.remove('loading') })
+      });
+
+      var moreActions = el('inventoryMoreActions'), moreActionsButton = el('inventoryMoreActionsButton');
+      function closeMoreActions() { if (!moreActions) return; moreActions.classList.remove('open'); if (moreActionsButton) moreActionsButton.setAttribute('aria-expanded', 'false') }
+      if (moreActionsButton) { moreActionsButton.onclick = function (e) { e.stopPropagation(); var open = !moreActions.classList.contains('open'); closeMoreActions(); if (open) { moreActions.classList.add('open'); moreActionsButton.setAttribute('aria-expanded', 'true') } } }
+      document.addEventListener('click', function (e) { if (moreActions && !moreActions.contains(e.target)) closeMoreActions() });
+      function csvCell(value) { var text = String(value == null ? '' : value); return /[",\r\n]/.test(text) ? '"' + text.replace(/"/g, '""') + '"' : text }
+      function downloadCsv(filename, rows) { var csv = '\ufeff' + rows.map(function (row) { return row.map(csvCell).join(',') }).join('\r\n'); var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' }), url = URL.createObjectURL(blob), a = document.createElement('a'); a.href = url; a.download = filename; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url) }
+      if (el('exportInventoryButton')) { el('exportInventoryButton').onclick = function () { var btn = this, fd = new FormData(); closeMoreActions(); fd.append('action', 'export'); fd.append('search', state.search); fd.append('branch_id', state.branchId); fd.append('stock_status', state.stock); btn.disabled = true; request(fd).then(function (d) { var rows = [['Product SKU', 'Product Name', 'Branch Code', 'Branch Name', 'On Hand', 'Reserved', 'Available', 'Reorder Level', 'Minimum Stock', 'Base Price', 'Inventory Value', 'Stock Status']]; (d.inventory || []).forEach(function (r) { rows.push([r.sku || '', r.name || '', r.branch_code || '', r.branch_name || '', r.quantity_on_hand || 0, r.quantity_reserved || 0, r.available_quantity || 0, r.reorder_level || 0, r.minimum_stock || 0, r.base_unit_price || 0, r.inventory_value || 0, String(r.stock_status || '').replace(/_/g, ' ')]) }); downloadCsv('inventory-' + new Date().toISOString().slice(0, 10) + '.csv', rows); notify('success', (d.inventory || []).length + ' inventory row(s) exported.') }).catch(function (e) { notify('error', e.message) }).finally(function () { btn.disabled = false }) } }
+
+      el('toastClose').onclick = function () { el('toast').classList.remove('show') };
+      el('searchInput').addEventListener('input', function (e) { if (searchTimer) clearTimeout(searchTimer); searchTimer = setTimeout(function () { state.search = e.target.value.trim(); state.page = 1; load() }, 250) });
+      el('branchFilter').onchange = function (e) { state.branchId = e.target.value; state.page = 1; load() };
+      el('stockFilter').onchange = function (e) { state.stock = e.target.value; state.page = 1; load() };
+      el('perPage').onchange = function (e) { state.perPage = Number(e.target.value || 10); state.page = 1; load() };
+      el('clearFilters').onclick = function () { el('searchInput').value = ''; el('branchFilter').value = ''; el('stockFilter').value = ''; state.search = ''; state.branchId = ''; state.stock = ''; state.page = 1; load() };
+      el('prevPage').onclick = function () { if (state.page > 1) { state.page--; load() } };
+      el('nextPage').onclick = function () { if (state.page < state.pages) { state.page++; load() } };
+      load();
+    })();
+  </script>
 </body>
+
 </html>

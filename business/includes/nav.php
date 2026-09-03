@@ -32,13 +32,13 @@ if ($fpNavInitials === '') $fpNavInitials = 'U';
             <div class="fieldplx-page-subtitle">FieldPlx</div>
         </div>
 
-        <div class="fieldplx-search-wrap">
+        <!-- <div class="fieldplx-search-wrap">
             <i class="bi bi-search fieldplx-search-icon"></i>
             <input aria-label="Global search" autocomplete="off" class="form-control fieldplx-search-input"
                    id="globalSearchInput" placeholder="Search clients, jobs, invoices..." type="search">
-        </div>
+        </div> -->
 
-        <div class="fieldplx-topbar-spacer"></div>
+        <div class="fieldplx-topbar-spacer me-auto"></div>
 
         <div class="dropdown">
             <button aria-expanded="false" aria-label="Notifications" class="fieldplx-topbar-action"

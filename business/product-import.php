@@ -1,8 +1,8 @@
 <?php
-/* FieldPlx Products Manage Page - Version 2.0.0 - 2026-09-03 - Manage UI + Import Export */
+/* FieldPlx Product Import - Version 1.0.0 - 2026-09-03 */
 require_once __DIR__ . '/includes/auth.php';
 
-$pageTitle = 'Products';
+$pageTitle = 'Product Import';
 $activePage = 'products';
 
 if (session_status() === PHP_SESSION_NONE) {
@@ -12,58 +12,14 @@ if (session_status() === PHP_SESSION_NONE) {
 if (empty($_SESSION['products_csrf_token'])) {
   $_SESSION['products_csrf_token'] = bin2hex(random_bytes(32));
 }
-
-$csrfToken = (string) $_SESSION['products_csrf_token'];
-
-/* Product summary statistics are loaded directly on this page. */
-$productStats = array(
-  'total' => 0,
-  'active' => 0,
-  'inactive' => 0,
-  'archived' => 0
-);
-
-$productStatsTenantId = isset($_SESSION['tenant_id']) ? (int)$_SESSION['tenant_id'] : (isset($_SESSION['business_id']) ? (int)$_SESSION['business_id'] : 0);
-$productStatsPdo = null;
-if (isset($pdo) && $pdo instanceof PDO) {
-  $productStatsPdo = $pdo;
-} elseif (isset($db) && $db instanceof PDO) {
-  $productStatsPdo = $db;
-}
-
-if ($productStatsTenantId > 0 && $productStatsPdo instanceof PDO) {
-  try {
-    $productStatsStmt = $productStatsPdo->prepare(
-      "SELECT
-          COUNT(*) AS total,
-          SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active,
-          SUM(CASE WHEN status = 'inactive' THEN 1 ELSE 0 END) AS inactive,
-          SUM(CASE WHEN status = 'archived' THEN 1 ELSE 0 END) AS archived
-       FROM products
-       WHERE tenant_id = :tenant_id
-         AND deleted_at IS NULL"
-    );
-    $productStatsStmt->execute(array(':tenant_id' => $productStatsTenantId));
-    $productStatsRow = $productStatsStmt->fetch(PDO::FETCH_ASSOC);
-    if ($productStatsRow) {
-      $productStats['total'] = isset($productStatsRow['total']) ? (int)$productStatsRow['total'] : 0;
-      $productStats['active'] = isset($productStatsRow['active']) ? (int)$productStatsRow['active'] : 0;
-      $productStats['inactive'] = isset($productStatsRow['inactive']) ? (int)$productStatsRow['inactive'] : 0;
-      $productStats['archived'] = isset($productStatsRow['archived']) ? (int)$productStatsRow['archived'] : 0;
-    }
-  } catch (Throwable $productStatsError) {
-    error_log('FieldPlx products direct stats error: ' . $productStatsError->getMessage());
-  }
-}
-
+$csrfToken = (string)$_SESSION['products_csrf_token'];
 ?>
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
   <meta charset="utf-8" />
   <meta content="width=device-width, initial-scale=1" name="viewport" />
-  <title>Products - FieldPlx</title>
+  <title>Product Import - FieldPlx</title>
   <?php require_once __DIR__ . '/includes/links.php'; ?>
   <style>
     :root {
@@ -4375,6 +4331,46 @@ if ($productStatsTenantId > 0 && $productStatsPdo instanceof PDO) {
       .fd-product-more-menu { left: 0; right: auto; max-width: min(215px, calc(100vw - 24px)); }
     }
 
+  
+
+    /* Product Import page */
+    .fd-import-header{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:18px}
+    .fd-import-title{margin:0 0 7px;color:var(--fd-text);font-size:21px;line-height:1.2;font-weight:700}
+    .fd-import-subtitle{margin:0;max-width:820px;color:var(--fd-muted);font-size:11px;line-height:1.55}
+    .fd-import-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+    .fd-import-card{overflow:hidden;border:1px solid var(--fd-border);border-radius:10px;background:#fff;box-shadow:0 4px 14px rgba(31,43,88,.045)}
+    .fd-import-toolbar{padding:13px 14px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;border-bottom:1px solid var(--fd-border);background:#fff}
+    .fd-import-toolbar .fd-team-button{min-height:38px}
+    .fd-import-help{margin-left:auto;color:#8390a4;font-size:9px;line-height:1.45}
+    .fd-import-grid-wrap{width:100%;overflow:auto;max-height:560px;scrollbar-width:thin;scrollbar-color:#cbd5e1 transparent}
+    .fd-import-grid-wrap::-webkit-scrollbar{height:7px;width:7px}.fd-import-grid-wrap::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:10px}
+    .fd-import-grid{width:max-content;min-width:100%;border-collapse:separate;border-spacing:0;background:#fff}
+    .fd-import-grid th{position:sticky;top:0;z-index:5;padding:9px 8px;border-right:1px solid #e6ebf1;border-bottom:1px solid #dfe6ef;background:#f8fafc;color:#61728b;font-size:8.5px;font-weight:700;text-transform:uppercase;white-space:nowrap}
+    .fd-import-grid th:first-child{left:0;z-index:7}.fd-import-grid td:first-child{position:sticky;left:0;z-index:3;background:#f8fafc}
+    .fd-import-grid td{height:39px;padding:0;border-right:1px solid #edf1f5;border-bottom:1px solid #edf1f5;background:#fff;vertical-align:middle}
+    .fd-import-row-no{width:46px;min-width:46px;text-align:center;color:#8390a4;font-size:9px;font-weight:700}
+    .fd-import-cell{width:150px;min-width:150px;height:38px;padding:7px 8px;border:0!important;border-radius:0!important;outline:0!important;background:transparent!important;color:#263750;font-size:9px!important;box-shadow:none!important}
+    .fd-import-cell:focus{position:relative;z-index:2;box-shadow:inset 0 0 0 2px #74b824!important;background:#fbfff7!important}
+    .fd-import-cell.narrow{width:110px;min-width:110px}.fd-import-cell.wide{width:240px;min-width:240px}.fd-import-cell.medium{width:185px;min-width:185px}
+    select.fd-import-cell{padding-right:22px;cursor:pointer}
+    .fd-import-row-action{width:34px;height:30px;border:0;border-radius:6px;background:transparent;color:#8b97a7;cursor:pointer}.fd-import-row-action:hover{color:#b9444d;background:#fff0f1}
+    .fd-import-footer{padding:11px 14px;display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid var(--fd-border);background:#fbfcfd}
+    .fd-import-summary{display:flex;gap:14px;flex-wrap:wrap;color:#6f7b90;font-size:9px}.fd-import-summary strong{color:#0b1933}
+    .fd-import-notice{margin-bottom:14px;padding:11px 13px;display:flex;align-items:flex-start;gap:9px;border:1px solid #dfe8d1;border-radius:9px;background:#f7fbf2;color:#52627a;font-size:9.5px;line-height:1.55}.fd-import-notice i{margin-top:1px;color:#5d971b;font-size:14px}
+    .fd-import-result{display:none;margin-top:14px}.fd-import-result.show{display:block}.fd-import-result-head{padding:12px 14px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--fd-border)}
+    .fd-import-result-title{margin:0;font-size:11px;color:#0b1933}.fd-import-result-list{max-height:360px;overflow:auto}
+    .fd-import-result-row{padding:10px 14px;display:grid;grid-template-columns:92px minmax(0,1fr);gap:10px;border-bottom:1px solid #f0f2f5;font-size:9px;line-height:1.5}
+    .fd-import-result-row.ok{background:#fbfef8}.fd-import-result-row.skip{background:#fffdf5}.fd-import-result-row.error{background:#fff8f8}
+    .fd-import-result-row.ok>span:first-child{color:#5d971b}.fd-import-result-row.skip>span:first-child{color:#8a6f22}.fd-import-result-row.error>span:first-child{color:#b9444d}
+    .fd-import-result-main strong{display:block;margin-bottom:2px;color:#0b1933;font-size:9.5px}.fd-import-result-main small{display:block;color:#6f7b90;font-size:8.5px}
+    .fd-import-existing{margin-top:6px;padding:7px 9px;border:1px solid #eadfb5;border-radius:6px;background:#fffaf0;color:#6d5a1f}.fd-import-existing strong{color:#5c4b16}
+    .fd-import-grid-result{min-width:210px;max-width:260px;white-space:normal!important;line-height:1.35}.fd-import-grid-result small{display:block;margin-top:3px;color:#77859a;font-size:8px}
+    .fd-import-row-state{display:inline-flex;align-items:center;gap:4px;padding:4px 6px;border-radius:5px;font-size:8px;font-weight:700}.fd-import-row-state.ok{color:#5d971b;background:#f0f8e5}.fd-import-row-state.skip{color:#8a6f22;background:#fff8dd}.fd-import-row-state.error{color:#b9444d;background:#fff0f1}.fd-import-row-state.pending{color:#65738a;background:#eef2f6}
+    .fd-import-grid tr.import-ok td{background:#fbfef9}.fd-import-grid tr.import-skip td{background:#fffdf6}.fd-import-grid tr.import-error td{background:#fff8f8}
+    .fd-import-leave-copy{color:#52627a;font-size:10px;line-height:1.6}.fd-import-leave-copy strong{color:#0b1933}.fd-import-leave-warning{margin-top:10px;padding:9px 10px;border:1px solid #f1d5a3;border-radius:8px;background:#fff9ed;color:#7b5b1c;font-size:9px}
+    .fd-import-hidden{display:none!important}
+    @media(max-width:767.98px){.fd-import-header{flex-direction:column}.fd-import-actions{width:100%}.fd-import-actions .fd-team-button{flex:1}.fd-import-help{width:100%;margin-left:0}.fd-import-footer{align-items:flex-start;flex-direction:column}.fd-import-footer .fd-team-button{width:100%}}
+
   </style>
 </head>
 <body>
@@ -4384,237 +4380,108 @@ if ($productStatsTenantId > 0 && $productStatsPdo instanceof PDO) {
     <main class="fieldplx-main-content">
       <div class="fieldplx-content-wrapper">
         <div class="fd-dashboard">
-          <section class="fd-product-header">
-            <div>
-              <h1 class="fd-product-title">Products</h1>
-              <p class="fd-product-subtitle">Manage product master details, base pricing, markup, selling price and tax used across quotations, jobs and invoices.</p>
-            </div>
-            <div class="fd-product-header-actions">
-              <a class="fd-team-button primary" href="product-form.php"><i class="bi bi-plus-lg"></i> Add Product</a>
-              <div class="fd-product-more" id="productMoreActions">
-                <button type="button" class="fd-team-button" id="productMoreActionsButton" aria-expanded="false"><i class="bi bi-three-dots"></i> More Actions <i class="bi bi-chevron-down"></i></button>
-                <div class="fd-product-more-menu" role="menu" aria-label="Product actions">
-                  <a class="fd-product-more-item" href="product-import.php" role="menuitem"><i class="bi bi-upload"></i> Import Products</a>
-                  <button class="fd-product-more-item" type="button" id="exportProductsButton" role="menuitem"><i class="bi bi-download"></i> Export Products</button>
-                </div>
-              </div>
-            </div>
+          <section class="fd-import-header">
+            <div><h1 class="fd-import-title">Product Import</h1><p class="fd-import-subtitle">Enter product master data directly in the spreadsheet-style grid, paste rows from Excel, or load a CSV before importing into FieldPlx.</p></div>
+            <div class="fd-import-actions"><a class="fd-team-button" href="products.php" data-import-leave-safe="1"><i class="bi bi-arrow-left"></i> Back to Products</a><button class="fd-team-button" type="button" id="sampleButton"><i class="bi bi-filetype-csv"></i> Sample CSV</button><button class="fd-team-button" type="button" id="exportGridButton"><i class="bi bi-download"></i> Export Grid CSV</button></div>
           </section>
 
-          <section class="row g-3 fd-product-summary">
-            <div class="col-xl-3 col-md-6">
-              <article class="fd-product-summary-card">
-                <h2 class="fd-product-summary-title">Overview</h2>
-                <div class="fd-product-overview-list">
-                  <div class="fd-product-overview-row"><span class="fd-product-overview-dot total"></span><span>Total Products</span><strong><?= (int)$productStats['total'] ?></strong></div>
-                  <div class="fd-product-overview-row"><span class="fd-product-overview-dot active"></span><span>Active</span><strong><?= (int)$productStats['active'] ?></strong></div>
-                  <div class="fd-product-overview-row"><span class="fd-product-overview-dot inactive"></span><span>Inactive</span><strong><?= (int)$productStats['inactive'] ?></strong></div>
-                  <div class="fd-product-overview-row"><span class="fd-product-overview-dot archived"></span><span>Archived</span><strong><?= (int)$productStats['archived'] ?></strong></div>
-                </div>
-              </article>
-            </div>
-            <div class="col-xl-3 col-md-6">
-              <article class="fd-product-summary-card">
-                <span class="fd-product-summary-arrow"><i class="bi bi-arrow-up-right"></i></span>
-                <h2 class="fd-product-summary-title">Total Products</h2>
-                <span class="fd-product-summary-period">All product master records</span>
-                <div class="fd-product-summary-number-row"><strong class="fd-product-summary-value"><?= (int)$productStats['total'] ?></strong></div>
-              </article>
-            </div>
-            <div class="col-xl-3 col-md-6">
-              <article class="fd-product-summary-card">
-                <span class="fd-product-summary-arrow"><i class="bi bi-arrow-up-right"></i></span>
-                <h2 class="fd-product-summary-title">Active Products</h2>
-                <span class="fd-product-summary-period">Available for current use</span>
-                <div class="fd-product-summary-number-row"><strong class="fd-product-summary-value"><?= (int)$productStats['active'] ?></strong></div>
-              </article>
-            </div>
-            <div class="col-xl-3 col-md-6">
-              <article class="fd-product-summary-card">
-                <span class="fd-product-summary-arrow"><i class="bi bi-arrow-up-right"></i></span>
-                <h2 class="fd-product-summary-title">Inactive Products</h2>
-                <span class="fd-product-summary-period">Temporarily unavailable</span>
-                <div class="fd-product-summary-number-row"><strong class="fd-product-summary-value"><?= (int)$productStats['inactive'] ?></strong></div>
-              </article>
-            </div>
-          </section>
+          <div class="fd-import-notice"><i class="bi bi-info-circle"></i><div><strong>Bulk entry:</strong> paste rows copied from Excel directly into any grid cell. Required field is <strong>Product Name</strong>. If a non-empty SKU already exists for this tenant, that row is skipped. Selling Price is calculated automatically from Base Price + Markup.</div></div>
 
-          <section class="fd-card fd-teams-card" id="productCard">
-            <div class="fd-teams-toolbar">
-              <div class="fd-team-search"><i class="bi bi-search"></i><input type="search" id="searchInput" placeholder="Search product, SKU or description" autocomplete="off"></div>
-              <select class="fd-team-filter" id="statusFilter">
-                <option value="">All Status</option>
-                <option value="active">Active</option>
-                <option value="inactive">Inactive</option>
-                <option value="archived">Archived</option>
-              </select>
-              <button type="button" class="fd-team-button" id="clearBtn"><i class="bi bi-x-circle"></i> Clear</button>
-              <div class="fd-team-toolbar-spacer"></div>
-              <select class="fd-team-filter" id="perPage">
-                <option value="10">10 / page</option>
-                <option value="25">25 / page</option>
-                <option value="50">50 / page</option>
-                <option value="100">100 / page</option>
-              </select>
+          <section class="fd-import-card">
+            <div class="fd-import-toolbar">
+              <input class="fd-import-hidden" type="file" id="csvFile" accept=".csv,text/csv">
+              <button class="fd-team-button" type="button" onclick="document.getElementById('csvFile').click()"><i class="bi bi-upload"></i> Load CSV</button>
+              <button class="fd-team-button" type="button" id="addRowButton"><i class="bi bi-plus"></i> Add Row</button>
+              <button class="fd-team-button" type="button" id="addTenRowsButton"><i class="bi bi-plus-square"></i> Add 10 Rows</button>
+              <button class="fd-team-button danger" type="button" id="clearGridButton"><i class="bi bi-trash3"></i> Clear Grid</button>
+              <span class="fd-import-help">Tip: Copy rows from Excel and paste directly into the first cell.</span>
             </div>
-
-            <div class="fd-team-table-wrap">
-              <table class="fd-team-table fd-product-table">
-                <thead>
-                  <tr>
-                    <th>S/No</th><th>Product</th><th>Unit</th><th>Base Price</th><th>Markup</th><th>Selling Price</th><th>Tax</th><th>Status</th><th>Updated</th><th>Action</th>
-                  </tr>
-                </thead>
-                <tbody id="productRows"><tr><td colspan="10" class="fd-team-empty">Loading products...</td></tr></tbody>
+            <div class="fd-import-grid-wrap">
+              <table class="fd-import-grid">
+                <thead><tr><th>#</th><th>Import Result</th><th>SKU</th><th>Product Name *</th><th>Description</th><th>Unit</th><th>Base Price</th><th>Markup Type</th><th>Markup Value</th><th>Tax Percent</th><th>Status</th><th>Action</th></tr></thead>
+                <tbody id="bulkGridBody"></tbody>
               </table>
             </div>
+            <div class="fd-import-footer">
+              <div class="fd-import-summary"><span>Total grid rows: <strong id="rowCount">0</strong></span><span>Ready to import: <strong id="readyCount">0</strong></span></div>
+              <button class="fd-team-button primary" type="button" id="saveImportButton"><i class="bi bi-database-add"></i> Import Products</button>
+            </div>
+          </section>
 
-            <div class="fd-team-pagination">
-              <span id="countText">Showing 0 products</span>
-              <div class="fd-team-pagination-actions">
-                <button type="button" class="fd-team-button" id="prevPage"><i class="bi bi-chevron-left"></i></button>
-                <span id="pageText" style="min-width:72px;text-align:center">Page 1 of 1</span>
-                <button type="button" class="fd-team-button" id="nextPage"><i class="bi bi-chevron-right"></i></button>
+          <section class="fd-import-card fd-import-result" id="importResult">
+            <div class="fd-import-result-head"><h2 class="fd-import-result-title">Import Result</h2><span id="resultSummary"></span></div>
+            <div class="fd-import-result-list" id="importResultList"></div>
+          </section>
+
+          <div class="modal fade" id="leavePageModal" tabindex="-1" aria-labelledby="leavePageModalTitle" aria-hidden="true">
+            <div class="modal-dialog modal-dialog-centered">
+              <div class="modal-content" style="border:1px solid #dfe5ec;border-radius:12px;overflow:hidden;box-shadow:0 24px 65px rgba(0,17,49,.24)">
+                <div class="modal-header" style="background:#fbfcfd;border-bottom:1px solid var(--fd-border)"><div><h5 class="modal-title" id="leavePageModalTitle" style="font-size:12px;color:#0b1933">Unsaved product import data</h5><div style="margin-top:3px;color:#6f7b90;font-size:8.5px">Your spreadsheet contains changes that may be lost.</div></div><button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button></div>
+                <div class="modal-body"><div class="fd-import-leave-copy"><strong>Are you sure you want to leave or refresh this page?</strong><br>Any product rows that have not been successfully imported remain only in this browser page.</div><div class="fd-import-leave-warning"><i class="bi bi-exclamation-triangle me-1"></i> Export the grid as CSV first if you want to keep a backup.</div></div>
+                <div class="modal-footer" style="background:#fbfcfd;border-top:1px solid var(--fd-border)"><button type="button" class="fd-team-button" data-bs-dismiss="modal">Stay on Page</button><button type="button" class="fd-team-button danger" id="confirmLeaveButton"><i class="bi bi-box-arrow-right"></i> Leave Anyway</button></div>
               </div>
             </div>
-          </section>
+          </div>
+
+          <div class="fd-team-toast info" id="toast"><span class="fd-team-toast-message" id="toastMessage">Notification</span><button type="button" class="fd-team-toast-close" id="toastClose"><i class="bi bi-x"></i></button></div>
         </div>
-
-        <div class="fd-team-modal-backdrop" id="archiveModal" aria-hidden="true">
-          <section class="fd-team-modal fd-team-confirm" role="dialog" aria-modal="true">
-            <div class="fd-team-modal-header">
-              <span class="fd-team-modal-icon"><i class="bi bi-archive"></i></span>
-              <div class="fd-team-modal-heading"><h3>Archive Product</h3><p>Existing historical records will remain unchanged.</p></div>
-              <button type="button" class="fd-team-modal-close" data-close-archive><i class="bi bi-x-lg"></i></button>
-            </div>
-            <div class="fd-team-modal-body">Archive <strong id="archiveName">this product</strong>? The product will no longer appear in active product selections.</div>
-            <div class="fd-team-modal-footer">
-              <button type="button" class="fd-team-button" data-close-archive>Cancel</button>
-              <button type="button" class="fd-team-button danger" id="confirmArchiveBtn"><span class="fd-team-loader"></span><i class="bi bi-archive"></i> Archive</button>
-            </div>
-          </section>
-        </div>
-
-        <div class="fd-team-toast info" id="productsToast"><span class="fd-team-toast-message" id="productsToastMessage">Notification</span><button type="button" class="fd-team-toast-close" id="productsToastClose"><i class="bi bi-x"></i></button></div>
-
-        <script>
-          (function () {
-            'use strict';
-            var csrfToken = <?= json_encode($csrfToken) ?>;
-            var basePath = <?= json_encode(rtrim(dirname($_SERVER['SCRIPT_NAME']), '/\\')) ?>;
-            var apiUrl = basePath + '/api/products.php';
-            var state = {page:1, perPage:10, search:'', status:'', pages:1, total:0};
-            var currency = {symbol:'', position:'before', decimals:2};
-            var searchTimer = null, toastTimer = null, archiveId = 0;
-            var tableBody = document.getElementById('productRows');
-            var archiveModal = document.getElementById('archiveModal');
-            var toast = document.getElementById('productsToast');
-            var toastMessage = document.getElementById('productsToastMessage');
-
-            function el(id){ return document.getElementById(id); }
-            function esc(v){ return String(v == null ? '' : v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;'); }
-            function notify(type,msg){ if(toastTimer) clearTimeout(toastTimer); toast.className='fd-team-toast '+(type||'info')+' show'; toastMessage.textContent=msg||'Notification'; toastTimer=setTimeout(function(){ toast.classList.remove('show'); },3000); }
-            function loading(button,on){ if(!button) return; button.disabled=!!on; button.classList.toggle('loading',!!on); }
-            function request(payload){ var data=new FormData(); Object.keys(payload).forEach(function(k){data.append(k,payload[k]);}); data.append('csrf_token',csrfToken); return fetch(apiUrl,{method:'POST',body:data,credentials:'same-origin',cache:'no-store',headers:{'X-Requested-With':'XMLHttpRequest','Accept':'application/json'}}).then(function(r){return r.text().then(function(raw){var d,t=String(raw||'').trim();try{d=t?JSON.parse(t):{}}catch(e){throw new Error(t.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim()||('Invalid server response. HTTP '+r.status));}if(!r.ok||!d.success)throw new Error(d.message||('Request failed. HTTP '+r.status));return d;});}); }
-            function money(v){ var n=Number(v||0),amount=n.toLocaleString(undefined,{minimumFractionDigits:currency.decimals,maximumFractionDigits:currency.decimals}); if(!currency.symbol)return amount; return currency.position==='after'?amount+' '+currency.symbol:currency.symbol+' '+amount; }
-            function markupText(r){ var value=Number(r.markup_value||0); return String(r.markup_type)==='fixed' ? money(value) : value.toFixed(2)+'%'; }
-            function render(data){
-              currency=data.currency||currency;
-              var pg=data.pagination||{};
-              state.page=Number(pg.page||1); state.pages=Number(pg.pages||1); state.total=Number(pg.total||0);
-              el('countText').textContent=state.total?('Showing '+Number(pg.from||0)+'-'+Number(pg.to||0)+' of '+state.total+' products'):'Showing 0 products';
-              el('pageText').textContent='Page '+state.page+' of '+state.pages;
-              el('prevPage').disabled=state.page<=1; el('nextPage').disabled=state.page>=state.pages;
-              var rows=data.products||[];
-              if(!rows.length){ tableBody.innerHTML='<tr><td colspan="10" class="fd-team-empty">No products found for the selected filters.</td></tr>'; return; }
-              tableBody.innerHTML=rows.map(function(r,i){
-                var sku=r.sku?esc(r.sku):'No SKU';
-                var desc=r.description?'<small title="'+esc(r.description)+'">'+esc(r.description)+'</small>':'';
-                var updated=r.updated_display||r.created_display||'-';
-                var archiveButton=String(r.status)==='archived'?'':'<button type="button" class="fd-team-icon-button danger" data-archive="'+Number(r.id)+'" data-name="'+esc(r.name)+'" title="Archive"><i class="bi bi-archive"></i></button>';
-                return '<tr><td>'+((state.page-1)*state.perPage+i+1)+'</td>'+ 
-                  '<td><div class="fd-team-name fd-product-name"><span class="fd-team-name-icon"><i class="bi bi-box-seam"></i></span><span><strong>'+esc(r.name)+'</strong><small>'+sku+'</small>'+desc+'</span></div></td>'+ 
-                  '<td>'+esc(r.unit_name||'unit')+'</td>'+ 
-                  '<td class="fd-product-money">'+money(r.base_unit_price)+'</td>'+ 
-                  '<td><span class="fd-product-markup">'+esc(markupText(r))+'</span></td>'+ 
-                  '<td class="fd-product-money">'+money(r.selling_price)+'</td>'+ 
-                  '<td>'+Number(r.tax_percent||0).toFixed(2)+'%</td>'+ 
-                  '<td><span class="fd-product-status '+esc(r.status)+'">'+esc(String(r.status||'').replace(/_/g,' '))+'</span></td>'+ 
-                  '<td>'+esc(updated)+'</td>'+ 
-                  '<td><div class="fd-team-actions-cell"><a class="fd-team-icon-button" href="product-form.php?id='+Number(r.id)+'" title="Edit"><i class="bi bi-pencil"></i></a>'+archiveButton+'</div></td></tr>';
-              }).join('');
-            }
-            function loadProducts(){ tableBody.innerHTML='<tr><td colspan="10" class="fd-team-empty">Loading products...</td></tr>'; request({action:'list',page:state.page,per_page:state.perPage,search:state.search,status:state.status}).then(render).catch(function(e){tableBody.innerHTML='<tr><td colspan="10" class="fd-team-empty">'+esc(e.message)+'</td></tr>';notify('error',e.message);}); }
-            function openArchive(id,name){ archiveId=Number(id||0);el('archiveName').textContent=name||'this product';archiveModal.classList.add('show');archiveModal.setAttribute('aria-hidden','false'); }
-            function closeArchive(){ archiveId=0;archiveModal.classList.remove('show');archiveModal.setAttribute('aria-hidden','true'); }
-
-
-            var moreActions = el('productMoreActions');
-            var moreActionsButton = el('productMoreActionsButton');
-            function closeMoreActions(){
-              if(!moreActions) return;
-              moreActions.classList.remove('open');
-              if(moreActionsButton) moreActionsButton.setAttribute('aria-expanded','false');
-            }
-            if(moreActionsButton){
-              moreActionsButton.onclick=function(e){
-                e.stopPropagation();
-                var open=!moreActions.classList.contains('open');
-                closeMoreActions();
-                if(open){ moreActions.classList.add('open'); moreActionsButton.setAttribute('aria-expanded','true'); }
-              };
-            }
-            document.addEventListener('click',function(e){ if(moreActions && !moreActions.contains(e.target)) closeMoreActions(); });
-
-            function csvCell(value){
-              var text=String(value==null?'':value);
-              return /[",\r\n]/.test(text) ? '"'+text.replace(/"/g,'""')+'"' : text;
-            }
-            function downloadCsv(filename, rows){
-              var csv='\ufeff'+rows.map(function(row){return row.map(csvCell).join(',');}).join('\r\n');
-              var blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
-              var url=URL.createObjectURL(blob),a=document.createElement('a');
-              a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url);
-            }
-            if(el('exportProductsButton')){
-              el('exportProductsButton').onclick=function(){
-                var btn=this;
-                closeMoreActions();
-                loading(btn,true);
-                request({action:'export',search:state.search,status:state.status}).then(function(d){
-                  var rows=[['SKU','Product Name','Description','Unit','Base Price','Markup Type','Markup Value','Selling Price','Tax Percent','Status','Created','Updated']];
-                  (d.products||[]).forEach(function(r){
-                    rows.push([r.sku||'',r.name||'',r.description||'',r.unit_name||'unit',r.base_unit_price||0,r.markup_type||'percentage',r.markup_value||0,r.selling_price||0,r.tax_percent||0,r.status||'active',r.created_at||'',r.updated_at||'']);
-                  });
-                  downloadCsv('products-'+new Date().toISOString().slice(0,10)+'.csv',rows);
-                  notify('success',(d.products||[]).length+' product(s) exported.');
-                }).catch(function(e){notify('error',e.message);}).finally(function(){loading(btn,false);});
-              };
-            }
-
-            el('productsToastClose').onclick=function(){toast.classList.remove('show');};
-            el('clearBtn').onclick=function(){state.page=1;state.search='';state.status='';el('searchInput').value='';el('statusFilter').value='';loadProducts();};
-            el('searchInput').oninput=function(e){if(searchTimer)clearTimeout(searchTimer);searchTimer=setTimeout(function(){state.search=e.target.value.trim();state.page=1;loadProducts();},250);};
-            el('statusFilter').onchange=function(e){state.status=e.target.value;state.page=1;loadProducts();};
-            el('perPage').onchange=function(e){state.perPage=Number(e.target.value||10);state.page=1;loadProducts();};
-            el('prevPage').onclick=function(){if(state.page>1){state.page--;loadProducts();}};
-            el('nextPage').onclick=function(){if(state.page<state.pages){state.page++;loadProducts();}};
-
-            tableBody.onclick=function(e){var b=e.target.closest('[data-archive]');if(!b)return;openArchive(Number(b.getAttribute('data-archive')),b.getAttribute('data-name'));};
-            document.addEventListener('click',function(e){if(e.target.closest('[data-close-archive]'))closeArchive();});
-            archiveModal.onclick=function(e){if(e.target===archiveModal)closeArchive();};
-            document.addEventListener('keydown',function(e){if(e.key==='Escape')closeArchive();});
-
-            el('confirmArchiveBtn').onclick=function(){if(!archiveId)return;var b=this;loading(b,true);request({action:'archive',id:archiveId}).then(function(d){closeArchive();notify('success',d.message);setTimeout(function(){window.location.reload();},350);}).catch(function(e){notify('error',e.message);}).finally(function(){loading(b,false);});};
-
-            loadProducts();
-          })();
-        </script>
       </div>
     </main>
   </div>
-
   <?php require_once __DIR__ . '/includes/footer.php'; ?>
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script>
+(function(){
+'use strict';
+var csrfToken=<?= json_encode($csrfToken) ?>;
+var basePath=<?= json_encode(rtrim(dirname($_SERVER['SCRIPT_NAME']), '/\\')) ?>;
+var apiUrl=basePath+'/api/products.php';
+var columns=[
+ ['sku','SKU','text'],
+ ['name','Product Name *','text'],
+ ['description','Description','text'],
+ ['unit_name','Unit','text'],
+ ['base_unit_price','Base Price','number'],
+ ['markup_type','Markup Type','select',['percentage','fixed']],
+ ['markup_value','Markup Value','number'],
+ ['tax_percent','Tax Percent','number'],
+ ['status','Status','select',['active','inactive','archived']]
+];
+var rows=[],toastTimer=null,rowResults={},isDirty=false,pendingLeaveAction=null,leaveModal=null;
+function el(id){return document.getElementById(id)}
+function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;').replace(/'/g,'&#039;')}
+function notify(type,msg){if(toastTimer)clearTimeout(toastTimer);var t=el('toast');t.className='fd-team-toast '+(type||'info')+' show';el('toastMessage').textContent=msg||'Notification';toastTimer=setTimeout(function(){t.classList.remove('show')},3200)}
+function parseResponse(r){return r.text().then(function(raw){var d,text=String(raw||'').trim();try{d=text?JSON.parse(text):{}}catch(e){throw new Error(text.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim()||'Invalid server response.')}if(!r.ok||!d.success)throw new Error(d.message||('Request failed. HTTP '+r.status));return d})}
+function request(fd){fd.append('csrf_token',csrfToken);return fetch(apiUrl,{method:'POST',body:fd,credentials:'same-origin',cache:'no-store',headers:{'X-Requested-With':'XMLHttpRequest','Accept':'application/json'}}).then(parseResponse)}
+function emptyRow(){return {sku:'',name:'',description:'',unit_name:'unit',base_unit_price:'0.00',markup_type:'percentage',markup_value:'0.00',tax_percent:'0.00',status:'active'}}
+function ensureRows(count){while(rows.length<count)rows.push(emptyRow())}
+function cellClass(key){if(key==='description')return ' wide';if(key==='name')return ' medium';if(key==='markup_type'||key==='status'||key==='unit_name')return ' narrow';return ''}
+function render(){var body=el('bulkGridBody'),h='';rows.forEach(function(r,ri){var rr=rowResults[ri+1]||null,rowCls=rr?(rr.status==='Imported'?' import-ok':(rr.status==='Existing'?' import-skip':' import-error')):'';h+='<tr class="'+rowCls+'" data-row="'+ri+'"><td class="fd-import-row-no">'+(ri+1)+'</td>';var badgeCls=rr?(rr.status==='Imported'?'ok':(rr.status==='Existing'?'skip':'error')):'pending',badgeText=rr?(rr.status==='Existing'?'Already Exists':rr.status):'Not Checked';h+='<td class="fd-import-grid-result"><span class="fd-import-row-state '+badgeCls+'">'+esc(badgeText)+'</span>'+(rr&&rr.message?'<small>'+esc(rr.message)+'</small>':'')+'</td>';columns.forEach(function(c,ci){var key=c[0],type=c[2],cls=cellClass(key);if(type==='select'){h+='<td><select class="fd-import-cell'+cls+'" data-row="'+ri+'" data-col="'+ci+'" data-key="'+key+'">';c[3].forEach(function(o){h+='<option value="'+esc(o)+'"'+(String(r[key])===String(o)?' selected':'')+'>'+esc(o)+'</option>'});h+='</select></td>'}else{h+='<td><input class="fd-import-cell'+cls+'" type="'+(type==='number'?'number':'text')+'" '+(type==='number'?'step="0.01" min="0" ':'')+'data-row="'+ri+'" data-col="'+ci+'" data-key="'+key+'" value="'+esc(r[key])+'"></td>'}});h+='<td><button type="button" class="fd-import-row-action" data-remove="'+ri+'" title="Remove row"><i class="bi bi-trash"></i></button></td></tr>'});body.innerHTML=h;updateCount()}
+function updateCount(){var valid=rows.filter(function(r){return String(r.name||'').trim()!==''}).length;el('rowCount').textContent=rows.length;el('readyCount').textContent=valid}
+function markDirty(){isDirty=true}
+function syncCell(target){var ri=Number(target.dataset.row),key=target.dataset.key;if(!rows[ri])return;rows[ri][key]=target.value;delete rowResults[ri+1];markDirty();updateCount()}
+function addRows(n,dirty){n=Number(n||1);for(var i=0;i<n;i++)rows.push(emptyRow());if(dirty)markDirty();render()}
+function downloadText(name,text){var blob=new Blob(['\ufeff'+text],{type:'text/csv;charset=utf-8'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();URL.revokeObjectURL(url)}
+function gridData(){return rows.filter(function(r){return String(r.name||'').trim()!==''||String(r.sku||'').trim()!==''}).map(function(r){var out={};columns.forEach(function(c){out[c[1].replace(' *','')]=r[c[0]]||''});return out})}
+function normalizeImported(data){var map={};columns.forEach(function(c){map[c[1].replace(' *','').toLowerCase()]=c[0];map[c[0].toLowerCase()]=c[0]});map['product name']='name';map['base unit price']='base_unit_price';map['tax %']='tax_percent';var out=[];(data||[]).forEach(function(src){var r=emptyRow(),has=false;Object.keys(src||{}).forEach(function(k){var key=map[String(k).trim().toLowerCase()];if(key){r[key]=String(src[k]==null?'':src[k]).trim();if(r[key]!=='')has=true}});if(has)out.push(r)});return out}
+function showResult(d){var box=el('importResult'),list=el('importResultList'),h='';rowResults={};(d.results||[]).forEach(function(x){rowResults[Number(x.row||0)]=x;var cls=x.status==='Imported'?'ok':(x.status==='Existing'?'skip':'error'),label=x.status==='Existing'?'Already Exists':x.status,entered=x.input||{},existing=x.existing||null;h+='<div class="fd-import-result-row '+cls+'"><span>'+esc(label)+'</span><div class="fd-import-result-main"><strong>Row '+Number(x.row||0)+' · '+esc(entered.name||'Unnamed product')+'</strong><small>'+esc(x.message||'')+'</small>';if(existing){h+='<div class="fd-import-existing"><strong>Existing Product #'+Number(existing.id||0)+': '+esc(existing.name||'-')+'</strong><br>SKU: '+esc(existing.sku||'-')+' · Status: '+esc(existing.status||'-')+'</div>'}h+='</div></div>'});list.innerHTML=h||'<div class="fd-import-result-row"><span>Done</span><div class="fd-import-result-main"><small>No row details returned.</small></div></div>';el('resultSummary').textContent=Number(d.imported||0)+' imported · '+Number(d.existing||0)+' already exists · '+Number(d.failed||0)+' failed';box.classList.add('show');render();isDirty=!(Number(d.failed||0)===0&&Number(d.existing||0)===0);box.scrollIntoView({behavior:'smooth',block:'start'})}
+el('bulkGridBody').addEventListener('input',function(e){if(e.target.matches('.fd-import-cell'))syncCell(e.target)});el('bulkGridBody').addEventListener('change',function(e){if(e.target.matches('.fd-import-cell'))syncCell(e.target)});
+el('bulkGridBody').addEventListener('click',function(e){var b=e.target.closest('[data-remove]');if(!b)return;var i=Number(b.dataset.remove);rows.splice(i,1);rowResults={};if(!rows.length)rows.push(emptyRow());markDirty();render()});
+el('bulkGridBody').addEventListener('paste',function(e){var target=e.target.closest('.fd-import-cell');if(!target)return;var text=(e.clipboardData||window.clipboardData).getData('text');if(text.indexOf('\t')<0&&text.indexOf('\n')<0&&text.indexOf('\r')<0)return;e.preventDefault();var matrix=text.replace(/\r/g,'').split('\n').filter(function(x,i,a){return !(i===a.length-1&&x==='')}).map(function(line){return line.split('\t')});var sr=Number(target.dataset.row),sc=Number(target.dataset.col);ensureRows(sr+matrix.length);matrix.forEach(function(line,rOffset){line.forEach(function(v,cOffset){var c=columns[sc+cOffset];if(c)rows[sr+rOffset][c[0]]=String(v||'').trim()})});render();var next=el('bulkGridBody').querySelector('[data-row="'+sr+'"][data-col="'+sc+'"]');if(next)next.focus();rowResults={};markDirty();notify('success','Pasted '+matrix.length+' row(s) from spreadsheet.')});
+el('addRowButton').onclick=function(){addRows(1,true)};el('addTenRowsButton').onclick=function(){addRows(10,true)};el('clearGridButton').onclick=function(){rows=[];rowResults={};addRows(10,false);isDirty=false;el('importResult').classList.remove('show')};
+el('csvFile').onchange=function(e){var file=e.target.files&&e.target.files[0];if(!file)return;Papa.parse(file,{header:true,skipEmptyLines:true,complete:function(res){var imported=normalizeImported(res.data||[]);if(!imported.length){notify('warning','No matching product columns were found in the CSV.');return}rows=imported;rowResults={};ensureRows(Math.max(10,rows.length));markDirty();render();notify('success',imported.length+' CSV row(s) loaded into the grid.')}})};
+el('exportGridButton').onclick=function(){var data=gridData();if(!data.length){notify('warning','Enter product data before exporting.');return}downloadText('product-import-grid-'+new Date().toISOString().slice(0,10)+'.csv',Papa.unparse(data))};
+el('sampleButton').onclick=function(){var sample=[{'SKU':'PRD-001','Product Name':'Sample Filter','Description':'Sample product','Unit':'each','Base Price':'100.00','Markup Type':'percentage','Markup Value':'25.00','Tax Percent':'18.00','Status':'active'}];downloadText('product-import-sample.csv',Papa.unparse(sample));notify('success','Sample CSV generated successfully.')};
+el('saveImportButton').onclick=function(){var payload=rows.filter(function(r){return String(r.name||'').trim()!==''});if(!payload.length){notify('warning','Enter at least one Product Name.');return}var btn=this,old=btn.innerHTML,fd=new FormData();fd.append('action','import');fd.append('rows_json',JSON.stringify(payload));btn.disabled=true;btn.innerHTML='<span class="spinner-border spinner-border-sm"></span> Importing...';request(fd).then(function(d){notify('success',d.message);showResult(d)}).catch(function(e){notify('error',e.message)}).finally(function(){btn.disabled=false;btn.innerHTML=old})};
+el('toastClose').onclick=function(){el('toast').classList.remove('show')};
+function askBeforeLeave(action){if(!isDirty){action();return}pendingLeaveAction=action;if(!leaveModal)leaveModal=new bootstrap.Modal(el('leavePageModal'),{backdrop:'static',keyboard:false});leaveModal.show()}
+el('confirmLeaveButton').onclick=function(){isDirty=false;var action=pendingLeaveAction;pendingLeaveAction=null;if(leaveModal)leaveModal.hide();setTimeout(function(){if(action)action()},80)};
+document.addEventListener('click',function(e){var a=e.target.closest('a[href]');if(!a||a.dataset.importLeaveSafe==='1'||a.target==='_blank'||a.hasAttribute('download'))return;var href=a.getAttribute('href');if(!href||href.charAt(0)==='#'||href.toLowerCase().indexOf('javascript:')===0)return;if(!isDirty)return;e.preventDefault();askBeforeLeave(function(){window.location.href=a.href})},true);
+document.addEventListener('keydown',function(e){var reload=(e.key==='F5'||((e.ctrlKey||e.metaKey)&&String(e.key).toLowerCase()==='r'));if(!reload||!isDirty)return;e.preventDefault();askBeforeLeave(function(){window.location.reload()})});
+window.addEventListener('beforeunload',function(e){if(!isDirty)return;e.preventDefault();e.returnValue=''});
+rows=[];addRows(10,false);
+})();
+</script>
 </body>
 </html>
