@@ -1,9 +1,14 @@
-  <footer class="site-footer">
+ <footer class="site-footer">
     <div class="container-fluid site-container">
       <div class="row align-items-center g-4">
         <div class="col-lg-5">
           <img src="site-assets/logo.png" alt="FieldPlx" class="footer-logo">
           <p>FieldPlx is the all-in-one field service management software<br class="d-none d-md-block"> built for small businesses to work smarter and grow faster.</p>
+          <div class="footer-legal-links">
+            <a href="privacy-policy.php">Privacy Policy</a>
+            <span aria-hidden="true">•</span>
+            <a href="terms-of-service.php">Terms of Service</a>
+          </div>
           <small>© 2024 CorePlx. All rights reserved.</small>
         </div>
         <div class="col-lg-4 footer-contact">
@@ -23,6 +28,30 @@
         </div>
       </div>
     </div>
+
+  <style>
+    .footer-legal-links {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin: 10px 0 7px;
+      font-size: 12px;
+    }
+    .footer-legal-links a {
+      color: rgba(255,255,255,.88);
+      text-decoration: none;
+      transition: color .2s ease;
+    }
+    .footer-legal-links a:hover {
+      color: #63c846;
+      text-decoration: underline;
+    }
+    .footer-legal-links span {
+      color: rgba(255,255,255,.42);
+    }
+  </style>
+
   </footer>
 
   <script>
