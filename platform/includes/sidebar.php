@@ -356,6 +356,11 @@ body.fp-sidebar-collapsed .fp-sidebar-user {
 
             <div class="fp-sidebar-section">Platform</div>
 
+            <a href="enquiries.php" class="fp-sidebar-link">
+                <span class="fp-sidebar-link-icon"><i class="bi bi-phone"></i></span>
+                <span class="fp-sidebar-link-text">Enquiry</span>
+            </a>
+
             <div class="fp-sidebar-menu <?= fpMenuOpen($tenantMenuPages, $activePage); ?>">
                 <button type="button"
                     class="fp-sidebar-link fp-sidebar-menu-toggle <?= in_array($activePage, $tenantMenuPages, true) ? 'active' : ''; ?>">
