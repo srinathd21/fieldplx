@@ -908,14 +908,16 @@ include __DIR__ . '/topbar.php';
         opacity: .65;
         cursor: not-allowed
     }
-    .fp-web-modal {
-    z-index: 2147483000 !important;
-}
 
-.fp-web-modal-card {
-    position: relative;
-    z-index: 2147483001;
-}
+    .fp-web-modal {
+        z-index: 2147483000 !important;
+    }
+
+    .fp-web-modal-card {
+        position: relative;
+        z-index: 2147483001;
+    }
+
     @media(max-width:600px) {
         .fp-web-grid {
             grid-template-columns: 1fr
@@ -1184,20 +1186,19 @@ include __DIR__ . '/topbar.php';
                             name="email" maxlength="190" required></div>
                     <div class="fp-web-field"><label>Phone</label><input class="form-control" type="tel" name="phone"
                             maxlength="50"></div>
-                   <div class="fp-web-field full">
-    <label>Country *</label>
-    <select class="form-select" name="country_id" required>
-        <option value="">Select country</option>
+                    <div class="fp-web-field full">
+                        <label>Country *</label>
+                        <select class="form-select" name="country_id" required>
+                            <option value="">Select country</option>
 
-        <?php foreach ($trialCountries as $country): ?>
-            <option value="<?= (int)$country['id'] ?>"
-                <?= $country['name'] === 'United States' ? 'selected' : '' ?>>
-                <?= e($country['name']) ?>
-                <?= !empty($country['iso2']) ? ' (' . e($country['iso2']) . ')' : '' ?>
-            </option>
-        <?php endforeach; ?>
-    </select>
-</div>
+                            <?php foreach ($trialCountries as $country): ?>
+                                <option value="<?= (int) $country['id'] ?>" <?= $country['name'] === 'United States' ? 'selected' : '' ?>>
+                                    <?= e($country['name']) ?>
+                                    <?= !empty($country['iso2']) ? ' (' . e($country['iso2']) . ')' : '' ?>
+                                </option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
 
                 </div>
                 <div class="fp-web-actions"><button type="button" class="btn btn-outline-secondary"

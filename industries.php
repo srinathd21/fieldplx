@@ -1,239 +1,660 @@
 <?php
+/* Industries page v2 - corrected card image framing and mapping */
 $pageTitle = 'Industries - FieldPlx';
 include __DIR__ . '/topbar.php';
 ?>
 
 <style>
-:root{
-  --fp-navy:#071c2f;
-  --fp-navy-2:#0d2b45;
-  --fp-green:#43a914;
-  --fp-green-dark:#318f08;
-  --fp-text:#1c2c38;
-  --fp-muted:#66727c;
-  --fp-light:#f5f8fa;
-  --fp-border:#e2e8ec;
-}
+  .industries-page {
+    background: #fff;
+    color: #071c2f;
+  }
 
-.fp-industries-page{background:#fff;color:var(--fp-text)}
-.fp-industries-hero{
-  position:relative;
-  overflow:hidden;
-  padding:88px 0 76px;
-  background:
-    radial-gradient(circle at 88% 18%,rgba(67,169,20,.24),transparent 27%),
-    linear-gradient(135deg,#061a2c 0%,#0a2a45 58%,#0f3b59 100%);
-  color:#fff;
-}
-.fp-industries-hero:after{
-  content:"";
-  position:absolute;
-  inset:auto -120px -180px auto;
-  width:440px;
-  height:440px;
-  border-radius:50%;
-  border:70px solid rgba(255,255,255,.035);
-}
-.fp-industries-hero .container{position:relative;z-index:2}
-.fp-eyebrow{
-  display:inline-flex;
-  align-items:center;
-  gap:8px;
-  margin-bottom:16px;
-  padding:7px 12px;
-  border-radius:999px;
-  background:rgba(67,169,20,.14);
-  border:1px solid rgba(109,204,61,.35);
-  color:#9ee071;
-  font-size:.82rem;
-  font-weight:800;
-  letter-spacing:.06em;
-  text-transform:uppercase;
-}
-.fp-industries-hero h1{
-  max-width:760px;
-  margin:0 0 18px;
-  font-size:clamp(2.5rem,5.2vw,4.7rem);
-  font-weight:850;
-  line-height:1.02;
-  letter-spacing:-.045em;
-}
-.fp-industries-hero h1 span{color:#76cf3d}
-.fp-industries-hero p{
-  max-width:720px;
-  margin:0;
-  font-size:1.08rem;
-  line-height:1.75;
-  color:rgba(255,255,255,.78);
-}
-.fp-hero-actions{display:flex;flex-wrap:wrap;gap:12px;margin-top:28px}
-.fp-hero-actions .btn{border-radius:8px;font-weight:800;padding:12px 20px}
+  .industries-page .site-container {
+    max-width: 1460px;
+  }
 
-.fp-industries-main{padding:72px 0 84px;background:#f7f9fb}
-.fp-section-head{text-align:center;max-width:760px;margin:0 auto 34px}
-.fp-section-head .tag{color:var(--fp-green-dark);font-weight:800;text-transform:uppercase;font-size:.78rem;letter-spacing:.08em}
-.fp-section-head h2{margin:7px 0 10px;color:var(--fp-navy);font-size:clamp(2rem,3vw,2.9rem);font-weight:850;letter-spacing:-.035em}
-.fp-section-head p{margin:0;color:var(--fp-muted);line-height:1.7}
+  /* HERO - aligned with the index.php visual language */
+  .industries-hero {
+    position: relative;
+    min-height: 560px;
+    overflow: hidden;
+    background: #031321;
+    color: #fff;
+    display: flex;
+    align-items: center;
+  }
 
-.fp-industry-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:22px}
-.fp-industry-card{
-  overflow:hidden;
-  background:#fff;
-  border:1px solid var(--fp-border);
-  border-radius:18px;
-  box-shadow:0 10px 32px rgba(7,28,47,.07);
-  transition:transform .22s ease,box-shadow .22s ease,border-color .22s ease;
-}
-.fp-industry-card:hover{transform:translateY(-5px);box-shadow:0 18px 42px rgba(7,28,47,.12);border-color:#cfe0d0}
-.fp-industry-image{height:205px;overflow:hidden;background:#eaf0f3}
-.fp-industry-image img{width:100%;height:100%;object-fit:cover;display:block;transition:transform .35s ease}
-.fp-industry-card:hover .fp-industry-image img{transform:scale(1.035)}
-.fp-industry-body{padding:22px 22px 24px}
-.fp-industry-title{display:flex;align-items:center;gap:11px;margin-bottom:10px}
-.fp-industry-icon{width:42px;height:42px;flex:0 0 42px;border-radius:11px;display:grid;place-items:center;background:#edf8e8;color:var(--fp-green-dark);font-size:1.22rem}
-.fp-industry-title h3{margin:0;color:var(--fp-navy);font-weight:820;font-size:1.18rem}
-.fp-industry-body p{margin:0;color:var(--fp-muted);font-size:.93rem;line-height:1.65}
-.fp-points{display:flex;flex-wrap:wrap;gap:7px;margin-top:16px}
-.fp-points span{display:inline-flex;align-items:center;gap:5px;padding:6px 8px;border-radius:8px;background:#f5f8f9;color:#42525e;font-size:.76rem;font-weight:700}
-.fp-points i{color:var(--fp-green-dark)}
+  .industries-hero::before {
+    content: '';
+    position: absolute;
+    inset: 0 0 0 auto;
+    width: 66%;
+    background:
+      url('site-assets/industry/industry-01.png') 62% center / cover no-repeat;
+    z-index: 0;
+  }
 
-.fp-why{padding:76px 0;background:#fff}
-.fp-why-grid{display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center}
-.fp-why-copy h2{margin:0 0 16px;color:var(--fp-navy);font-size:clamp(2rem,3vw,3rem);font-weight:850;letter-spacing:-.035em}
-.fp-why-copy>p{color:var(--fp-muted);line-height:1.72;margin-bottom:24px}
-.fp-check-list{display:grid;grid-template-columns:1fr 1fr;gap:13px}
-.fp-check{display:flex;gap:10px;align-items:flex-start;padding:13px 14px;border:1px solid var(--fp-border);border-radius:12px;background:#fbfcfd}
-.fp-check i{color:var(--fp-green);font-size:1.15rem;margin-top:1px}
-.fp-check strong{display:block;color:var(--fp-navy);font-size:.91rem}
-.fp-check span{display:block;color:var(--fp-muted);font-size:.8rem;margin-top:2px}
-.fp-why-panel{padding:28px;border-radius:22px;background:linear-gradient(145deg,#071c2f,#0c3555);color:#fff;box-shadow:0 20px 50px rgba(7,28,47,.18)}
-.fp-why-panel h3{font-weight:820;margin:0 0 8px}
-.fp-why-panel>p{color:rgba(255,255,255,.72);margin-bottom:22px}
-.fp-metric-grid{display:grid;grid-template-columns:1fr 1fr;gap:13px}
-.fp-metric{padding:18px;border-radius:14px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1)}
-.fp-metric strong{display:block;color:#8cdb5c;font-size:1.4rem}
-.fp-metric span{font-size:.82rem;color:rgba(255,255,255,.73)}
+  .industries-hero::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(circle at 16% 22%, rgba(55, 190, 16, .14), transparent 30%),
+      linear-gradient(90deg,
+        #031321 0%,
+        rgba(3,19,33,.99) 34%,
+        rgba(3,19,33,.92) 46%,
+        rgba(3,19,33,.62) 61%,
+        rgba(3,19,33,.20) 79%,
+        rgba(3,19,33,0) 100%);
+    z-index: 1;
+  }
 
-.fp-cta{padding:72px 0;background:#eef6eb}
-.fp-cta-card{display:flex;align-items:center;justify-content:space-between;gap:30px;padding:34px 38px;border-radius:22px;background:#fff;border:1px solid #dbe8d6;box-shadow:0 14px 38px rgba(7,28,47,.07)}
-.fp-cta-card h2{margin:0 0 8px;color:var(--fp-navy);font-size:clamp(1.7rem,3vw,2.5rem);font-weight:850}
-.fp-cta-card p{margin:0;color:var(--fp-muted)}
-.fp-cta-card .btn{white-space:nowrap;border-radius:9px;padding:12px 22px;font-weight:800}
+  .industries-hero .site-container {
+    position: relative;
+    z-index: 2;
+  }
 
-@media(max-width:991.98px){
-  .fp-industry-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-  .fp-why-grid{grid-template-columns:1fr}
-}
-@media(max-width:767.98px){
-  .fp-industries-hero{padding:62px 0 54px}
-  .fp-industries-main,.fp-why,.fp-cta{padding:54px 0}
-  .fp-industry-grid{grid-template-columns:1fr}
-  .fp-industry-image{height:220px}
-  .fp-check-list{grid-template-columns:1fr}
-  .fp-cta-card{display:block;padding:28px 22px}
-  .fp-cta-card .btn{margin-top:20px;width:100%}
-}
+  .industries-hero-copy {
+    width: min(720px, 100%);
+    padding: 68px 0 64px;
+  }
+
+  .industries-kicker {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 18px;
+    padding: 7px 12px;
+    border: 1px solid rgba(255,255,255,.18);
+    border-radius: 999px;
+    background: rgba(255,255,255,.07);
+    color: #fff;
+    font-size: .74rem;
+    font-weight: 800;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+
+  .industries-hero h1 {
+    margin: 0 0 18px;
+    max-width: 720px;
+    color: #fff;
+    font-size: clamp(2.8rem, 5.3vw, 5rem);
+    line-height: 1.02;
+    font-weight: 900;
+    letter-spacing: -.045em;
+  }
+
+  .industries-hero h1 span {
+    color: #38b813;
+  }
+
+  .industries-hero-lead {
+    max-width: 680px;
+    margin: 0;
+    color: #edf3f6;
+    font-size: 1.05rem;
+    line-height: 1.72;
+  }
+
+  .industries-hero-points {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 11px 22px;
+    max-width: 650px;
+    margin-top: 26px;
+  }
+
+  .industries-hero-point {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: #fff;
+    font-size: .84rem;
+    font-weight: 700;
+  }
+
+  .industries-check {
+    color: #38b813;
+    font-size: 1.12rem;
+    font-weight: 900;
+  }
+
+  .industries-hero-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 14px;
+    margin-top: 28px;
+  }
+
+  .industries-hero-actions .btn {
+    min-width: 190px;
+    font-weight: 800;
+  }
+
+  .industries-hero-actions .btn-outline-light {
+    border-color: #38b813;
+    color: #fff;
+  }
+
+  .industries-hero-actions .btn-outline-light:hover {
+    background: #38b813;
+    color: #fff;
+    border-color: #38b813;
+  }
+
+  .industries-offer {
+    display: inline-flex;
+    align-items: center;
+    gap: 16px;
+    margin-top: 22px;
+    padding: 15px 20px;
+    min-width: min(500px, 100%);
+    border: 1px solid rgba(255,255,255,.38);
+    border-radius: 8px;
+    background: rgba(2,18,31,.48);
+    backdrop-filter: blur(3px);
+  }
+
+  .industries-offer-icon {
+    font-size: 2rem;
+    line-height: 1;
+  }
+
+  .industries-offer-kicker {
+    color: #65d735;
+    font-size: .72rem;
+    font-weight: 900;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+  }
+
+  .industries-offer-title {
+    margin-top: 1px;
+    color: #fff;
+    font-size: 1.35rem;
+    line-height: 1.1;
+    font-weight: 900;
+  }
+
+  .industries-offer-sub {
+    margin-top: 3px;
+    color: #e9eff3;
+    font-size: .78rem;
+  }
+
+  /* INDUSTRY GRID */
+  .industries-section {
+    padding: 64px 0 72px;
+  }
+
+  .industries-section.alt {
+    background: #f7f9fa;
+  }
+
+  .industries-head {
+    max-width: 850px;
+    margin: 0 auto 34px;
+    text-align: center;
+  }
+
+  .industries-head .mini {
+    color: #2f9d17;
+    font-size: .76rem;
+    font-weight: 900;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+  }
+
+  .industries-head h2 {
+    margin: 8px 0 10px;
+    color: #071c2f;
+    font-size: clamp(2rem, 3.2vw, 3rem);
+    font-weight: 900;
+    letter-spacing: -.03em;
+  }
+
+  .industries-head h2 span {
+    color: #2f9d17;
+  }
+
+  .industries-head p {
+    margin: 0;
+    color: #61707b;
+    font-size: .98rem;
+    line-height: 1.65;
+  }
+
+  .industries-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 16px;
+  }
+
+  .industry-service-card {
+    position: relative;
+    overflow: hidden;
+    border: 1px solid #e3e7ea;
+    border-radius: 12px;
+    background: #fff;
+    box-shadow: 0 8px 22px rgba(7,28,47,.045);
+    transition: transform .22s ease, box-shadow .22s ease;
+    display: flex;
+    flex-direction: column;
+    min-height: 360px;
+  }
+
+  .industry-service-card:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 16px 34px rgba(7,28,47,.10);
+  }
+
+  /* v2: fixed image stage so every card image lines up evenly */
+  .industry-service-image {
+    position: relative;
+    width: 100%;
+    height: 205px;
+    overflow: hidden;
+    background: #edf2f4;
+    flex: 0 0 205px;
+  }
+
+  .industry-service-image img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: center top;
+    transform: scale(1.001);
+    transition: transform .3s ease;
+  }
+
+  /* Per-image focus points keep faces, hands and equipment inside the frame. */
+  .industry-service-image.focus-hvac img { object-position: 50% 34%; }
+  .industry-service-image.focus-plumbing img { object-position: 50% 24%; }
+  .industry-service-image.focus-electrical img { object-position: 50% 22%; }
+  .industry-service-image.focus-landscaping img { object-position: 50% 26%; }
+  .industry-service-image.focus-cleaning img { object-position: 50% 18%; }
+  .industry-service-image.focus-construction img { object-position: 50% 24%; }
+  .industry-service-image.focus-property img { object-position: 50% 22%; }
+  .industry-service-image.focus-appliance img { object-position: 50% 26%; }
+  .industry-service-image.focus-pest img { object-position: 50% 18%; }
+  .industry-service-image.focus-roofing img { object-position: 50% 20%; }
+  .industry-service-image.focus-painting img { object-position: 50% 18%; }
+  .industry-service-image.focus-handyman img { object-position: 50% 22%; }
+  .industry-service-image.focus-security img { object-position: 50% 22%; }
+  .industry-service-image.focus-other img { object-position: 50% 24%; }
+
+  .industry-service-card:hover .industry-service-image img {
+    transform: scale(1.025);
+  }
+
+  .industry-service-body {
+    padding: 18px 20px 20px;
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .industry-service-body h3 {
+    margin: 0 0 8px;
+    color: #071c2f;
+    font-size: 1rem;
+    font-weight: 900;
+    line-height: 1.3;
+  }
+
+  .industry-service-body p {
+    margin: 0;
+    color: #687680;
+    font-size: .82rem;
+    line-height: 1.56;
+  }
+
+  /* VALUE STRIP */
+  .industry-value-strip {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    overflow: hidden;
+    border: 1px solid #e3e7ea;
+    border-radius: 10px;
+    background: #fff;
+  }
+
+  .industry-value-item {
+    display: flex;
+    gap: 13px;
+    padding: 22px;
+    border-right: 1px solid #e8ebed;
+  }
+
+  .industry-value-item:last-child {
+    border-right: 0;
+  }
+
+  .industry-value-icon {
+    color: #2f9d17;
+    font-size: 1.55rem;
+    line-height: 1;
+  }
+
+  .industry-value-item strong {
+    display: block;
+    margin-bottom: 5px;
+    color: #071c2f;
+    font-size: .9rem;
+  }
+
+  .industry-value-item p {
+    margin: 0;
+    color: #697680;
+    font-size: .76rem;
+    line-height: 1.5;
+  }
+
+  /* DON'T SEE YOUR INDUSTRY */
+  .industry-flex-box {
+    display: grid;
+    grid-template-columns: 1.05fr .95fr;
+    gap: 34px;
+    align-items: center;
+    padding: 36px;
+    border: 1px solid #dce8dc;
+    border-radius: 14px;
+    background: linear-gradient(135deg, #f3faf1, #fbfdfb);
+  }
+
+  .industry-flex-box h2 {
+    margin: 0 0 10px;
+    color: #071c2f;
+    font-size: clamp(1.8rem, 3vw, 2.55rem);
+    font-weight: 900;
+    letter-spacing: -.03em;
+  }
+
+  .industry-flex-box p {
+    margin: 0;
+    color: #62706f;
+    font-size: .94rem;
+    line-height: 1.65;
+  }
+
+  .industry-flex-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .industry-flex-list div {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 12px 13px;
+    border: 1px solid #dce8dc;
+    border-radius: 9px;
+    background: #fff;
+    color: #263a45;
+    font-size: .82rem;
+    font-weight: 800;
+  }
+
+  .industry-flex-list span {
+    color: #2f9d17;
+    font-size: 1rem;
+    font-weight: 900;
+  }
+
+  /* CTA */
+  .industries-cta {
+    padding: 0 0 70px;
+  }
+
+  .industries-cta-box {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 26px;
+    padding: 34px 38px;
+    border-radius: 12px;
+    background: #071c2f;
+    color: #fff;
+  }
+
+  .industries-cta-box h2 {
+    margin: 0 0 7px;
+    color: #fff;
+    font-size: 1.8rem;
+    font-weight: 900;
+  }
+
+  .industries-cta-box p {
+    margin: 0;
+    max-width: 720px;
+    color: #d5dfe5;
+    font-size: .9rem;
+    line-height: 1.55;
+  }
+
+  .industries-cta-actions {
+    display: flex;
+    gap: 10px;
+    flex: 0 0 auto;
+  }
+
+  @media (max-width: 1199.98px) {
+    .industries-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .industry-value-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .industry-value-item:nth-child(2) { border-right: 0; }
+    .industry-value-item:nth-child(-n+2) { border-bottom: 1px solid #e8ebed; }
+  }
+
+  @media (max-width: 991.98px) {
+    .industries-hero { min-height: auto; }
+    .industries-hero::before { width: 100%; opacity: .54; }
+    .industries-hero::after {
+      background: linear-gradient(90deg, rgba(3,19,33,.98), rgba(3,19,33,.87));
+    }
+    .industries-hero-copy { width: 100%; }
+    .industries-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .industry-flex-box { grid-template-columns: 1fr; }
+  }
+
+  @media (max-width: 767.98px) {
+    .industries-hero-copy { padding: 48px 0 44px; }
+    .industries-hero h1 { font-size: 2.5rem; }
+    .industries-hero-points { grid-template-columns: 1fr; }
+    .industries-hero-actions { display: grid; grid-template-columns: 1fr; }
+    .industries-hero-actions .btn { width: 100%; }
+    .industries-offer { width: 100%; min-width: 0; }
+    .industries-section { padding: 50px 0 56px; }
+    .industries-grid { grid-template-columns: 1fr; }
+    .industry-service-image { height: 220px; flex-basis: 220px; }
+    .industry-service-image img { object-position: center top; }
+    .industry-value-strip { grid-template-columns: 1fr; }
+    .industry-value-item { border-right: 0 !important; border-bottom: 1px solid #e8ebed !important; }
+    .industry-value-item:last-child { border-bottom: 0 !important; }
+    .industry-flex-box { padding: 24px 18px; }
+    .industry-flex-list { grid-template-columns: 1fr; }
+    .industries-cta-box { flex-direction: column; align-items: flex-start; padding: 28px 22px; }
+    .industries-cta-actions { width: 100%; display: grid; grid-template-columns: 1fr; }
+    .industries-cta-actions .btn { width: 100%; }
+  }
 </style>
 
-<main class="fp-industries-page">
-  <section class="fp-industries-hero">
-    <div class="container">
-      <div class="fp-eyebrow"><i class="bi bi-buildings"></i> Industries</div>
-      <h1>Built for <span>Every</span> Field Service Business</h1>
-      <p>From HVAC and plumbing to cleaning, landscaping, pest control, roofing and more, FieldPlx gives field service businesses one connected platform to organize customers, jobs, technicians, scheduling, work orders, billing and payments.</p>
-      <div class="fp-hero-actions">
-        <a href="index.php?modal=trial" class="btn btn-brand">Start Your 60-Day Free Trial <i class="bi bi-arrow-right ms-2"></i></a>
-        <a href="contact.php" class="btn btn-outline-light">Talk to Our Team</a>
-      </div>
-    </div>
-  </section>
+<main class="industries-page">
+  <section class="industries-hero">
+    <div class="container-fluid site-container">
+      <div class="industries-hero-copy">
+        <div class="industries-kicker">FieldPlx Industries</div>
+        <h1>Built for Businesses That <span>Work in the Field</span></h1>
+        <p class="industries-hero-lead">FieldPlx is designed for small and mid-sized service businesses that need a simpler way to coordinate employees, customers, jobs, and payments.</p>
 
-  <section class="fp-industries-main">
-    <div class="container">
-      <div class="fp-section-head">
-        <div class="tag">Field service industries</div>
-        <h2>One platform. Built around the way you work.</h2>
-        <p>Each service business has its own workflow, but the fundamentals are the same: respond faster, schedule better, keep teams informed and get paid without unnecessary admin work.</p>
-      </div>
+        <div class="industries-hero-points">
+          <div class="industries-hero-point"><span class="industries-check">✓</span>Coordinate employees and schedules</div>
+          <div class="industries-hero-point"><span class="industries-check">✓</span>Manage customers and service jobs</div>
+          <div class="industries-hero-point"><span class="industries-check">✓</span>Keep field teams connected</div>
+          <div class="industries-hero-point"><span class="industries-check">✓</span>Track payments and daily operations</div>
+        </div>
 
-      <div class="fp-industry-grid">
-        <?php
-        $industries = [
-          ['HVAC','industry-01.png','bi-thermometer-snow','Manage service calls, preventive maintenance, technician schedules and customer history from one place.',['Dispatch','Maintenance','Invoices']],
-          ['Electrical','industry-02.png','bi-lightning-charge','Keep electrical service jobs, site visits, work orders, estimates and technician assignments organized.',['Work Orders','Quotes','Scheduling']],
-          ['Plumbing','industry-03.png','bi-droplet','Handle urgent calls and planned jobs with clear dispatching, visit tracking, customer updates and payments.',['Dispatch','Customers','Payments']],
-          ['Landscaping','industry-04.png','bi-tree','Coordinate recurring property visits, crews, routes, seasonal work, quotes and service records efficiently.',['Routes','Recurring Jobs','Crews']],
-          ['Cleaning Services','industry-05.png','bi-stars','Manage residential and commercial cleaning schedules, teams, repeat visits, customer requests and billing.',['Schedules','Teams','Billing']],
-          ['Pest Control','industry-06.png','bi-bug','Track recurring treatments, technicians, customer locations, service notes, reminders and collections.',['Recurring Visits','Notes','Collections']],
-          ['Handyman','industry-07.png','bi-tools','Organize varied service requests, estimates, appointments, task lists and customer communication with ease.',['Requests','Tasks','Estimates']],
-          ['Roofing','industry-08.png','bi-house','Manage inspections, quotes, work orders, crews, project progress and customer payment follow-ups.',['Inspections','Jobs','Payments']],
-          ['Painting','industry-09.png','bi-brush','Keep site estimates, scheduled crews, customer approvals, work progress and invoices connected.',['Quotes','Crews','Invoices']],
-          ['Pool Service','industry-10.png','bi-water','Run recurring pool maintenance visits, technician routes, service notes and customer billing.',['Routes','Service History','Billing']],
-          ['Appliance Repair','industry-11.png','bi-wrench-adjustable','Manage repair appointments, technician availability, customer details, service progress and payment collection.',['Appointments','Technicians','Payments']],
-          ['Junk Removal','industry-12.png','bi-truck','Coordinate pickup requests, crews, schedules, service locations, job completion and customer payments.',['Requests','Dispatch','Payments']],
-        ];
-        foreach ($industries as $item):
-        ?>
-          <article class="fp-industry-card">
-            <div class="fp-industry-image">
-              <img src="site-assets/industry/<?= htmlspecialchars($item[1], ENT_QUOTES, 'UTF-8') ?>" alt="<?= htmlspecialchars($item[0], ENT_QUOTES, 'UTF-8') ?>">
-            </div>
-            <div class="fp-industry-body">
-              <div class="fp-industry-title">
-                <div class="fp-industry-icon"><i class="bi <?= htmlspecialchars($item[2], ENT_QUOTES, 'UTF-8') ?>"></i></div>
-                <h3><?= htmlspecialchars($item[0], ENT_QUOTES, 'UTF-8') ?></h3>
-              </div>
-              <p><?= htmlspecialchars($item[3], ENT_QUOTES, 'UTF-8') ?></p>
-              <div class="fp-points">
-                <?php foreach ($item[4] as $point): ?>
-                  <span><i class="bi bi-check-circle-fill"></i><?= htmlspecialchars($point, ENT_QUOTES, 'UTF-8') ?></span>
-                <?php endforeach; ?>
-              </div>
-            </div>
-          </article>
-        <?php endforeach; ?>
-      </div>
-    </div>
-  </section>
+        <div class="industries-hero-actions">
+          <a href="index.php?modal=trial" class="btn btn-brand btn-lg js-fieldplx-modal-trigger" data-open-modal="trialModal" data-modal-name="trial">Start Your Free Trial</a>
+          <a href="index.php?modal=demo" class="btn btn-outline-light btn-lg js-fieldplx-modal-trigger" data-open-modal="demoModal" data-modal-name="demo">Book a Demo</a>
+        </div>
 
-  <section class="fp-why">
-    <div class="container">
-      <div class="fp-why-grid">
-        <div class="fp-why-copy">
-          <div class="fp-eyebrow" style="background:#edf8e8;border-color:#d7ebce;color:#318f08"><i class="bi bi-grid-1x2"></i> One connected workspace</div>
-          <h2>Everything your field service team needs to stay organized.</h2>
-          <p>FieldPlx helps office teams and field workers stay aligned throughout the entire service lifecycle — from the first customer request to job completion and payment.</p>
-          <div class="fp-check-list">
-            <div class="fp-check"><i class="bi bi-check-circle-fill"></i><div><strong>Customer Management</strong><span>Keep service history and customer details together.</span></div></div>
-            <div class="fp-check"><i class="bi bi-check-circle-fill"></i><div><strong>Smart Scheduling</strong><span>Assign the right worker at the right time.</span></div></div>
-            <div class="fp-check"><i class="bi bi-check-circle-fill"></i><div><strong>Work Orders</strong><span>Track jobs from request through completion.</span></div></div>
-            <div class="fp-check"><i class="bi bi-check-circle-fill"></i><div><strong>Quotes & Invoices</strong><span>Move faster from estimate to payment.</span></div></div>
-            <div class="fp-check"><i class="bi bi-check-circle-fill"></i><div><strong>Mobile Access</strong><span>Give field teams access wherever they work.</span></div></div>
-            <div class="fp-check"><i class="bi bi-check-circle-fill"></i><div><strong>Reports</strong><span>Understand jobs, revenue and operations clearly.</span></div></div>
+        <div class="industries-offer">
+          <div class="industries-offer-icon">🎁</div>
+          <div>
+            <div class="industries-offer-kicker">Limited Time Offer</div>
+            <div class="industries-offer-title">60 Days Free Trial!</div>
+            <div class="industries-offer-sub">No credit card required. Cancel anytime.</div>
           </div>
         </div>
-        <aside class="fp-why-panel">
-          <h3>Designed for growing service businesses</h3>
-          <p>Start simple and keep the same system as your customer base, team and service operations expand.</p>
-          <div class="fp-metric-grid">
-            <div class="fp-metric"><strong>12+</strong><span>Field service industries supported</span></div>
-            <div class="fp-metric"><strong>1</strong><span>Connected business platform</span></div>
-            <div class="fp-metric"><strong>60 Days</strong><span>Free trial to explore FieldPlx</span></div>
-            <div class="fp-metric"><strong>Anywhere</strong><span>Office and field team access</span></div>
-          </div>
-        </aside>
       </div>
     </div>
   </section>
 
-  <section class="fp-cta">
-    <div class="container">
-      <div class="fp-cta-card">
+  <section class="industries-section">
+    <div class="container-fluid site-container">
+      <div class="industries-head">
+        <div class="mini">Industries Served</div>
+        <h2>Built for <span>Field Service Businesses</span></h2>
+        <p>Whether your team repairs, installs, maintains, cleans, builds, or services customer locations, FieldPlx helps keep the work organized.</p>
+      </div>
+
+      <div class="industries-grid">
+        <article class="industry-service-card">
+          <div class="industry-service-image focus-hvac"><img src="site-assets/industry/industry-01.png" alt="HVAC technician servicing equipment"></div>
+          <div class="industry-service-body"><h3>HVAC</h3><p>Coordinate technicians, appointments, service jobs, customers, and payments from one place.</p></div>
+        </article>
+
+        <article class="industry-service-card">
+          <div class="industry-service-image focus-plumbing"><img src="site-assets/industry/industry-03.png" alt="Plumbing field service"></div>
+          <div class="industry-service-body"><h3>Plumbing</h3><p>Organize service calls, customer details, job updates, and field team assignments.</p></div>
+        </article>
+
+        <article class="industry-service-card">
+          <div class="industry-service-image focus-electrical"><img src="site-assets/industry/industry-02.png" alt="Electrical field service"></div>
+          <div class="industry-service-body"><h3>Electrical Services</h3><p>Manage electrical service requests, job scheduling, employees, and customer records.</p></div>
+        </article>
+
+        <article class="industry-service-card">
+          <div class="industry-service-image focus-landscaping"><img src="site-assets/industry/industry-04.png" alt="Landscaping and lawn care"></div>
+          <div class="industry-service-body"><h3>Landscaping and Lawn Care</h3><p>Plan recurring work, coordinate crews, and keep property-service information organized.</p></div>
+        </article>
+
+        <article class="industry-service-card">
+          <div class="industry-service-image focus-cleaning"><img src="site-assets/industry/industry-05.png" alt="Cleaning services"></div>
+          <div class="industry-service-body"><h3>Cleaning Services</h3><p>Schedule teams, manage customer locations, and keep recurring cleaning jobs on track.</p></div>
+        </article>
+
+        <article class="industry-service-card">
+          <div class="industry-service-image focus-construction"><img src="site-assets/industry/industry-12.png" alt="Construction and contracting field work"></div>
+          <div class="industry-service-body"><h3>Construction and Contracting</h3><p>Coordinate field work, employees, customer communication, documents, and job progress.</p></div>
+        </article>
+
+        <article class="industry-service-card">
+          <div class="industry-service-image focus-property"><img src="site-assets/industry/industry-07.png" alt="Property maintenance service"></div>
+          <div class="industry-service-body"><h3>Property Maintenance</h3><p>Keep maintenance requests, scheduled work, customer properties, and service history together.</p></div>
+        </article>
+
+        <article class="industry-service-card">
+          <div class="industry-service-image focus-appliance"><img src="site-assets/industry/industry-11.png" alt="Appliance repair service"></div>
+          <div class="industry-service-body"><h3>Appliance Repair</h3><p>Track service calls, repair visits, customer information, technician assignments, and billing.</p></div>
+        </article>
+
+        <article class="industry-service-card">
+          <div class="industry-service-image focus-pest"><img src="site-assets/industry/industry-06.png" alt="Pest control service"></div>
+          <div class="industry-service-body"><h3>Pest Control</h3><p>Organize customer visits, recurring treatments, service notes, and field employee schedules.</p></div>
+        </article>
+
+        <article class="industry-service-card">
+          <div class="industry-service-image focus-roofing"><img src="site-assets/industry/industry-08.png" alt="Roofing service"></div>
+          <div class="industry-service-body"><h3>Roofing</h3><p>Manage estimates, customer jobs, field teams, documents, and project-related information.</p></div>
+        </article>
+
+        <article class="industry-service-card">
+          <div class="industry-service-image focus-painting"><img src="site-assets/industry/industry-09.png" alt="Painting service"></div>
+          <div class="industry-service-body"><h3>Painting</h3><p>Schedule crews, manage customer jobs, organize site information, and monitor work progress.</p></div>
+        </article>
+
+        <article class="industry-service-card">
+          <div class="industry-service-image focus-handyman"><img src="site-assets/industry/industry-07.png" alt="Handyman services"></div>
+          <div class="industry-service-body"><h3>Handyman Services</h3><p>Manage multiple service requests, customer appointments, job details, and payments efficiently.</p></div>
+        </article>
+
+        <article class="industry-service-card">
+          <div class="industry-service-image focus-security"><img src="site-assets/industry/industry-02.png" alt="Security and installation services"></div>
+          <div class="industry-service-body"><h3>Security and Installation Services</h3><p>Coordinate installation jobs, field technicians, customer locations, records, and follow-up work.</p></div>
+        </article>
+
+        <article class="industry-service-card">
+          <div class="industry-service-image focus-other"><img src="site-assets/industry/industry-10.png" alt="Other mobile and field-service businesses"></div>
+          <div class="industry-service-body"><h3>Other Mobile and Field-Service Businesses</h3><p>Use FieldPlx wherever employees travel to customers and perform scheduled work in the field.</p></div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="industries-section alt">
+    <div class="container-fluid site-container">
+      <div class="industries-head">
+        <div class="mini">Designed Around Daily Work</div>
+        <h2>One Platform Across Your <span>Service Operations</span></h2>
+        <p>FieldPlx gives growing service businesses a simpler way to connect people, customers, jobs, and business information.</p>
+      </div>
+
+      <div class="industry-value-strip">
+        <div class="industry-value-item">
+          <div class="industry-value-icon">⚙</div>
+          <div><strong>Schedule the Work</strong><p>Organize appointments and field assignments before your team heads out.</p></div>
+        </div>
+        <div class="industry-value-item">
+          <div class="industry-value-icon">👥</div>
+          <div><strong>Coordinate Your Team</strong><p>Keep employees aligned with the jobs and customer information they need.</p></div>
+        </div>
+        <div class="industry-value-item">
+          <div class="industry-value-icon">▣</div>
+          <div><strong>Work From Anywhere</strong><p>Give field employees access to job details and updates wherever they work.</p></div>
+        </div>
+        <div class="industry-value-item">
+          <div class="industry-value-icon">$</div>
+          <div><strong>Stay on Top of Payments</strong><p>Connect estimates, invoices, and payment status with your daily operations.</p></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="industries-section">
+    <div class="container-fluid site-container">
+      <div class="industry-flex-box">
         <div>
-          <h2>Don't see your exact industry?</h2>
-          <p>If your business has customers, field workers, service jobs and payments, FieldPlx can likely fit your workflow.</p>
+          <div class="industries-kicker" style="color:#2f9d17;border-color:#dce8dc;background:#fff;">Flexible for Your Business</div>
+          <h2>Don't See Your Industry?</h2>
+          <p>FieldPlx can support many businesses that schedule employees, visit customer locations, manage service jobs, or perform work in the field.</p>
         </div>
-        <a href="index.php?modal=trial" class="btn btn-brand">Start Free Trial <i class="bi bi-arrow-right ms-2"></i></a>
+        <div class="industry-flex-list">
+          <div><span>✓</span>Schedule employees</div>
+          <div><span>✓</span>Visit customer locations</div>
+          <div><span>✓</span>Manage service jobs</div>
+          <div><span>✓</span>Perform work in the field</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="industries-cta">
+    <div class="container-fluid site-container">
+      <div class="industries-cta-box">
+        <div>
+          <h2>See How FieldPlx Fits Your Business</h2>
+          <p>Book a personalized demo to see how FieldPlx can support your employees, customers, service jobs, and daily field operations.</p>
+        </div>
+        <div class="industries-cta-actions">
+          <a href="index.php?modal=demo" class="btn btn-brand btn-lg js-fieldplx-modal-trigger" data-open-modal="demoModal" data-modal-name="demo">Book a Demo</a>
+          <a href="index.php?modal=trial" class="btn btn-outline-light btn-lg js-fieldplx-modal-trigger" data-open-modal="trialModal" data-modal-name="trial">Start Free Trial</a>
+        </div>
       </div>
     </div>
   </section>
