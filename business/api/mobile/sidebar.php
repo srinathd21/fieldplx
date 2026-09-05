@@ -627,11 +627,10 @@ if ($currentPlanId <= 0) {
 
 /*
 |--------------------------------------------------------------------------
-| LOAD EFFECTIVE SIDEBAR MODULES
+| LOAD TENANT-ENTITLED SIDEBAR MODULES
 |--------------------------------------------------------------------------
 |
-| Same rules as the web sidebar:
-|
+| Tenant entitlement layer:
 | 1. Module must be included in plan_modules.
 | 2. plan_modules.is_enabled = 1.
 | 3. modules.is_active = 1.
@@ -639,7 +638,13 @@ if ($currentPlanId <= 0) {
 | 5. tenant_modules='disabled' hides the module.
 | 6. tenant_modules='enabled' does not bypass plan_modules.
 |
+| Permission filtering is applied immediately after this query.
+|
 */
+$tenantSidebarRows = [];
+$sidebarRows = [];
+$moduleActionAllowed = [];
+
 $stmt = $pdo->prepare("
     SELECT
         m.id,
@@ -711,7 +716,145 @@ $stmt->execute([
     ':plan_id' => $currentPlanId
 ]);
 
-$sidebarRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$tenantSidebarRows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+/*
+|--------------------------------------------------------------------------
+| APPLY ROLE PERMISSIONS + USER OVERRIDES
+|--------------------------------------------------------------------------
+|
+| Current web sidebar permission rules:
+|
+| - Sidebar visibility requires VIEW permission.
+| - Quick Create requires CREATE permission.
+| - user_permissions allow/deny wins when a user override exists.
+| - otherwise role_permissions allow/deny is used.
+| - missing permission / missing grant = denied.
+|
+*/
+$currentRoleId = !empty($currentUser['role_id'])
+    ? (int)$currentUser['role_id']
+    : 0;
+
+if (!empty($tenantSidebarRows)) {
+
+    $moduleIds = [];
+
+    foreach ($tenantSidebarRows as $tenantSidebarRow) {
+        $moduleIds[] = (int)$tenantSidebarRow['id'];
+    }
+
+    $moduleIds = array_values(array_unique($moduleIds));
+
+    if (!empty($moduleIds)) {
+        $modulePlaceholders = implode(
+            ',',
+            array_fill(0, count($moduleIds), '?')
+        );
+
+        $hasUserPermissions = ms_table_exists(
+            $pdo,
+            'user_permissions'
+        );
+
+        $permissionSql = "
+            SELECT
+                p.module_id,
+                p.action_code,
+                rp.access_type AS role_access";
+
+        if ($hasUserPermissions) {
+            $permissionSql .= ",
+                up.access_type AS user_access";
+        } else {
+            $permissionSql .= ",
+                NULL AS user_access";
+        }
+
+        $permissionSql .= "
+            FROM permissions p
+
+            LEFT JOIN role_permissions rp
+                ON rp.permission_id = p.id
+               AND rp.tenant_id = ?
+               AND rp.role_id = ?";
+
+        if ($hasUserPermissions) {
+            $permissionSql .= "
+
+            LEFT JOIN user_permissions up
+                ON up.permission_id = p.id
+               AND up.tenant_id = ?
+               AND up.user_id = ?";
+        }
+
+        $permissionSql .= "
+
+            WHERE p.module_id IN ($modulePlaceholders)
+              AND p.action_code IN ('view','create')
+            ORDER BY p.module_id, p.action_code, p.id
+        ";
+
+        $permissionParams = [
+            $currentTenantId,
+            $currentRoleId
+        ];
+
+        if ($hasUserPermissions) {
+            $permissionParams[] = $currentTenantId;
+            $permissionParams[] = $currentUserId;
+        }
+
+        foreach ($moduleIds as $moduleId) {
+            $permissionParams[] = (int)$moduleId;
+        }
+
+        $permissionStmt = $pdo->prepare($permissionSql);
+        $permissionStmt->execute($permissionParams);
+
+        foreach (
+            $permissionStmt->fetchAll(PDO::FETCH_ASSOC)
+            as $permissionRow
+        ) {
+            $moduleId = (int)$permissionRow['module_id'];
+
+            $actionCode = strtolower(
+                trim((string)$permissionRow['action_code'])
+            );
+
+            $roleAccess = strtolower(
+                trim((string)($permissionRow['role_access'] ?? ''))
+            );
+
+            $userAccess = strtolower(
+                trim((string)($permissionRow['user_access'] ?? ''))
+            );
+
+            $effectiveAccess = $userAccess !== ''
+                ? $userAccess
+                : $roleAccess;
+
+            if (!isset($moduleActionAllowed[$moduleId])) {
+                $moduleActionAllowed[$moduleId] = [];
+            }
+
+            $moduleActionAllowed[$moduleId][$actionCode] =
+                $effectiveAccess === 'allow';
+        }
+    }
+
+    foreach ($tenantSidebarRows as $tenantSidebarRow) {
+        $moduleId = (int)$tenantSidebarRow['id'];
+
+        if (
+            !empty(
+                $moduleActionAllowed[$moduleId]['view']
+            )
+        ) {
+            $sidebarRows[] = $tenantSidebarRow;
+        }
+    }
+}
 
 /*
 |--------------------------------------------------------------------------
@@ -906,6 +1049,14 @@ foreach ($topLevelIds as $parentId) {
             'menu_order' => (int)$child['menu_order'],
             'is_core' => (bool)$child['is_core'],
             'access_type' => (string)$child['tenant_access_type'],
+            'permissions' => [
+                'view' => !empty(
+                    $moduleActionAllowed[(int)$child['id']]['view']
+                ),
+                'create' => !empty(
+                    $moduleActionAllowed[(int)$child['id']]['create']
+                )
+            ],
             'is_group' => false,
             'children' => []
         ];
@@ -926,6 +1077,18 @@ foreach ($topLevelIds as $parentId) {
         'menu_order' => (int)$parent['menu_order'],
         'is_core' => (bool)$parent['is_core'],
         'access_type' => (string)$parent['tenant_access_type'],
+        'permissions' => [
+            'view' => $parentAccessible
+                ? !empty(
+                    $moduleActionAllowed[(int)$parent['id']]['view']
+                )
+                : false,
+            'create' => $parentAccessible
+                ? !empty(
+                    $moduleActionAllowed[(int)$parent['id']]['create']
+                )
+                : false
+        ],
         'is_group' => !$parentAccessible || !empty($childItems),
         'is_accessible' => $parentAccessible,
         'children' => $childItems
@@ -937,35 +1100,47 @@ foreach ($topLevelIds as $parentId) {
 | QUICK CREATE
 |--------------------------------------------------------------------------
 |
-| Kept consistent with the current web sidebar.
-| Android should navigate by module_code/key, not by the web URL.
+| Matches current web sidebar:
+| - module must be effectively visible
+| - CREATE permission is required
+| - user permission override wins over role permission
 |
 */
 $quickCreateDefinitions = [
     'client' => [
         'module_codes' => ['clients'],
-        'label' => 'Customer',
-        'icon' => 'bi bi-person'
+        'label' => 'Client',
+        'url' => 'client-form.php',
+        'icon' => 'bi bi-person',
+        'tone' => 'client'
     ],
     'request' => [
         'module_codes' => ['requests'],
         'label' => 'Request',
-        'icon' => 'bi bi-inbox'
+        'url' => 'add-request.php',
+        'icon' => 'bi bi-inbox',
+        'tone' => 'request'
     ],
     'quote' => [
         'module_codes' => ['quotes', 'quotation'],
         'label' => 'Quote',
-        'icon' => 'bi bi-file-earmark-text'
+        'url' => 'add-quotation.php',
+        'icon' => 'bi bi-file-earmark-text',
+        'tone' => 'quote'
     ],
     'job' => [
         'module_codes' => ['jobs', 'job-cards'],
         'label' => 'Job',
-        'icon' => 'bi bi-hammer'
+        'url' => 'job-form.php',
+        'icon' => 'bi bi-hammer',
+        'tone' => 'job'
     ],
     'invoice' => [
         'module_codes' => ['invoices'],
         'label' => 'Invoice',
-        'icon' => 'bi bi-receipt'
+        'url' => 'add-invoice.php',
+        'icon' => 'bi bi-receipt',
+        'tone' => 'invoice'
     ]
 ];
 
@@ -1000,12 +1175,24 @@ foreach ($quickCreateDefinitions as $key => $definition) {
         continue;
     }
 
+    $matchedModuleId = (int)$matchedModule['id'];
+
+    if (
+        empty(
+            $moduleActionAllowed[$matchedModuleId]['create']
+        )
+    ) {
+        continue;
+    }
+
     $quickCreate[] = [
         'key' => $key,
-        'module_id' => (int)$matchedModule['id'],
+        'module_id' => $matchedModuleId,
         'module_code' => (string)$matchedModule['module_code'],
         'label' => (string)$definition['label'],
-        'icon_name' => (string)$definition['icon']
+        'menu_url' => ms_safe_menu_url($definition['url']),
+        'icon_name' => (string)$definition['icon'],
+        'tone' => (string)$definition['tone']
     ];
 }
 
@@ -1073,7 +1260,13 @@ ms_response(200, [
 
         'meta' => [
             'menu_count' => count($menu),
-            'quick_create_count' => count($quickCreate)
+            'quick_create_count' => count($quickCreate),
+            'permission_model' => [
+                'sidebar_requires' => 'view',
+                'quick_create_requires' => 'create',
+                'user_override_precedence' => true,
+                'missing_permission_default' => 'deny'
+            ]
         ]
     ]
 ]);
