@@ -1,5 +1,5 @@
 <?php
-/* FieldPlx Schedule Calendar - Version 1.1.0 - 2026-09-02 - Manage UI + Month View */
+/* FieldPlx Schedule Calendar - Version 2.0.0 - 2026-09-06 - Month / Week / Day resource schedule */
 require_once __DIR__ . '/includes/auth.php';
 if ((!isset($pdo) || !($pdo instanceof PDO)) && (!isset($db) || !($db instanceof PDO)) && file_exists(__DIR__ . '/includes/db.php')) {
     require_once __DIR__ . '/includes/db.php';
@@ -72,7 +72,7 @@ function schInitials($name)
 {
     $name = trim((string)$name);
     if ($name === '') return '?';
-    $parts = preg_split('/\s+/', $name);
+    $parts = preg_split('/\\s+/', $name);
     $out = '';
     foreach ($parts as $part) {
         if ($part === '') continue;
@@ -93,6 +93,26 @@ function schSplit($value, $separator)
         if ($part !== '') $out[] = $part;
     }
     return $out;
+}
+
+function schCsvInts($value)
+{
+    $out = array();
+    foreach (explode(',', trim((string)$value)) as $part) {
+        $id = (int)trim($part);
+        if ($id > 0) $out[$id] = $id;
+    }
+    return array_values($out);
+}
+
+function schCsvStrings($value, array $allowed)
+{
+    $out = array();
+    foreach (explode(',', trim((string)$value)) as $part) {
+        $part = strtolower(trim($part));
+        if ($part !== '' && in_array($part, $allowed, true)) $out[$part] = $part;
+    }
+    return array_values($out);
 }
 
 function schEventClass($status)
@@ -139,6 +159,27 @@ function schAssignLanes(array &$events)
     foreach ($events as $index => $event) $events[$index]['lane_count'] = $maxLanes;
 }
 
+function schMoney($value)
+{
+    return number_format((float)$value, 2, '.', ',');
+}
+
+function schLocationText(array $row)
+{
+    $parts = array();
+    foreach (array('location_name','location_address','location_address2','location_city','location_state','location_postal') as $key) {
+        if (!empty($row[$key])) $parts[] = trim((string)$row[$key]);
+    }
+    return implode(', ', $parts);
+}
+
+function schIsAnytime(array $event)
+{
+    $start = substr((string)$event['start'], 11, 8);
+    $end = substr((string)$event['end'], 11, 8);
+    return ($start === '00:00:00' && ($end === '23:59:59' || $end === '00:00:00'));
+}
+
 try {
     $pdo = schDb();
 } catch (Throwable $e) {
@@ -155,47 +196,101 @@ if ($tenantId <= 0 || $userId <= 0) {
     exit;
 }
 
-$view = isset($_GET['view']) ? strtolower(trim((string)$_GET['view'])) : 'week';
-if (!in_array($view, array('day','week','month'), true)) $view = 'week';
+if (empty($_SESSION['schedule_csrf_token'])) {
+    $_SESSION['schedule_csrf_token'] = bin2hex(random_bytes(32));
+}
+$scheduleCsrfToken = (string)$_SESSION['schedule_csrf_token'];
+
+$currency = array('symbol' => '', 'symbol_position' => 'before', 'decimal_places' => 2);
+try {
+    if (schTable($pdo, 'tenants') && schTable($pdo, 'currencies')) {
+        $stmt = $pdo->prepare("SELECT c.symbol,c.symbol_position,c.decimal_places FROM tenants t LEFT JOIN currencies c ON c.id=t.currency_id WHERE t.id=:tenant_id LIMIT 1");
+        $stmt->execute(array(':tenant_id' => $tenantId));
+        $currencyRow = $stmt->fetch(PDO::FETCH_ASSOC);
+        if ($currencyRow) $currency = array_merge($currency, $currencyRow);
+    }
+} catch (Throwable $e) {
+    error_log('FieldPlx schedule currency: ' . $e->getMessage());
+}
+
+/* Lightweight schedule actions used by the preview/details UI. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['schedule_action'])) {
+    header('Content-Type: application/json; charset=utf-8');
+    $token = isset($_POST['csrf_token']) ? (string)$_POST['csrf_token'] : '';
+    if (!hash_equals($scheduleCsrfToken, $token)) {
+        http_response_code(419);
+        echo json_encode(array('success' => false, 'message' => 'Your session token has expired. Refresh the page and try again.'));
+        exit;
+    }
+    $action = trim((string)$_POST['schedule_action']);
+    if ($action === 'mark_complete') {
+        $visitId = isset($_POST['visit_id']) ? (int)$_POST['visit_id'] : 0;
+        $jobId = isset($_POST['job_id']) ? (int)$_POST['job_id'] : 0;
+        try {
+            if ($visitId > 0 && schTable($pdo, 'visits')) {
+                $stmt = $pdo->prepare("UPDATE visits v INNER JOIN jobs j ON j.id=v.job_id AND j.tenant_id=v.tenant_id SET v.status='completed' WHERE v.id=:visit_id AND v.tenant_id=:tenant_id AND j.deleted_at IS NULL");
+                $stmt->execute(array(':visit_id' => $visitId, ':tenant_id' => $tenantId));
+                if ($stmt->rowCount() < 1) throw new RuntimeException('Visit could not be marked complete.');
+            } elseif ($jobId > 0) {
+                $stmt = $pdo->prepare("UPDATE jobs SET status='completed' WHERE id=:job_id AND tenant_id=:tenant_id AND deleted_at IS NULL");
+                $stmt->execute(array(':job_id' => $jobId, ':tenant_id' => $tenantId));
+                if ($stmt->rowCount() < 1) throw new RuntimeException('Job could not be marked complete.');
+            } else {
+                throw new RuntimeException('Invalid schedule item.');
+            }
+            echo json_encode(array('success' => true, 'message' => 'Visit marked complete.'));
+        } catch (Throwable $e) {
+            error_log('FieldPlx schedule complete: ' . $e->getMessage());
+            http_response_code(422);
+            echo json_encode(array('success' => false, 'message' => $e->getMessage()));
+        }
+        exit;
+    }
+    http_response_code(400);
+    echo json_encode(array('success' => false, 'message' => 'Unsupported schedule action.'));
+    exit;
+}
+
+$view = isset($_GET['view']) ? strtolower(trim((string)$_GET['view'])) : 'month';
+if (!in_array($view, array('day','week','month'), true)) $view = 'month';
 $selectedDate = schValidDate(isset($_GET['date']) ? $_GET['date'] : '');
 if ($selectedDate === '') $selectedDate = date('Y-m-d');
-$employeeId = isset($_GET['employee_id']) ? max(0, (int)$_GET['employee_id']) : 0;
 $branchId = isset($_GET['branch_id']) ? max(0, (int)$_GET['branch_id']) : 0;
 if ($sessionBranchId > 0) $branchId = $sessionBranchId;
-$statusFilter = isset($_GET['status']) ? strtolower(trim((string)$_GET['status'])) : '';
+
+$typeFilter = isset($_GET['type']) ? strtolower(trim((string)$_GET['type'])) : 'all';
+if (!in_array($typeFilter, array('all','visit','job'), true)) $typeFilter = 'all';
+$teamFilterActive = isset($_GET['team_filter']) && (int)$_GET['team_filter'] === 1;
+$selectedTeamIds = schCsvInts(isset($_GET['team_ids']) ? $_GET['team_ids'] : '');
+$includeUnassigned = $teamFilterActive ? (!empty($_GET['include_unassigned']) ? 1 : 0) : 1;
+$allowedStatuses = array('scheduled','accepted','travelling','arrived','in_progress','paused','rescheduled','follow_up_required','completed','cancelled','no_access');
+$statusFilterActive = isset($_GET['status_filter']) && (int)$_GET['status_filter'] === 1;
+$selectedStatuses = schCsvStrings(isset($_GET['statuses']) ? $_GET['statuses'] : '', $allowedStatuses);
 
 $selected = new DateTime($selectedDate . ' 00:00:00');
 $currentMonthKey = $selected->format('Y-m');
 $displayDays = array();
 
+/* Sunday-first calendar, matching the supplied schedule reference. */
 if ($view === 'month') {
     $monthStart = new DateTime($selected->format('Y-m-01') . ' 00:00:00');
-    $monthEnd = new DateTime($selected->format('Y-m-t') . ' 00:00:00');
-
     $rangeStart = clone $monthStart;
-    $firstDow = (int)$rangeStart->format('N');
-    if ($firstDow > 1) $rangeStart->modify('-' . ($firstDow - 1) . ' days');
-
-    $lastGridDay = clone $monthEnd;
-    $lastDow = (int)$lastGridDay->format('N');
-    if ($lastDow < 7) $lastGridDay->modify('+' . (7 - $lastDow) . ' days');
-
-    $rangeEnd = clone $lastGridDay;
-    $rangeEnd->modify('+1 day');
-
-    $cursor = clone $rangeStart;
-    while ($cursor < $rangeEnd) {
-        $displayDays[] = clone $cursor;
-        $cursor->modify('+1 day');
+    $dow = (int)$rangeStart->format('w');
+    if ($dow > 0) $rangeStart->modify('-' . $dow . ' days');
+    $rangeEnd = clone $rangeStart;
+    $rangeEnd->modify('+42 days');
+    for ($i = 0; $i < 42; $i++) {
+        $d = clone $rangeStart;
+        if ($i > 0) $d->modify('+' . $i . ' days');
+        $displayDays[] = $d;
     }
-
     $heading = $selected->format('F Y');
     $prevDate = (clone $monthStart)->modify('-1 month')->format('Y-m-01');
     $nextDate = (clone $monthStart)->modify('+1 month')->format('Y-m-01');
 } elseif ($view === 'week') {
-    $dayNumber = (int)$selected->format('N');
     $rangeStart = clone $selected;
-    if ($dayNumber > 1) $rangeStart->modify('-' . ($dayNumber - 1) . ' days');
+    $dow = (int)$rangeStart->format('w');
+    if ($dow > 0) $rangeStart->modify('-' . $dow . ' days');
     $rangeEnd = clone $rangeStart;
     $rangeEnd->modify('+7 days');
     for ($i = 0; $i < 7; $i++) {
@@ -203,7 +298,7 @@ if ($view === 'month') {
         if ($i > 0) $d->modify('+' . $i . ' days');
         $displayDays[] = $d;
     }
-    $heading = $rangeStart->format('d M') . ' - ' . (clone $rangeEnd)->modify('-1 day')->format('d M Y');
+    $heading = $selected->format('F Y');
     $prevDate = (clone $selected)->modify('-7 days')->format('Y-m-d');
     $nextDate = (clone $selected)->modify('+7 days')->format('Y-m-d');
 } else {
@@ -211,7 +306,7 @@ if ($view === 'month') {
     $rangeEnd = clone $selected;
     $rangeEnd->modify('+1 day');
     $displayDays = array(clone $selected);
-    $heading = $selected->format('l, d F Y');
+    $heading = $selected->format('F Y');
     $prevDate = (clone $selected)->modify('-1 day')->format('Y-m-d');
     $nextDate = (clone $selected)->modify('+1 day')->format('Y-m-d');
 }
@@ -234,22 +329,17 @@ $employeeMap = array();
 foreach ($employees as $employee) {
     $employeeMap[(int)$employee['id']] = $employee;
 }
-if ($employeeId > 0 && !isset($employeeMap[$employeeId])) $employeeId = 0;
-
-$branches = array();
-if (schTable($pdo, 'branches')) {
-    try {
-        $branches = schRows($pdo, "SELECT id,name FROM branches WHERE tenant_id=:t AND status='active' ORDER BY is_head_office DESC,name", array(':t' => $tenantId));
-    } catch (Throwable $e) {
-        error_log('FieldPlx schedule branches: ' . $e->getMessage());
-    }
-}
+$selectedTeamIds = array_values(array_filter($selectedTeamIds, function($id) use ($employeeMap) { return isset($employeeMap[(int)$id]); }));
 
 $events = array();
 $rangeStartSql = $rangeStart->format('Y-m-d H:i:s');
 $rangeEndSql = $rangeEnd->format('Y-m-d H:i:s');
+$locationSelect = "cl.name AS location_name,cl.address_line1 AS location_address,cl.city AS location_city";
+$locationSelect .= schColumn($pdo, 'client_locations', 'address_line2') ? ",cl.address_line2 AS location_address2" : ",'' AS location_address2";
+$locationSelect .= schColumn($pdo, 'client_locations', 'state') ? ",cl.state AS location_state" : ",'' AS location_state";
+$locationSelect .= schColumn($pdo, 'client_locations', 'postal_code') ? ",cl.postal_code AS location_postal" : ",'' AS location_postal";
 
-/* Recurring/expanded Job Cards use visits as the exact calendar occurrences. */
+/* Expanded visits are the primary calendar source. */
 if (schTable($pdo, 'visits') && schTable($pdo, 'jobs')) {
     try {
         $hasVisitAssignments = schTable($pdo, 'visit_assignments');
@@ -264,7 +354,6 @@ if (schTable($pdo, 'visits') && schTable($pdo, 'jobs')) {
             $visitJoin = " LEFT JOIN users au ON au.id=v.assigned_user_id AND au.tenant_id=v.tenant_id ";
             $assigneeSelect = "COALESCE(CONCAT_WS(' ',au.first_name,au.last_name),'') AS assignee_names,COALESCE(CAST(au.id AS CHAR),'') AS assignee_ids";
         }
-
         $where = array(
             'v.tenant_id=:tenant_id',
             'j.deleted_at IS NULL',
@@ -277,24 +366,9 @@ if (schTable($pdo, 'visits') && schTable($pdo, 'jobs')) {
             $where[] = 'COALESCE(v.branch_id,j.branch_id)=:branch_id';
             $params[':branch_id'] = $branchId;
         }
-        if ($employeeId > 0) {
-            if ($hasVisitAssignments) {
-                $where[] = "(v.assigned_user_id=:emp_primary OR EXISTS(SELECT 1 FROM visit_assignments vax WHERE vax.tenant_id=v.tenant_id AND vax.visit_id=v.id AND vax.user_id=:emp_multi AND vax.status<>'removed'))";
-                $params[':emp_primary'] = $employeeId;
-                $params[':emp_multi'] = $employeeId;
-            } else {
-                $where[] = 'v.assigned_user_id=:employee_id';
-                $params[':employee_id'] = $employeeId;
-            }
-        }
-        if ($statusFilter !== '') {
-            $where[] = 'v.status=:visit_status';
-            $params[':visit_status'] = $statusFilter;
-        }
-
         $sql = "SELECT v.id AS visit_id,v.visit_no,v.visit_number,v.scheduled_start,v.scheduled_end,v.status AS event_status,v.notes AS visit_notes,
-                       j.id AS job_id,j.job_no,j.title,j.description,j.priority,j.status AS job_status,j.job_type,j.client_id,j.location_id,j.product_service_id,
-                       c.display_name AS client_name,cl.name AS location_name,cl.address_line1 AS location_address,cl.city AS location_city,
+                       j.id AS job_id,j.job_no,j.title,j.description,j.priority,j.status AS job_status,j.job_type,j.client_id,j.location_id,j.product_service_id,j.total,
+                       c.display_name AS client_name,c.phone AS client_phone,c.email AS client_email,{$locationSelect},
                        ps.name AS service_name,b.name AS branch_name,{$assigneeSelect}
                 FROM visits v
                 INNER JOIN jobs j ON j.id=v.job_id AND j.tenant_id=v.tenant_id
@@ -311,6 +385,7 @@ if (schTable($pdo, 'visits') && schTable($pdo, 'jobs')) {
             $start = (string)$row['scheduled_start'];
             $end = !empty($row['scheduled_end']) ? (string)$row['scheduled_end'] : date('Y-m-d H:i:s', strtotime($start . ' +1 hour'));
             $events[] = array(
+                'key' => 'visit:' . (int)$row['visit_id'],
                 'source' => 'visit',
                 'visit_id' => (int)$row['visit_id'],
                 'visit_no' => (string)$row['visit_no'],
@@ -319,18 +394,22 @@ if (schTable($pdo, 'visits') && schTable($pdo, 'jobs')) {
                 'job_no' => (string)$row['job_no'],
                 'title' => (string)$row['title'],
                 'customer' => (string)$row['client_name'],
+                'client_phone' => (string)$row['client_phone'],
+                'client_email' => (string)$row['client_email'],
                 'service' => (string)$row['service_name'],
-                'location' => trim((string)$row['location_name'] . (!empty($row['location_city']) ? ', ' . $row['location_city'] : '')),
+                'location' => schLocationText($row),
                 'branch' => (string)$row['branch_name'],
                 'priority' => (string)$row['priority'],
                 'status' => (string)$row['event_status'],
                 'job_status' => (string)$row['job_status'],
                 'job_type' => (string)$row['job_type'],
-                'notes' => (string)$row['visit_notes'],
+                'instructions' => trim((string)$row['visit_notes']) !== '' ? (string)$row['visit_notes'] : (string)$row['description'],
                 'start' => $start,
                 'end' => $end,
+                'total' => (float)$row['total'],
                 'assignee_names' => schSplit($row['assignee_names'], '||'),
                 'assignee_ids' => schSplit($row['assignee_ids'], ','),
+                'line_items' => array(),
                 'lane' => 0,
                 'lane_count' => 1
             );
@@ -340,7 +419,7 @@ if (schTable($pdo, 'visits') && schTable($pdo, 'jobs')) {
     }
 }
 
-/* Compatibility fallback: older scheduled jobs that do not have visit rows yet. */
+/* Compatibility fallback for older jobs with no visit rows. */
 if (schTable($pdo, 'jobs') && schTable($pdo, 'job_assignments')) {
     try {
         $hasStartTime = schColumn($pdo, 'jobs', 'start_time');
@@ -364,18 +443,9 @@ if (schTable($pdo, 'jobs') && schTable($pdo, 'job_assignments')) {
             $where[] = 'j.branch_id=:branch_id';
             $params[':branch_id'] = $branchId;
         }
-        if ($employeeId > 0) {
-            $where[] = "EXISTS(SELECT 1 FROM job_assignments jax WHERE jax.tenant_id=j.tenant_id AND jax.job_id=j.id AND jax.user_id=:employee_id AND jax.status<>'removed')";
-            $params[':employee_id'] = $employeeId;
-        }
-        if ($statusFilter !== '') {
-            $where[] = 'j.status=:job_status';
-            $params[':job_status'] = $statusFilter;
-        }
-
-        $sql = "SELECT j.id AS job_id,j.job_no,j.title,j.description,j.priority,j.status AS event_status,j.job_type,
+        $sql = "SELECT j.id AS job_id,j.job_no,j.title,j.description,j.priority,j.status AS event_status,j.job_type,j.total,
                        {$startExpr} AS scheduled_start,{$endExpr} AS scheduled_end,
-                       c.display_name AS client_name,cl.name AS location_name,cl.city AS location_city,ps.name AS service_name,b.name AS branch_name,
+                       c.display_name AS client_name,c.phone AS client_phone,c.email AS client_email,{$locationSelect},ps.name AS service_name,b.name AS branch_name,
                        GROUP_CONCAT(DISTINCT CONCAT_WS(' ',au.first_name,au.last_name) ORDER BY ja.is_primary_responsible DESC,au.first_name,au.id SEPARATOR '||') AS assignee_names,
                        GROUP_CONCAT(DISTINCT au.id ORDER BY ja.is_primary_responsible DESC,au.id SEPARATOR ',') AS assignee_ids
                 FROM jobs j
@@ -393,6 +463,7 @@ if (schTable($pdo, 'jobs') && schTable($pdo, 'job_assignments')) {
             $start = (string)$row['scheduled_start'];
             $end = !empty($row['scheduled_end']) ? (string)$row['scheduled_end'] : date('Y-m-d H:i:s', strtotime($start . ' +1 hour'));
             $events[] = array(
+                'key' => 'job:' . (int)$row['job_id'],
                 'source' => 'job',
                 'visit_id' => 0,
                 'visit_no' => '',
@@ -401,18 +472,22 @@ if (schTable($pdo, 'jobs') && schTable($pdo, 'job_assignments')) {
                 'job_no' => (string)$row['job_no'],
                 'title' => (string)$row['title'],
                 'customer' => (string)$row['client_name'],
+                'client_phone' => (string)$row['client_phone'],
+                'client_email' => (string)$row['client_email'],
                 'service' => (string)$row['service_name'],
-                'location' => trim((string)$row['location_name'] . (!empty($row['location_city']) ? ', ' . $row['location_city'] : '')),
+                'location' => schLocationText($row),
                 'branch' => (string)$row['branch_name'],
                 'priority' => (string)$row['priority'],
                 'status' => (string)$row['event_status'],
                 'job_status' => (string)$row['event_status'],
                 'job_type' => (string)$row['job_type'],
-                'notes' => (string)$row['description'],
+                'instructions' => (string)$row['description'],
                 'start' => $start,
                 'end' => $end,
+                'total' => (float)$row['total'],
                 'assignee_names' => schSplit($row['assignee_names'], '||'),
                 'assignee_ids' => schSplit($row['assignee_ids'], ','),
+                'line_items' => array(),
                 'lane' => 0,
                 'lane_count' => 1
             );
@@ -422,49 +497,87 @@ if (schTable($pdo, 'jobs') && schTable($pdo, 'job_assignments')) {
     }
 }
 
+/* Multi-team, status and type filters. */
+$events = array_values(array_filter($events, function($event) use ($typeFilter, $teamFilterActive, $selectedTeamIds, $includeUnassigned, $statusFilterActive, $selectedStatuses) {
+    if ($typeFilter !== 'all' && $event['source'] !== $typeFilter) return false;
+    if ($statusFilterActive && !in_array(strtolower((string)$event['status']), $selectedStatuses, true)) return false;
+    if ($teamFilterActive) {
+        $eventIds = array_map('intval', $event['assignee_ids']);
+        if (!$eventIds) return $includeUnassigned === 1;
+        foreach ($eventIds as $id) if (in_array($id, $selectedTeamIds, true)) return true;
+        return false;
+    }
+    return true;
+}));
+
 usort($events, function($a, $b) {
     $cmp = strcmp($a['start'], $b['start']);
     if ($cmp !== 0) return $cmp;
-    return $a['job_id'] - $b['job_id'];
+    return (int)$a['job_id'] - (int)$b['job_id'];
 });
 
+/* Attach dynamic job line items to the preview/details panels. */
+$jobIds = array();
+foreach ($events as $event) $jobIds[(int)$event['job_id']] = (int)$event['job_id'];
+$lineItemsByJob = array();
+if ($jobIds && schTable($pdo, 'job_line_items')) {
+    try {
+        $ids = array_values($jobIds);
+        $ph = implode(',', array_fill(0, count($ids), '?'));
+        $stmt = $pdo->prepare("SELECT job_id,item_name,description,quantity,unit_price,line_total FROM job_line_items WHERE tenant_id=? AND job_id IN ({$ph}) ORDER BY job_id,sort_order,id");
+        $stmt->execute(array_merge(array($tenantId), $ids));
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $item) {
+            $jid = (int)$item['job_id'];
+            if (!isset($lineItemsByJob[$jid])) $lineItemsByJob[$jid] = array();
+            $lineItemsByJob[$jid][] = array(
+                'name' => (string)$item['item_name'],
+                'description' => (string)$item['description'],
+                'quantity' => (float)$item['quantity'],
+                'unit_price' => (float)$item['unit_price'],
+                'line_total' => (float)$item['line_total']
+            );
+        }
+    } catch (Throwable $e) {
+        error_log('FieldPlx schedule line items: ' . $e->getMessage());
+    }
+}
+foreach ($events as $index => $event) {
+    $events[$index]['line_items'] = isset($lineItemsByJob[(int)$event['job_id']]) ? $lineItemsByJob[(int)$event['job_id']] : array();
+    $events[$index]['anytime'] = schIsAnytime($events[$index]) ? 1 : 0;
+}
+
 $eventsByDay = array();
-$uniqueEmployees = array();
-$progressCount = 0;
-$completedCount = 0;
-$scheduledCount = 0;
-$minEventHour = 7;
-$maxEventHour = 19;
+$timedEventsByDay = array();
+$anytimeEventsByDay = array();
 foreach ($events as $event) {
     $dayKey = substr($event['start'], 0, 10);
     if (!isset($eventsByDay[$dayKey])) $eventsByDay[$dayKey] = array();
     $eventsByDay[$dayKey][] = $event;
-    foreach ($event['assignee_ids'] as $eid) if ((int)$eid > 0) $uniqueEmployees[(int)$eid] = true;
-    $eventClass = schEventClass($event['status']);
-    if ($eventClass === 'progress') $progressCount++;
-    elseif ($eventClass === 'completed') $completedCount++;
-    elseif ($eventClass === 'scheduled' || $eventClass === 'rescheduled') $scheduledCount++;
-    $startTs = strtotime($event['start']);
-    $endTs = strtotime($event['end']);
-    if ($startTs) $minEventHour = min($minEventHour, (int)date('G', $startTs));
-    if ($endTs) $maxEventHour = max($maxEventHour, (int)date('G', $endTs) + ((int)date('i', $endTs) > 0 ? 1 : 0));
+    if (!empty($event['anytime'])) {
+        if (!isset($anytimeEventsByDay[$dayKey])) $anytimeEventsByDay[$dayKey] = array();
+        $anytimeEventsByDay[$dayKey][] = $event;
+    } else {
+        if (!isset($timedEventsByDay[$dayKey])) $timedEventsByDay[$dayKey] = array();
+        $timedEventsByDay[$dayKey][] = $event;
+    }
 }
-foreach ($eventsByDay as $key => $dayEvents) {
+foreach ($timedEventsByDay as $key => $dayEvents) {
     schAssignLanes($dayEvents);
-    $eventsByDay[$key] = $dayEvents;
+    $timedEventsByDay[$key] = $dayEvents;
 }
 
-$calendarStartHour = max(0, min(7, $minEventHour));
-$calendarEndHour = min(24, max(20, $maxEventHour));
-if (($calendarEndHour - $calendarStartHour) < 8) $calendarEndHour = min(24, $calendarStartHour + 8);
-$slotHeight = 64;
-$calendarHeight = ($calendarEndHour - $calendarStartHour) * $slotHeight;
-$hours = array();
-for ($hour = $calendarStartHour; $hour <= $calendarEndHour; $hour++) $hours[] = $hour;
-
-$selectedEmployeeName = 'All Employees';
-if ($employeeId > 0 && isset($employeeMap[$employeeId])) {
-    $selectedEmployeeName = trim($employeeMap[$employeeId]['first_name'] . ' ' . $employeeMap[$employeeId]['last_name']);
+/* Day view resource rows. */
+$resourceRows = array();
+if ($view === 'day') {
+    if (!$teamFilterActive || $includeUnassigned) {
+        $resourceRows[] = array('id' => 0, 'name' => 'Unassigned', 'initials' => '', 'job_title' => '');
+    }
+    foreach ($employees as $employee) {
+        $eid = (int)$employee['id'];
+        if ($teamFilterActive && !in_array($eid, $selectedTeamIds, true)) continue;
+        $name = trim((string)$employee['first_name'] . ' ' . (string)$employee['last_name']);
+        $resourceRows[] = array('id' => $eid, 'name' => $name, 'initials' => schInitials($name), 'job_title' => (string)$employee['job_title']);
+    }
 }
 
 $todayUrl = schBuildUrl(array('date' => date('Y-m-d')));
@@ -473,6 +586,16 @@ $nextUrl = schBuildUrl(array('date' => $nextDate));
 $dayUrl = schBuildUrl(array('view' => 'day'));
 $weekUrl = schBuildUrl(array('view' => 'week'));
 $monthUrl = schBuildUrl(array('view' => 'month'));
+$findTimeUrl = schBuildUrl(array('view' => 'day'));
+$teamLabel = !$teamFilterActive ? 'All' : ((count($selectedTeamIds) + ($includeUnassigned ? 1 : 0)) . ' selected');
+$statusLabel = !$statusFilterActive ? 'All' : (count($selectedStatuses) . ' selected');
+$typeLabel = $typeFilter === 'all' ? 'All' : schReadable($typeFilter);
+$selectedDayKey = $selected->format('Y-m-d');
+$dayEvents = isset($eventsByDay[$selectedDayKey]) ? $eventsByDay[$selectedDayKey] : array();
+$dayTimedEvents = isset($timedEventsByDay[$selectedDayKey]) ? $timedEventsByDay[$selectedDayKey] : array();
+$dayAnytimeEvents = isset($anytimeEventsByDay[$selectedDayKey]) ? $anytimeEventsByDay[$selectedDayKey] : array();
+$eventJson = json_encode($events, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+$currencyJson = json_encode($currency, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 ?>
 <!DOCTYPE html>
 <html lang="en">
@@ -1334,64 +1457,33 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer { margin-left: var(--fieldplx-s
   .fr-card-body { padding: 12px; }
 }
 
+
 /* =========================================================
-   Schedule manage page
+   Schedule workspace v2
    ========================================================= */
-:root{--sch-hour-height:64px}
-.fd-dashboard{width:100%;max-width:1600px;margin:0 auto;padding:25px 27px 35px}
-.sch-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:18px}
-.sch-title{margin:0 0 7px;color:var(--fd-text);font-size:21px;line-height:1.2;font-weight:700}
-.sch-sub{max-width:760px;margin:0;color:var(--fd-muted);font-size:10.5px;line-height:1.55}
-.sch-head-actions{display:flex;align-items:center;gap:8px}
-.sch-btn{min-height:39px;padding:0 13px;display:inline-flex;align-items:center;justify-content:center;gap:7px;border:1px solid var(--fd-border);border-radius:8px;color:#43546c;background:#fff;text-decoration:none!important;font-size:10px;font-weight:700;cursor:pointer;transition:.15s ease}
-.sch-btn:hover{border-color:#c9dcae;color:var(--fd-green-dark);background:#fbfef8}
-.sch-btn.primary{border-color:var(--fd-green);color:#fff;background:linear-gradient(90deg,#7fc92d,#68aa1d);box-shadow:0 7px 16px rgba(104,170,29,.16)}
-.sch-btn.primary:hover{color:#fff;background:linear-gradient(90deg,#75bb27,#5f9f18)}
-
-.sch-filter-card{margin-bottom:16px;padding:13px;border:1px solid var(--fd-border);border-radius:10px;background:#fff;box-shadow:0 4px 14px rgba(31,43,88,.035)}
-.sch-filter{display:flex;align-items:flex-end;gap:9px;flex-wrap:wrap}
-.sch-field{min-width:150px}.sch-field.employee{min-width:260px;flex:1 1 280px}
-.sch-field label{display:block;margin:0 0 5px;color:#778499;font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:.05em}
-.sch-control{width:100%;height:39px;padding:0 10px;border:1px solid #dfe5ec;border-radius:8px;background:#fff;color:#2b3f5a;font-family:inherit;font-size:10px;outline:0}
-.sch-control:focus{border-color:#a7cd79;box-shadow:0 0 0 3px rgba(116,184,36,.10)}
-.sch-filter-spacer{flex:1 1 16px}
-.sch-selected{height:39px;padding:0 11px;display:flex;align-items:center;gap:8px;border:1px solid #dce9cc;border-radius:8px;background:#f7fbf1;color:#465d2d;font-size:9px;font-weight:700;white-space:nowrap}
-.sch-selected-avatar{width:25px;height:25px;display:grid;place-items:center;border-radius:50%;background:#fff;color:var(--fd-green-dark);font-size:8px;font-weight:800}
-.select2-container{font-size:10px}.select2-container .select2-selection--single{height:39px!important;border:1px solid #dfe5ec!important;border-radius:8px!important}.select2-container--default .select2-selection--single .select2-selection__rendered{height:37px;line-height:37px!important;padding-left:10px!important;color:#2b3f5a!important}.select2-container--default .select2-selection--single .select2-selection__arrow{height:37px!important}.select2-dropdown{border-color:#dfe5ec!important;border-radius:8px!important;overflow:hidden;font-size:10px}.select2-search__field{border:1px solid #dfe5ec!important;border-radius:6px!important;outline:0!important}.select2-results__option--highlighted.select2-results__option--selectable{background:var(--fd-green)!important}
-
-.sch-stats{margin-bottom:16px}
-.sch-manage-stat{height:100%;min-height:112px;padding:18px 20px;border:1px solid #dfe6ef;border-radius:12px;background:#fff;box-shadow:0 3px 12px rgba(24,45,76,.035);position:relative}
-.sch-overview-title,.sch-metric-title{display:block;color:#55677f;font-size:9.5px;font-weight:700}
-.sch-overview-list{margin-top:12px;display:grid;gap:7px}
-.sch-overview-row{display:flex;align-items:center;justify-content:space-between;gap:10px;color:#748197;font-size:8.5px}
-.sch-overview-row span{display:flex;align-items:center;gap:7px}.sch-overview-row i{font-size:6px;color:var(--fd-green)}.sch-overview-row strong{color:#24364f;font-size:9px;font-weight:700}
-.sch-metric-period{display:block;margin-top:5px;color:#909bab;font-size:8px}.sch-metric-value{display:block;margin-top:13px;color:#10203a;font-size:28px;line-height:1;font-weight:700}.sch-metric-note{display:block;margin-top:7px;color:#8491a3;font-size:8px}
-.sch-stat-arrow{width:28px;height:28px;position:absolute;top:15px;right:15px;display:grid;place-items:center;border:1px solid #e4eaf0;border-radius:8px;background:#fafcfd;color:#75859a;font-size:11px}
-
-.sch-calendar-card{overflow:hidden;border:1px solid var(--fd-border);border-radius:11px;background:#fff;box-shadow:0 4px 14px rgba(31,43,88,.04)}
-.sch-toolbar{min-height:67px;padding:12px 14px;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:12px;border-bottom:1px solid var(--fd-border);background:#fff}
-.sch-nav,.sch-view-switch{display:flex;align-items:center;gap:6px}.sch-view-switch{justify-content:flex-end}
-.sch-nav-btn,.sch-view-btn{height:35px;padding:0 11px;display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid #dde4eb;border-radius:8px;background:#fff;color:#52647b;text-decoration:none!important;font-size:9px;font-weight:700;transition:.15s ease}.sch-nav-btn.square{width:35px;padding:0}.sch-nav-btn:hover,.sch-view-btn:hover{border-color:#c5d9a7;color:var(--fd-green-dark);background:#fbfef8}.sch-view-btn.active{border-color:#b9da90;background:var(--fd-green-soft);color:var(--fd-green-dark)}
-.sch-calendar-heading{text-align:center}.sch-calendar-heading h2{margin:0;color:#172842;font-size:16px;font-weight:700}.sch-calendar-heading small{display:block;margin-top:4px;color:#8b97a7;font-size:8px}
-.sch-calendar-scroll{overflow:auto;background:#fff}
-
-/* Day / week time grid */
-.sch-week-head{min-width:900px;display:grid;grid-template-columns:70px repeat(7,minmax(118px,1fr));position:sticky;top:0;z-index:7;border-bottom:1px solid var(--fd-border);background:#fff}.sch-day-view .sch-week-head{min-width:600px;grid-template-columns:70px minmax(500px,1fr)}
-.sch-time-head{border-right:1px solid #edf0f4}.sch-day-head{min-height:64px;padding:9px 8px;display:flex;flex-direction:column;align-items:center;justify-content:center;border-right:1px solid #edf0f4;color:#69788d;text-align:center}.sch-day-head:last-child{border-right:0}.sch-day-head .dow{font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:.08em}.sch-day-head .date{width:30px;height:30px;margin-top:4px;display:grid;place-items:center;border-radius:50%;color:#273b57;font-size:11px;font-weight:700}.sch-day-head.today .date{background:var(--fd-green);color:#fff}.sch-day-head .count{margin-top:3px;color:#9aa5b4;font-size:7px}
-.sch-calendar-body{min-width:900px;display:grid;grid-template-columns:70px repeat(7,minmax(118px,1fr));position:relative}.sch-day-view .sch-calendar-body{min-width:600px;grid-template-columns:70px minmax(500px,1fr)}
-.sch-time-axis{height:var(--sch-calendar-height);position:relative;border-right:1px solid #e9edf2;background:#fbfcfd}.sch-time-label{height:var(--sch-hour-height);padding:0 9px;position:absolute;left:0;right:0;transform:translateY(-6px);color:#8794a5;font-size:8px;text-align:right}.sch-day-column{height:var(--sch-calendar-height);position:relative;border-right:1px solid #edf0f4;background-image:repeating-linear-gradient(to bottom,transparent 0,transparent calc(var(--sch-hour-height) - 1px),#edf1f4 calc(var(--sch-hour-height) - 1px),#edf1f4 var(--sch-hour-height));background-color:#fff}.sch-day-column:last-child{border-right:0}.sch-day-column.today{background-color:#fcfef9}
-.sch-event{position:absolute;z-index:3;min-height:34px;padding:6px 7px;overflow:hidden;border:1px solid #ccdbea;border-left:3px solid #4678a8;border-radius:7px;background:#f5f9fd;color:#203650;text-decoration:none!important;box-shadow:0 2px 6px rgba(30,49,76,.06);transition:.12s ease}.sch-event:hover{z-index:8;transform:translateY(-1px);box-shadow:0 7px 18px rgba(27,45,72,.14);border-color:#9fc66f;color:#203650}.sch-event.scheduled{border-left-color:#4678a8;background:#f5f9fd}.sch-event.progress{border-left-color:#d39527;background:#fffaf0}.sch-event.completed{border-left-color:#74b824;background:#f6faef}.sch-event.rescheduled{border-left-color:#8b69bd;background:#faf7ff}.sch-event.cancelled{border-left-color:#df6269;background:#fff7f7;opacity:.75}.sch-event-time{display:flex;align-items:center;gap:4px;color:#61738a;font-size:7.5px;font-weight:700;white-space:nowrap}.sch-event-dot{width:5px;height:5px;flex:0 0 5px;border-radius:50%;background:currentColor}.sch-event-title{display:block;margin-top:3px;overflow:hidden;color:#1b304b;font-size:8.5px;font-weight:700;line-height:1.25;text-overflow:ellipsis;white-space:nowrap}.sch-event-meta{display:block;margin-top:2px;overflow:hidden;color:#7a899c;font-size:7.2px;line-height:1.25;text-overflow:ellipsis;white-space:nowrap}.sch-event-team{margin-top:4px;display:flex;align-items:center;gap:3px;overflow:hidden}.sch-mini-avatar{width:18px;height:18px;flex:0 0 18px;display:grid;place-items:center;border:1px solid #fff;border-radius:50%;background:#e9f3dc;color:#4f7923;font-size:6px;font-weight:800}.sch-team-more{color:#77869a;font-size:7px;font-weight:700}.sch-now-line{height:1px;position:absolute;left:0;right:0;z-index:5;background:#df4d56;pointer-events:none}.sch-now-line:before{content:'';width:7px;height:7px;position:absolute;left:-3px;top:-3px;border-radius:50%;background:#df4d56}
-
-/* Month calendar */
-.sch-month-wrap{overflow:auto;background:#fff}.sch-month-weekdays{min-width:980px;display:grid;grid-template-columns:repeat(7,minmax(140px,1fr));border-bottom:1px solid var(--fd-border);background:#fbfcfd}.sch-month-weekday{height:40px;display:flex;align-items:center;justify-content:center;border-right:1px solid #edf0f4;color:#76859a;font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:.08em}.sch-month-weekday:last-child{border-right:0}
-.sch-month-grid{min-width:980px;display:grid;grid-template-columns:repeat(7,minmax(140px,1fr));background:#edf0f4;gap:1px}.sch-month-day{min-height:148px;padding:8px;background:#fff}.sch-month-day.outside{background:#fafbfd}.sch-month-day.today{background:#fcfef9;box-shadow:inset 0 0 0 1px #c8e0a8}.sch-month-day.selected{box-shadow:inset 0 0 0 2px rgba(116,184,36,.38)}.sch-month-day-head{height:28px;display:flex;align-items:center;justify-content:space-between;gap:8px}.sch-month-date{width:27px;height:27px;display:grid;place-items:center;border-radius:50%;color:#3e526d;font-size:9px;font-weight:700}.sch-month-day.outside .sch-month-date{color:#a5afbc}.sch-month-day.today .sch-month-date{color:#fff;background:var(--fd-green)}.sch-month-count{color:#9aa5b3;font-size:7px}.sch-month-events{margin-top:5px;display:grid;gap:4px}.sch-month-event{padding:6px 7px;display:block;overflow:hidden;border:1px solid #dbe5ee;border-left:3px solid #4678a8;border-radius:6px;background:#f7fafd;color:#203650;text-decoration:none!important;transition:.12s ease}.sch-month-event:hover{border-color:#acd07f;background:#f8fced;color:#203650}.sch-month-event.progress{border-left-color:#d39527;background:#fffaf0}.sch-month-event.completed{border-left-color:#74b824;background:#f6faef}.sch-month-event.rescheduled{border-left-color:#8b69bd;background:#faf7ff}.sch-month-event.cancelled{border-left-color:#df6269;background:#fff7f7;opacity:.76}.sch-month-event-time{display:flex;align-items:center;gap:4px;color:#63748a;font-size:7px;font-weight:700}.sch-month-event-title{display:block;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#21354f;font-size:8px;font-weight:700}.sch-month-event-meta{display:block;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#8290a1;font-size:6.8px}.sch-month-more{height:25px;display:flex;align-items:center;padding:0 5px;color:var(--fd-green-dark);text-decoration:none!important;font-size:7.5px;font-weight:700}
-
-.sch-legend{min-height:48px;padding:10px 14px;display:flex;align-items:center;gap:13px;flex-wrap:wrap;border-top:1px solid var(--fd-border);background:#fff;color:#718095;font-size:8px}.sch-legend-item{display:flex;align-items:center;gap:5px}.sch-legend-dot{width:7px;height:7px;border-radius:50%;background:#4678a8}.sch-legend-dot.progress{background:#d39527}.sch-legend-dot.completed{background:#74b824}.sch-legend-dot.rescheduled{background:#8b69bd}.sch-legend-dot.cancelled{background:#df6269}.sch-legend-note{margin-left:auto;color:#93a0af}.sch-no-events{padding:8px 14px;border-bottom:1px solid #edf0f4;background:#fffdf5;color:#8a7330;font-size:8.5px}.sch-no-events i{margin-right:5px}
-
-@media(max-width:1199.98px){.sch-toolbar{grid-template-columns:auto 1fr auto}.sch-manage-stat{min-height:108px}}
-@media(max-width:991.98px){.sch-head{flex-direction:column}.sch-head-actions{width:100%}.sch-head-actions .sch-btn{flex:1}}
-@media(max-width:767.98px){.fd-dashboard{padding:17px 13px 28px}.sch-title{font-size:19px}.sch-sub{max-width:100%}.sch-filter{align-items:stretch}.sch-field,.sch-field.employee{width:100%;min-width:0;flex:1 1 100%}.sch-filter-spacer{display:none}.sch-selected{width:100%}.sch-filter .sch-btn{flex:1}.sch-toolbar{grid-template-columns:1fr;gap:8px}.sch-calendar-heading{grid-row:1}.sch-nav{grid-row:2;justify-content:center}.sch-view-switch{grid-row:3;justify-content:center}.sch-week-head,.sch-calendar-body{min-width:820px}.sch-day-view .sch-week-head,.sch-day-view .sch-calendar-body{min-width:560px}.sch-month-weekdays,.sch-month-grid{min-width:910px}.sch-month-day{min-height:138px}.sch-legend-note{width:100%;margin-left:0}}
-@media(max-width:575.98px){.sch-head-actions{display:grid;grid-template-columns:1fr 1fr}.sch-head-actions .sch-btn.primary{grid-column:1/-1}.sch-manage-stat{padding:15px}.sch-metric-value{font-size:24px}}
+.fd-dashboard.schedule-workspace{width:100%;max-width:none;margin:0;padding:0;background:#fff}
+.sch2-card{min-height:calc(100vh - var(--fieldplx-topbar-height));background:#fff}
+.sch2-toolbar{min-height:58px;padding:10px 16px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--fd-border);background:#fff;position:sticky;top:var(--fieldplx-topbar-height);z-index:22}
+.sch2-period{margin-right:14px;display:inline-flex;align-items:center;gap:7px;color:#10243e;font-size:20px;font-weight:700;white-space:nowrap}
+.sch2-period i{font-size:11px;color:#60748b}
+.sch2-icon-btn,.sch2-btn,.sch2-filter-btn,.sch2-view-btn{height:34px;display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid #dbe2e9;border-radius:7px;background:#fff;color:#31465f;text-decoration:none!important;font-size:10px;font-weight:600;cursor:pointer;white-space:nowrap}
+.sch2-icon-btn{width:34px;padding:0}.sch2-btn{padding:0 11px}.sch2-btn.primary{border-color:#5d971b;background:#2f8b22;color:#fff}.sch2-btn.primary:hover{background:#24751b;color:#fff}
+.sch2-filter-btn{padding:0 12px;border-radius:18px}.sch2-filter-btn.active{background:#ecebe7;border-color:#dedcd6}.sch2-filter-btn .muted{color:#7f8b99;font-weight:500}
+.sch2-toolbar-spacer{flex:1}.sch2-info{color:#2688de;font-size:16px}.sch2-view-switch{height:34px;display:flex;border:1px solid #dbe2e9;border-radius:7px;overflow:hidden}.sch2-view-btn{height:32px;padding:0 13px;border:0;border-radius:0}.sch2-view-btn.active{box-shadow:inset 0 0 0 1px #5d971b;color:#4e7c20;background:#fbfff7}
+.sch2-menu-wrap,.sch2-filter-wrap{position:relative}.sch2-dropdown{width:252px;position:absolute;top:42px;left:0;z-index:90;border:1px solid #d9dfe5;border-radius:8px;background:#fff;box-shadow:0 8px 22px rgba(0,17,49,.14);display:none;overflow:hidden}.sch2-dropdown.open{display:block}.sch2-dropdown.right{left:auto;right:0}.sch2-dropdown-search{padding:10px;border-bottom:1px solid #edf0f3}.sch2-dropdown-search input{width:100%;height:34px;padding:0 9px;border:1px solid #dbe2e9;border-radius:6px;outline:0;font-size:10px}.sch2-dropdown-list{max-height:280px;overflow:auto}.sch2-choice{min-height:40px;padding:8px 12px;display:flex;align-items:center;gap:9px;color:#40546b;font-size:10px;cursor:pointer}.sch2-choice:hover,.sch2-choice.selected{background:#f4f3ef}.sch2-choice-check{margin-left:auto;color:#24465a;font-size:15px}.sch2-choice-avatar{width:22px;height:22px;display:grid;place-items:center;border-radius:50%;background:#294b5d;color:#fff;font-size:7px;font-weight:700}.sch2-choice-avatar.unassigned{background:#fff0ea;color:#e05a45;border:1px solid #efb9ad}.sch2-dropdown-foot{padding:10px 12px;display:flex;align-items:center;justify-content:space-between;border-top:1px solid #e6e9ec;background:#fff}.sch2-link-btn{border:0;background:transparent;color:#4f8d22;text-decoration:underline;font-size:10px;cursor:pointer}.sch2-link-btn.secondary{color:#7f8790;text-decoration:none;background:#efefed;border-radius:4px;padding:5px 8px}
+.sch2-calendar{position:relative;background:#fff}.sch2-scroll{width:100%;overflow:auto;scrollbar-width:thin;scrollbar-color:#8c8f92 transparent}.sch2-scroll::-webkit-scrollbar{height:9px;width:9px}.sch2-scroll::-webkit-scrollbar-thumb{background:#8c8f92;border-radius:8px}
+/* month */
+.sch2-month-weekdays{min-width:980px;display:grid;grid-template-columns:repeat(7,minmax(140px,1fr));height:43px;border-bottom:1px solid #d9dee3;background:#fff;position:sticky;top:0;z-index:5}.sch2-month-weekday{display:flex;align-items:center;justify-content:center;color:#183149;font-size:10px;font-weight:700}.sch2-month-grid{min-width:980px;display:grid;grid-template-columns:repeat(7,minmax(140px,1fr));grid-template-rows:repeat(6,minmax(108px,1fr));height:calc(100vh - var(--fieldplx-topbar-height) - 102px);min-height:650px;background:#e2e3e3;gap:1px}.sch2-month-day{padding:5px 6px;background:#fff;overflow:hidden}.sch2-month-day.outside{background:#ececec}.sch2-month-day-head{height:24px;display:flex;align-items:center;gap:5px}.sch2-month-date{width:20px;height:20px;display:grid;place-items:center;border-radius:5px;color:#1d354a;font-size:10px}.sch2-month-day.today .sch2-month-date,.sch2-month-day.selected .sch2-month-date{background:#2e82bb;color:#fff;font-weight:700}.sch2-visit-count{padding:2px 4px;border:1px solid #d5dde4;border-radius:3px;background:#fff;color:#68798c;font-size:7px}.sch2-month-events{display:grid;gap:3px}.sch2-month-event{height:22px;padding:0 6px;display:flex;align-items:center;gap:5px;overflow:hidden;border:0;border-radius:2px;background:#e5efe3;color:#294640;text-decoration:none!important;font-size:8px;cursor:pointer}.sch2-month-event.progress{background:#fff1d9}.sch2-month-event.completed{background:#e6f2dc}.sch2-month-event.rescheduled{background:#f0eafa}.sch2-month-event.cancelled{background:#f9e3e5}.sch2-month-event .avatar{width:14px;height:14px;flex:0 0 14px;display:grid;place-items:center;border-radius:50%;background:#355768;color:#fff;font-size:5.5px;font-weight:700}.sch2-month-event .title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.sch2-month-more{color:#4f7f27;font-size:8px;text-decoration:none!important}
+/* week */
+.sch2-week-wrap{min-width:980px}.sch2-week-head{display:grid;grid-template-columns:55px repeat(7,minmax(130px,1fr));height:66px;background:#fff;border-bottom:0}.sch2-week-corner{border-right:1px solid #e1e4e7}.sch2-week-day{padding-top:11px;text-align:center;color:#30465b;font-size:10px;font-weight:700}.sch2-week-day .date{width:28px;height:28px;margin:5px auto 0;display:grid;place-items:center;border-radius:6px}.sch2-week-day.today .date,.sch2-week-day.selected .date{background:#2f83bb;color:#fff}.sch2-anytime-row{display:grid;grid-template-columns:55px repeat(7,minmax(130px,1fr));min-height:28px;border-bottom:1px solid #e0e3e6}.sch2-anytime-label{padding:6px 4px;color:#788899;font-size:8px;text-align:right;border-right:1px solid #e4e6e8}.sch2-anytime-cell{min-height:28px;padding:3px;border-right:1px solid #ededed}.sch2-anytime-event{height:20px;padding:0 5px;display:flex;align-items:center;gap:4px;border-radius:2px;background:#e5efe3;color:#294640;font-size:8px;overflow:hidden;cursor:pointer}.sch2-week-body{display:grid;grid-template-columns:55px repeat(7,minmax(130px,1fr));height:1536px;position:relative}.sch2-time-axis{position:relative;border-right:1px solid #e4e6e8;background:#fff}.sch2-time-label{height:64px;padding-right:4px;position:absolute;left:0;right:0;transform:translateY(-5px);color:#6a7a8c;font-size:8px;text-align:right}.sch2-week-column{position:relative;border-right:1px solid #ededed;background-image:repeating-linear-gradient(to bottom,#fff 0,#fff 63px,#e9e9e8 63px,#e9e9e8 64px)}.sch2-week-column.today{background-color:#fffefa}.sch2-week-event{position:absolute;z-index:4;min-height:22px;padding:4px 5px;overflow:hidden;border:0;border-radius:3px;background:#e5efe3;color:#294640;font-size:7.5px;cursor:pointer}.sch2-week-event.progress{background:#fff1d9}.sch2-week-event.completed{background:#e6f2dc}.sch2-week-event.rescheduled{background:#f0eafa}.sch2-week-event.cancelled{background:#f9e3e5}.sch2-week-event .line1{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.sch2-week-event .line2{margin-top:2px;color:#65766f;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* day resource timeline */
+.sch2-day-wrap{min-width:1280px;display:grid;grid-template-columns:205px 1fr}.sch2-resource-head{height:76px;position:sticky;left:0;z-index:8;border-right:1px solid #d9d9d7;border-bottom:1px solid #e0e3e5;background:#fff;display:flex;align-items:flex-end;justify-content:flex-end;padding:0 8px 13px;color:#728197;font-size:8px}.sch2-day-timeline-head{height:76px;position:relative;border-bottom:1px solid #e0e3e5;background:#fff;overflow:hidden}.sch2-day-hours{width:2304px;height:100%;position:relative}.sch2-day-hour{width:96px;position:absolute;bottom:10px;color:#657587;font-size:8px}.sch2-resource-row{height:184px;position:sticky;left:0;z-index:7;padding:0 13px;display:flex;align-items:center;gap:9px;border-right:1px solid #d9d9d7;border-bottom:1px solid #e3e3e1;background:#fff}.sch2-resource-row.alt{background:#fbfaf8}.sch2-resource-avatar{width:24px;height:24px;display:grid;place-items:center;border-radius:50%;background:#294b5d;color:#fff;font-size:7px;font-weight:700}.sch2-resource-avatar.unassigned{background:transparent;color:#677786;border:0;font-size:17px}.sch2-resource-copy{min-width:0;flex:1}.sch2-resource-name{display:block;color:#31465a;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.sch2-resource-count{margin-top:4px;display:inline-block;color:#4f8f27;font-size:8px}.sch2-resource-timeline{height:184px;position:relative;border-bottom:1px solid #e3e3e1;background-image:repeating-linear-gradient(to right,transparent 0,transparent 95px,#ddd 95px,#ddd 96px);background-color:#fff}.sch2-resource-timeline.alt{background-color:#fbfaf8}.sch2-day-event{height:34px;position:absolute;top:18px;padding:4px 7px;overflow:hidden;border-radius:3px;background:#e5efe3;color:#294640;font-size:8px;cursor:pointer}.sch2-day-event:nth-child(2n){top:58px}.sch2-day-event:nth-child(3n){top:98px}.sch2-day-event .line1{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.sch2-day-event .line2{margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.sch2-day-scroller{overflow:auto}.sch2-day-timeline-inner{width:2304px;position:relative}.sch2-anytime-toggle{position:absolute;top:9px;left:0;border:0;background:transparent;color:#66798e;font-size:8px;cursor:pointer}.sch2-anytime-drawer{width:180px;position:absolute;top:76px;bottom:0;left:205px;z-index:16;border-right:1px solid #cfd5d9;background:#fff;box-shadow:4px 0 10px rgba(0,0,0,.06);display:none}.sch2-anytime-drawer.open{display:block}.sch2-anytime-drawer-head{height:42px;padding:0 10px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #e3e6e8;color:#30465b;font-size:10px;font-weight:700}.sch2-anytime-drawer-list{padding:8px;display:grid;gap:5px}.sch2-anytime-drawer-event{height:25px;padding:0 7px;display:flex;align-items:center;gap:4px;border-radius:2px;background:#e5efe3;color:#294640;font-size:8px;cursor:pointer}
+/* popover */
+.sch2-popover{width:335px;position:fixed;z-index:120;display:none;border:1px solid #d9dfe4;border-radius:8px;background:#fff;box-shadow:0 8px 22px rgba(0,17,49,.18);overflow:hidden}.sch2-popover.open{display:block}.sch2-popover-head{padding:12px 14px 8px;display:flex;align-items:flex-start;justify-content:space-between}.sch2-popover-kicker{color:#6f8092;font-size:9px}.sch2-popover-title{margin-top:5px;color:#18324a;font-size:13px;font-weight:700}.sch2-popover-close{border:0;background:transparent;color:#566879;font-size:16px}.sch2-popover-body{padding:0 14px 10px;color:#43576d;font-size:9px}.sch2-pop-row{margin:8px 0}.sch2-pop-label{display:block;margin-bottom:3px;color:#18324a;font-weight:700}.sch2-team-chips{display:flex;gap:5px;flex-wrap:wrap}.sch2-team-chip{height:24px;padding:0 7px;display:inline-flex;align-items:center;gap:5px;border-radius:13px;background:#e7e5e0;color:#31495c}.sch2-chip-avatar{width:17px;height:17px;display:grid;place-items:center;border-radius:50%;background:#294b5d;color:#fff;font-size:6px;font-weight:700}.sch2-pop-lines{border:1px solid #e2e6e9;border-radius:5px;overflow:hidden}.sch2-pop-line{min-height:30px;padding:6px 8px;display:flex;align-items:flex-start;justify-content:space-between;gap:10px;border-bottom:1px solid #eceeef}.sch2-pop-line:last-child{border-bottom:0}.sch2-pop-total{padding:7px 8px;text-align:right;font-weight:700}.sch2-pop-actions{padding:8px 12px;display:flex;gap:7px;border-top:1px solid #e6e8ea;background:#fff}.sch2-pop-actions .sch2-btn{flex:1}.sch2-pop-actions .sch2-btn.primary{background:#338d22}
+/* modal */
+.sch2-modal{position:fixed;inset:0;z-index:130;display:none;align-items:center;justify-content:center;padding:20px;background:rgba(0,17,49,.34)}.sch2-modal.open{display:flex}.sch2-modal-dialog{width:min(510px,calc(100vw - 28px));max-height:calc(100vh - 36px);overflow:auto;border-radius:8px;background:#fff;box-shadow:0 18px 50px rgba(0,17,49,.22)}.sch2-modal-head{height:66px;padding:0 18px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #e2e6e9}.sch2-modal-title{margin:0;color:#183149;font-size:18px;font-weight:700}.sch2-modal-close{width:34px;height:34px;border:0;background:transparent;color:#41586b;font-size:19px}.sch2-modal-body{padding:14px}.sch2-visit-top{display:grid;grid-template-columns:1.2fr .9fr;gap:14px}.sch2-visit-name{font-size:14px;font-weight:700;color:#183149}.sch2-visit-customer{margin-top:12px;color:#526779;font-size:10px;line-height:1.5}.sch2-visit-meta{display:grid;gap:10px;color:#526779;font-size:10px}.sch2-visit-meta-row{display:flex;align-items:flex-start;gap:8px}.sch2-visit-meta-row i{color:#5d971b;font-size:14px}.sch2-modal-actions{margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:10px}.sch2-complete{height:38px;border:0;border-radius:6px;background:#338d22;color:#fff;font-size:10px;font-weight:700}.sch2-more-action{height:38px;border:1px solid #dbe1e6;border-radius:6px;background:#fff;color:#4d8a24;font-size:10px;font-weight:700}.sch2-tabs{margin-top:14px;height:40px;display:flex;gap:25px;border-bottom:1px solid #dfe4e8}.sch2-tab{height:40px;padding:0 7px;border:0;border-bottom:3px solid transparent;background:transparent;color:#4a6074;font-size:10px;font-weight:600}.sch2-tab.active{border-bottom-color:#338d22;color:#19364a}.sch2-tab-panel{display:none;padding-top:12px}.sch2-tab-panel.active{display:block}.sch2-info-block{padding:10px 0;border-bottom:1px solid #e7eaec}.sch2-info-block:last-child{border-bottom:0}.sch2-info-title{margin-bottom:7px;color:#1a344a;font-size:10px;font-weight:700}.sch2-info-text{color:#65778a;font-size:9.5px;line-height:1.55;white-space:pre-wrap}.sch2-info-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.sch2-modal-line-items{margin-top:8px}.sch2-modal-line{padding:7px 0;display:grid;grid-template-columns:1fr auto;gap:8px;color:#53687b;font-size:9px}.sch2-modal-line .desc{display:block;margin-top:3px;color:#8290a0}.sch2-toast{min-width:240px;max-width:360px;position:fixed;top:86px;right:18px;z-index:180;padding:10px 12px;border-radius:7px;background:#2f8b22;color:#fff;font-size:9px;box-shadow:0 8px 25px rgba(0,0,0,.18);display:none}.sch2-toast.error{background:#cf4f58}.sch2-toast.show{display:block}
+@media(max-width:1100px){.sch2-period{font-size:17px}.sch2-filter-btn{padding:0 9px}.sch2-toolbar{overflow-x:auto}.sch2-toolbar-spacer{min-width:10px}.sch2-view-switch{flex:0 0 auto}}
+@media(max-width:767.98px){.sch2-toolbar{top:64px;padding:8px 10px}.sch2-period{font-size:16px;margin-right:6px}.sch2-btn.find-time{display:none}.sch2-info{display:none}.sch2-month-grid{height:700px}.sch2-modal{padding:8px}.sch2-visit-top{grid-template-columns:1fr}.sch2-popover{width:min(330px,calc(100vw - 18px))}}
 
     </style>
 </head>
@@ -1401,250 +1493,209 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer { margin-left: var(--fieldplx-s
     <?php require_once __DIR__ . '/includes/sidebar.php'; ?>
     <main class="fieldplx-main-content">
         <div class="fieldplx-content-wrapper">
-            <div class="fd-dashboard">
-                <section class="sch-head">
-                    <div>
-                        <h1 class="sch-title">Schedule</h1>
-                        <p class="sch-sub">View employee Job Card assignments and recurring visits in day, week or month calendar format.</p>
-                    </div>
-                    <div class="sch-head-actions">
-                        <a class="sch-btn" href="jobs.php"><i class="bi bi-briefcase"></i> Jobs</a>
-                        <a class="sch-btn" href="schedule.php"><i class="bi bi-arrow-clockwise"></i> Refresh</a>
-                        <a class="sch-btn primary" href="job-form.php"><i class="bi bi-plus-lg"></i> Create Job Card</a>
-                    </div>
-                </section>
+            <div class="fd-dashboard schedule-workspace">
+                <section class="sch2-card">
+                    <div class="sch2-toolbar">
+                        <div class="sch2-period"><?= schH($heading) ?> <i class="bi bi-chevron-down"></i></div>
+                        <a class="sch2-icon-btn" href="<?= schH($previousUrl) ?>" aria-label="Previous"><i class="bi bi-arrow-left"></i></a>
+                        <a class="sch2-icon-btn" href="<?= schH($nextUrl) ?>" aria-label="Next"><i class="bi bi-arrow-right"></i></a>
+                        <a class="sch2-btn" href="<?= schH($todayUrl) ?>">Today</a>
+                        <a class="sch2-btn primary find-time" href="<?= schH($findTimeUrl) ?>">Find a Time</a>
 
-                <section class="sch-filter-card">
-                    <form class="sch-filter" id="scheduleFilter" method="get" action="schedule.php">
+                        <div class="sch2-filter-wrap">
+                            <button type="button" class="sch2-filter-btn <?= $typeFilter !== 'all' ? 'active' : '' ?>" data-dropdown="typeDropdown">Type <span class="muted">|</span> <?= schH($typeLabel) ?></button>
+                            <div class="sch2-dropdown" id="typeDropdown">
+                                <div class="sch2-dropdown-list">
+                                    <?php foreach (array('all'=>'All','visit'=>'Visits','job'=>'Jobs') as $value=>$label): ?>
+                                        <a class="sch2-choice <?= $typeFilter === $value ? 'selected' : '' ?>" href="<?= schH(schBuildUrl(array('type'=>$value))) ?>">
+                                            <span><?= schH($label) ?></span><?php if ($typeFilter === $value): ?><i class="bi bi-check-lg sch2-choice-check"></i><?php endif; ?>
+                                        </a>
+                                    <?php endforeach; ?>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="sch2-filter-wrap">
+                            <button type="button" class="sch2-filter-btn <?= $teamFilterActive ? 'active' : '' ?>" data-dropdown="teamDropdown">Team <span class="muted">|</span> <?= schH($teamLabel) ?></button>
+                            <div class="sch2-dropdown" id="teamDropdown">
+                                <div class="sch2-dropdown-search"><input type="search" id="teamSearch" placeholder="Search"></div>
+                                <div class="sch2-dropdown-list" id="teamChoices">
+                                    <?php foreach ($employees as $employee): ?>
+                                        <?php $eid=(int)$employee['id']; $ename=trim($employee['first_name'].' '.$employee['last_name']); $checked=!$teamFilterActive || in_array($eid,$selectedTeamIds,true); ?>
+                                        <label class="sch2-choice team-choice" data-search="<?= schH(strtolower($ename)) ?>">
+                                            <input type="checkbox" class="team-check" value="<?= $eid ?>" <?= $checked ? 'checked' : '' ?> hidden>
+                                            <span class="sch2-choice-avatar"><?= schH(schInitials($ename)) ?></span>
+                                            <span><?= schH($ename) ?></span>
+                                            <i class="bi bi-check-lg sch2-choice-check"></i>
+                                        </label>
+                                    <?php endforeach; ?>
+                                    <label class="sch2-choice team-choice" data-search="unassigned">
+                                        <input type="checkbox" id="teamUnassigned" <?= $includeUnassigned ? 'checked' : '' ?> hidden>
+                                        <span class="sch2-choice-avatar unassigned"><i class="bi bi-person-slash"></i></span>
+                                        <span>Unassigned</span>
+                                        <i class="bi bi-check-lg sch2-choice-check"></i>
+                                    </label>
+                                </div>
+                                <div class="sch2-dropdown-foot">
+                                    <button type="button" class="sch2-link-btn secondary" id="teamSelectAll">Select All</button>
+                                    <button type="button" class="sch2-link-btn" id="teamClear">Clear</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="sch2-filter-wrap">
+                            <button type="button" class="sch2-filter-btn <?= $statusFilterActive ? 'active' : '' ?>" data-dropdown="statusDropdown">Status <span class="muted">|</span> <?= schH($statusLabel) ?></button>
+                            <div class="sch2-dropdown" id="statusDropdown">
+                                <div class="sch2-dropdown-list" id="statusChoices">
+                                    <?php foreach ($allowedStatuses as $statusOption): ?>
+                                        <?php $checked=!$statusFilterActive || in_array($statusOption,$selectedStatuses,true); ?>
+                                        <label class="sch2-choice status-choice">
+                                            <input type="checkbox" class="status-check" value="<?= schH($statusOption) ?>" <?= $checked ? 'checked' : '' ?> hidden>
+                                            <span><?= schH(schReadable($statusOption)) ?></span>
+                                            <i class="bi bi-check-lg sch2-choice-check"></i>
+                                        </label>
+                                    <?php endforeach; ?>
+                                </div>
+                                <div class="sch2-dropdown-foot">
+                                    <button type="button" class="sch2-link-btn secondary" id="statusSelectAll">Select All</button>
+                                    <button type="button" class="sch2-link-btn" id="statusClear">Clear</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="sch2-toolbar-spacer"></div>
+                        <i class="bi bi-info-circle sch2-info" title="Schedule shows visits and job assignments for the selected period."></i>
+                        <div class="sch2-view-switch">
+                            <a class="sch2-view-btn <?= $view === 'month' ? 'active' : '' ?>" href="<?= schH($monthUrl) ?>">Month</a>
+                            <a class="sch2-view-btn <?= $view === 'week' ? 'active' : '' ?>" href="<?= schH($weekUrl) ?>">Week</a>
+                            <a class="sch2-view-btn <?= $view === 'day' ? 'active' : '' ?>" href="<?= schH($dayUrl) ?>">Day</a>
+                        </div>
+                        <div class="sch2-menu-wrap">
+                            <button type="button" class="sch2-btn" data-dropdown="moreDropdown"><i class="bi bi-three-dots"></i> More</button>
+                            <div class="sch2-dropdown right" id="moreDropdown">
+                                <div class="sch2-dropdown-list">
+                                    <a class="sch2-choice" href="job-form.php"><i class="bi bi-plus-lg"></i><span>Create Job</span></a>
+                                    <a class="sch2-choice" href="jobs.php"><i class="bi bi-briefcase"></i><span>View Jobs</span></a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <form id="scheduleHiddenFilter" method="get" action="schedule.php" style="display:none">
                         <input type="hidden" name="view" value="<?= schH($view) ?>">
-                        <div class="sch-field employee">
-                            <label>Employee</label>
-                            <select class="sch-control" id="employeeFilter" name="employee_id">
-                                <option value="0">All Employees</option>
-                                <?php foreach ($employees as $employee): ?>
-                                    <?php $empName = trim($employee['first_name'] . ' ' . $employee['last_name']); ?>
-                                    <option value="<?= (int)$employee['id'] ?>" <?= $employeeId === (int)$employee['id'] ? 'selected' : '' ?>>
-                                        <?= schH($empName) ?><?= !empty($employee['job_title']) ? ' · ' . schH($employee['job_title']) : '' ?>
-                                    </option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                        <div class="sch-field">
-                            <label>Date</label>
-                            <input class="sch-control" type="date" name="date" value="<?= schH($selectedDate) ?>">
-                        </div>
-                        <div class="sch-field">
-                            <label>Branch</label>
-                            <select class="sch-control" name="branch_id" <?= $sessionBranchId > 0 ? 'disabled' : '' ?>>
-                                <option value="0">All Branches</option>
-                                <?php foreach ($branches as $branch): ?>
-                                    <option value="<?= (int)$branch['id'] ?>" <?= $branchId === (int)$branch['id'] ? 'selected' : '' ?>><?= schH($branch['name']) ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                            <?php if ($sessionBranchId > 0): ?><input type="hidden" name="branch_id" value="<?= (int)$sessionBranchId ?>"><?php endif; ?>
-                        </div>
-                        <div class="sch-field">
-                            <label>Status</label>
-                            <select class="sch-control" name="status">
-                                <option value="">All Status</option>
-                                <?php foreach (array('scheduled','accepted','travelling','arrived','in_progress','paused','rescheduled','follow_up_required','completed','cancelled','no_access') as $statusOption): ?>
-                                    <option value="<?= schH($statusOption) ?>" <?= $statusFilter === $statusOption ? 'selected' : '' ?>><?= schH(schReadable($statusOption)) ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                        <div class="sch-filter-spacer"></div>
-                        <div class="sch-selected" title="Current employee filter">
-                            <span class="sch-selected-avatar"><?= schH(schInitials($selectedEmployeeName)) ?></span>
-                            <span><?= schH($selectedEmployeeName) ?></span>
-                        </div>
-                        <button class="sch-btn primary" type="submit"><i class="bi bi-funnel"></i> Apply</button>
+                        <input type="hidden" name="date" value="<?= schH($selectedDate) ?>">
+                        <?php if ($branchId > 0): ?><input type="hidden" name="branch_id" value="<?= (int)$branchId ?>"><?php endif; ?>
+                        <input type="hidden" name="type" value="<?= schH($typeFilter) ?>">
+                        <input type="hidden" name="team_filter" id="teamFilterFlag" value="<?= $teamFilterActive ? 1 : 0 ?>">
+                        <input type="hidden" name="team_ids" id="teamIdsInput" value="<?= schH(implode(',',$selectedTeamIds)) ?>">
+                        <input type="hidden" name="include_unassigned" id="teamUnassignedInput" value="<?= $includeUnassigned ? 1 : 0 ?>">
+                        <input type="hidden" name="status_filter" id="statusFilterFlag" value="<?= $statusFilterActive ? 1 : 0 ?>">
+                        <input type="hidden" name="statuses" id="statusesInput" value="<?= schH(implode(',',$selectedStatuses)) ?>">
                     </form>
-                </section>
 
-                <?php
-                    $viewPeriodText = $view === 'month' ? 'Selected month' : ($view === 'week' ? 'Selected week' : 'Selected day');
-                ?>
-                <section class="row g-3 sch-stats">
-                    <div class="col-xl-3 col-md-6">
-                        <article class="sch-manage-stat">
-                            <span class="sch-overview-title">Overview</span>
-                            <div class="sch-overview-list">
-                                <div class="sch-overview-row"><span><i class="bi bi-circle-fill"></i> Scheduled work</span><strong><?= count($events) ?></strong></div>
-                                <div class="sch-overview-row"><span><i class="bi bi-circle-fill"></i> Employees scheduled</span><strong><?= count($uniqueEmployees) ?></strong></div>
-                                <div class="sch-overview-row"><span><i class="bi bi-circle-fill"></i> In progress</span><strong><?= (int)$progressCount ?></strong></div>
-                                <div class="sch-overview-row"><span><i class="bi bi-circle-fill"></i> Completed</span><strong><?= (int)$completedCount ?></strong></div>
-                            </div>
-                        </article>
-                    </div>
-                    <div class="col-xl-3 col-md-6">
-                        <article class="sch-manage-stat">
-                            <span class="sch-metric-title">Scheduled Work</span>
-                            <span class="sch-metric-period"><?= schH($viewPeriodText) ?></span>
-                            <strong class="sch-metric-value"><?= count($events) ?></strong>
-                            <span class="sch-metric-note">Job Cards and recurring visits</span>
-                            <span class="sch-stat-arrow"><i class="bi bi-arrow-up-right"></i></span>
-                        </article>
-                    </div>
-                    <div class="col-xl-3 col-md-6">
-                        <article class="sch-manage-stat">
-                            <span class="sch-metric-title">In Progress</span>
-                            <span class="sch-metric-period"><?= schH($viewPeriodText) ?></span>
-                            <strong class="sch-metric-value"><?= (int)$progressCount ?></strong>
-                            <span class="sch-metric-note">Work currently underway</span>
-                            <span class="sch-stat-arrow"><i class="bi bi-arrow-up-right"></i></span>
-                        </article>
-                    </div>
-                    <div class="col-xl-3 col-md-6">
-                        <article class="sch-manage-stat">
-                            <span class="sch-metric-title">Completed</span>
-                            <span class="sch-metric-period"><?= schH($viewPeriodText) ?></span>
-                            <strong class="sch-metric-value"><?= (int)$completedCount ?></strong>
-                            <span class="sch-metric-note"><?= count($uniqueEmployees) ?> employee<?= count($uniqueEmployees) === 1 ? '' : 's' ?> scheduled</span>
-                            <span class="sch-stat-arrow"><i class="bi bi-arrow-up-right"></i></span>
-                        </article>
-                    </div>
-                </section>
-
-                <section class="sch-calendar-card <?= $view === 'day' ? 'sch-day-view' : ($view === 'month' ? 'sch-month-view' : '') ?>" style="--sch-calendar-height:<?= (int)$calendarHeight ?>px;--sch-hour-height:<?= (int)$slotHeight ?>px;">
-                    <div class="sch-toolbar">
-                        <div class="sch-nav">
-                            <a class="sch-nav-btn square" href="<?= schH($previousUrl) ?>" title="Previous <?= schH($view) ?>"><i class="bi bi-chevron-left"></i></a>
-                            <a class="sch-nav-btn" href="<?= schH($todayUrl) ?>">Today</a>
-                            <a class="sch-nav-btn square" href="<?= schH($nextUrl) ?>" title="Next <?= schH($view) ?>"><i class="bi bi-chevron-right"></i></a>
-                        </div>
-                        <div class="sch-calendar-heading">
-                            <h2><?= schH($heading) ?></h2>
-                            <small><?= schH($selectedEmployeeName) ?> · <?= count($events) ?> scheduled item<?= count($events) === 1 ? '' : 's' ?></small>
-                        </div>
-                        <div class="sch-view-switch">
-                            <a class="sch-view-btn <?= $view === 'day' ? 'active' : '' ?>" href="<?= schH($dayUrl) ?>"><i class="bi bi-calendar-day"></i> Day</a>
-                            <a class="sch-view-btn <?= $view === 'week' ? 'active' : '' ?>" href="<?= schH($weekUrl) ?>"><i class="bi bi-calendar-week"></i> Week</a>
-                            <a class="sch-view-btn <?= $view === 'month' ? 'active' : '' ?>" href="<?= schH($monthUrl) ?>"><i class="bi bi-calendar3"></i> Month</a>
-                        </div>
-                    </div>
-
-                    <?php if (!$events): ?>
-                        <div class="sch-no-events"><i class="bi bi-info-circle"></i>No scheduled jobs found for the selected employee/filter. The calendar is still shown so you can navigate to another date.</div>
-                    <?php endif; ?>
-
+                    <div class="sch2-calendar">
                     <?php if ($view === 'month'): ?>
-                        <div class="sch-month-wrap">
-                            <div class="sch-month-weekdays">
-                                <?php foreach (array('Mon','Tue','Wed','Thu','Fri','Sat','Sun') as $weekday): ?><div class="sch-month-weekday"><?= schH($weekday) ?></div><?php endforeach; ?>
+                        <div class="sch2-scroll">
+                            <div class="sch2-month-weekdays">
+                                <?php foreach (array('Sun','Mon','Tue','Wed','Thu','Fri','Sat') as $weekday): ?><div class="sch2-month-weekday"><?= schH($weekday) ?></div><?php endforeach; ?>
                             </div>
-                            <div class="sch-month-grid">
+                            <div class="sch2-month-grid">
                                 <?php foreach ($displayDays as $day): ?>
-                                    <?php
-                                        $dayKey = $day->format('Y-m-d');
-                                        $dayEvents = isset($eventsByDay[$dayKey]) ? $eventsByDay[$dayKey] : array();
-                                        $outside = $day->format('Y-m') !== $currentMonthKey;
-                                        $isToday = $dayKey === date('Y-m-d');
-                                        $isSelected = $dayKey === $selectedDate;
-                                        $maxMonthEvents = 4;
-                                    ?>
-                                    <div class="sch-month-day <?= $outside ? 'outside' : '' ?> <?= $isToday ? 'today' : '' ?> <?= $isSelected ? 'selected' : '' ?>">
-                                        <div class="sch-month-day-head">
-                                            <span class="sch-month-date"><?= schH($day->format('d')) ?></span>
-                                            <span class="sch-month-count"><?= count($dayEvents) ?> job<?= count($dayEvents) === 1 ? '' : 's' ?></span>
+                                    <?php $dayKey=$day->format('Y-m-d'); $items=isset($eventsByDay[$dayKey])?$eventsByDay[$dayKey]:array(); $outside=$day->format('Y-m')!==$currentMonthKey; $isToday=$dayKey===date('Y-m-d'); $isSelected=$dayKey===$selectedDate; ?>
+                                    <div class="sch2-month-day <?= $outside?'outside':'' ?> <?= $isToday?'today':'' ?> <?= $isSelected?'selected':'' ?>">
+                                        <div class="sch2-month-day-head">
+                                            <span class="sch2-month-date"><?= schH($day->format('j')) ?></span>
+                                            <?php if ($items): ?><span class="sch2-visit-count"><?= count($items) ?> visit<?= count($items)===1?'':'s' ?></span><?php endif; ?>
                                         </div>
-                                        <div class="sch-month-events">
-                                            <?php foreach (array_slice($dayEvents, 0, $maxMonthEvents) as $event): ?>
-                                                <?php
-                                                    $startTs = strtotime($event['start']);
-                                                    $endTs = strtotime($event['end']);
-                                                    if (!$endTs || $endTs <= $startTs) $endTs = $startTs + 3600;
-                                                    $eventClass = schEventClass($event['status']);
-                                                    $teamText = implode(', ', $event['assignee_names']);
-                                                    $tooltip = $event['job_no'] . ' · ' . $event['title'] . "\n" . date('h:i A', $startTs) . ' - ' . date('h:i A', $endTs) . "\n" . ($event['customer'] ?: 'No customer') . ($teamText !== '' ? "\n" . $teamText : '');
-                                                ?>
-                                                <a class="sch-month-event <?= schH($eventClass) ?>" href="job-view.php?job_id=<?= (int)$event['job_id'] ?>" title="<?= schH($tooltip) ?>">
-                                                    <span class="sch-month-event-time"><span class="sch-event-dot"></span><?= schH(date('h:i A', $startTs)) ?><?= $event['source'] === 'visit' && $event['visit_number'] > 0 ? ' · V' . (int)$event['visit_number'] : '' ?></span>
-                                                    <span class="sch-month-event-title"><?= schH($event['job_no']) ?> · <?= schH($event['title']) ?></span>
-                                                    <span class="sch-month-event-meta"><?= schH($event['customer'] ?: 'Customer not set') ?><?= $event['assignee_names'] ? ' · ' . schH(implode(', ', array_slice($event['assignee_names'], 0, 2))) : '' ?></span>
-                                                </a>
+                                        <div class="sch2-month-events">
+                                            <?php foreach (array_slice($items,0,4) as $event): ?>
+                                                <?php $eventClass=schEventClass($event['status']); $person=!empty($event['assignee_names'][0])?$event['assignee_names'][0]:''; ?>
+                                                <button type="button" class="sch2-month-event <?= schH($eventClass) ?> schedule-event" data-event-key="<?= schH($event['key']) ?>">
+                                                    <?php if ($person!==''): ?><span class="avatar"><?= schH(schInitials($person)) ?></span><?php endif; ?>
+                                                    <span class="title"><?= schH($event['service']!==''?$event['service']:$event['title']) ?></span>
+                                                </button>
                                             <?php endforeach; ?>
-                                            <?php if (count($dayEvents) > $maxMonthEvents): ?>
-                                                <a class="sch-month-more" href="<?= schH(schBuildUrl(array('view'=>'day','date'=>$dayKey))) ?>">+<?= count($dayEvents) - $maxMonthEvents ?> more · View day</a>
-                                            <?php endif; ?>
+                                            <?php if (count($items)>4): ?><a class="sch2-month-more" href="<?= schH(schBuildUrl(array('view'=>'day','date'=>$dayKey))) ?>">+<?= count($items)-4 ?> more</a><?php endif; ?>
                                         </div>
                                     </div>
                                 <?php endforeach; ?>
+                            </div>
+                        </div>
+                    <?php elseif ($view === 'week'): ?>
+                        <div class="sch2-scroll">
+                            <div class="sch2-week-wrap">
+                                <div class="sch2-week-head">
+                                    <div class="sch2-week-corner"></div>
+                                    <?php foreach ($displayDays as $day): ?>
+                                        <?php $dayKey=$day->format('Y-m-d'); ?>
+                                        <div class="sch2-week-day <?= $dayKey===date('Y-m-d')?'today':'' ?> <?= $dayKey===$selectedDate?'selected':'' ?>">
+                                            <div><?= schH($day->format('D')) ?></div><div class="date"><?= schH($day->format('j')) ?></div>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                                <div class="sch2-anytime-row">
+                                    <div class="sch2-anytime-label">Anytime</div>
+                                    <?php foreach ($displayDays as $day): ?>
+                                        <?php $dayKey=$day->format('Y-m-d'); $items=isset($anytimeEventsByDay[$dayKey])?$anytimeEventsByDay[$dayKey]:array(); ?>
+                                        <div class="sch2-anytime-cell">
+                                            <?php foreach ($items as $event): ?><button type="button" class="sch2-anytime-event schedule-event" data-event-key="<?= schH($event['key']) ?>"><?= schH($event['service']!==''?$event['service']:$event['title']) ?></button><?php endforeach; ?>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
+                                <div class="sch2-week-body">
+                                    <div class="sch2-time-axis">
+                                        <?php for($hour=0;$hour<24;$hour++): ?><div class="sch2-time-label" style="top:<?= $hour*64 ?>px"><?= schH(date('g A',mktime($hour,0,0,1,1,2026))) ?></div><?php endfor; ?>
+                                    </div>
+                                    <?php foreach ($displayDays as $day): ?>
+                                        <?php $dayKey=$day->format('Y-m-d'); $items=isset($timedEventsByDay[$dayKey])?$timedEventsByDay[$dayKey]:array(); ?>
+                                        <div class="sch2-week-column <?= $dayKey===date('Y-m-d')?'today':'' ?>">
+                                            <?php foreach ($items as $event): ?>
+                                                <?php $st=strtotime($event['start']);$et=strtotime($event['end']);if(!$et||$et<=$st)$et=$st+3600;$minute=(int)date('G',$st)*60+(int)date('i',$st);$duration=max(20,($et-$st)/60);$top=$minute/60*64;$height=max(22,$duration/60*64);$lanes=max(1,(int)$event['lane_count']);$lane=max(0,(int)$event['lane']);$width=100/$lanes;$left=$lane*$width;$cls=schEventClass($event['status']); ?>
+                                                <button type="button" class="sch2-week-event <?= schH($cls) ?> schedule-event" data-event-key="<?= schH($event['key']) ?>" style="top:<?= number_format($top,2,'.','') ?>px;height:<?= number_format($height,2,'.','') ?>px;left:calc(<?= number_format($left,4,'.','') ?>% + 3px);width:calc(<?= number_format($width,4,'.','') ?>% - 6px)">
+                                                    <span class="line1"><?= schH($event['service']!==''?$event['service']:$event['title']) ?></span>
+                                                    <?php if($height>=40): ?><span class="line2"><?= schH(date('g:i A',$st)) ?> · <?= schH($event['customer']) ?></span><?php endif; ?>
+                                                </button>
+                                            <?php endforeach; ?>
+                                        </div>
+                                    <?php endforeach; ?>
+                                </div>
                             </div>
                         </div>
                     <?php else: ?>
-                        <div class="sch-calendar-scroll">
-                            <div class="sch-week-head">
-                                <div class="sch-time-head"></div>
-                                <?php foreach ($displayDays as $day): ?>
-                                    <?php $dayKey = $day->format('Y-m-d'); $dayCount = isset($eventsByDay[$dayKey]) ? count($eventsByDay[$dayKey]) : 0; ?>
-                                    <div class="sch-day-head <?= $dayKey === date('Y-m-d') ? 'today' : '' ?>">
-                                        <span class="dow"><?= schH($day->format('D')) ?></span>
-                                        <span class="date"><?= schH($day->format('d')) ?></span>
-                                        <span class="count"><?= (int)$dayCount ?> job<?= $dayCount === 1 ? '' : 's' ?></span>
+                        <div class="sch2-day-scroller">
+                            <div class="sch2-day-wrap">
+                                <div class="sch2-resource-head">Anytime</div>
+                                <div class="sch2-day-timeline-head">
+                                    <button type="button" class="sch2-anytime-toggle" id="anytimeToggle">Anytime</button>
+                                    <div class="sch2-day-hours">
+                                        <?php for($hour=0;$hour<24;$hour++): ?><span class="sch2-day-hour" style="left:<?= $hour*96 ?>px"><?= schH(date('g A',mktime($hour,0,0,1,1,2026))) ?></span><?php endfor; ?>
                                     </div>
-                                <?php endforeach; ?>
-                            </div>
-                            <div class="sch-calendar-body" data-start-hour="<?= (int)$calendarStartHour ?>" data-end-hour="<?= (int)$calendarEndHour ?>" data-slot-height="<?= (int)$slotHeight ?>">
-                                <div class="sch-time-axis">
-                                    <?php foreach ($hours as $hour): ?>
-                                        <?php $top = ($hour - $calendarStartHour) * $slotHeight; ?>
-                                        <div class="sch-time-label" style="top:<?= (int)$top ?>px"><?= schH(date('g A', mktime($hour,0,0,1,1,2026))) ?></div>
-                                    <?php endforeach; ?>
                                 </div>
-                                <?php foreach ($displayDays as $day): ?>
-                                    <?php
-                                        $dayKey = $day->format('Y-m-d');
-                                        $dayEvents = isset($eventsByDay[$dayKey]) ? $eventsByDay[$dayKey] : array();
-                                    ?>
-                                    <div class="sch-day-column <?= $dayKey === date('Y-m-d') ? 'today' : '' ?>" data-day="<?= schH($dayKey) ?>">
-                                        <?php foreach ($dayEvents as $event): ?>
-                                            <?php
-                                                $startTs = strtotime($event['start']);
-                                                $endTs = strtotime($event['end']);
-                                                if (!$endTs || $endTs <= $startTs) $endTs = $startTs + 3600;
-                                                $dayStartTs = strtotime($dayKey . ' ' . sprintf('%02d:00:00', $calendarStartHour));
-                                                $dayEndTs = strtotime($dayKey . ' ' . sprintf('%02d:00:00', $calendarEndHour));
-                                                if ($calendarEndHour === 24) $dayEndTs = strtotime($dayKey . ' 00:00:00 +1 day');
-                                                $visibleStart = max($startTs, $dayStartTs);
-                                                $visibleEnd = min($endTs, $dayEndTs);
-                                                $topPx = max(0, (($visibleStart - $dayStartTs) / 3600) * $slotHeight);
-                                                $heightPx = max(36, (($visibleEnd - $visibleStart) / 3600) * $slotHeight);
-                                                if (($topPx + $heightPx) > $calendarHeight) $heightPx = max(30, $calendarHeight - $topPx - 2);
-                                                $laneCount = max(1, (int)$event['lane_count']);
-                                                $lane = max(0, (int)$event['lane']);
-                                                $widthPercent = 100 / $laneCount;
-                                                $leftPercent = $lane * $widthPercent;
-                                                $eventClass = schEventClass($event['status']);
-                                                $timeText = date('h:i A', $startTs) . ' - ' . date('h:i A', $endTs);
-                                                $teamNames = $event['assignee_names'];
-                                                $tooltip = $event['job_no'] . ' · ' . $event['title'] . "\n" . $timeText . "\n" . ($event['customer'] ?: 'No customer') . "\n" . implode(', ', $teamNames);
-                                            ?>
-                                            <a class="sch-event <?= schH($eventClass) ?>" href="job-view.php?job_id=<?= (int)$event['job_id'] ?>" title="<?= schH($tooltip) ?>" style="top:<?= number_format($topPx, 2, '.', '') ?>px;height:<?= number_format($heightPx, 2, '.', '') ?>px;left:calc(<?= number_format($leftPercent, 4, '.', '') ?>% + 4px);width:calc(<?= number_format($widthPercent, 4, '.', '') ?>% - 8px);">
-                                                <span class="sch-event-time"><span class="sch-event-dot"></span><?= schH($timeText) ?><?= $event['source'] === 'visit' && $event['visit_number'] > 0 ? ' · V' . (int)$event['visit_number'] : '' ?></span>
-                                                <span class="sch-event-title"><?= schH($event['job_no']) ?> · <?= schH($event['title']) ?></span>
-                                                <span class="sch-event-meta"><?= schH($event['customer'] ?: 'Customer not set') ?><?= $event['service'] !== '' ? ' · ' . schH($event['service']) : '' ?></span>
-                                                <?php if ($heightPx >= 62 && $event['location'] !== ''): ?><span class="sch-event-meta"><i class="bi bi-geo-alt"></i> <?= schH($event['location']) ?></span><?php endif; ?>
-                                                <?php if ($heightPx >= 82 && $teamNames): ?>
-                                                    <span class="sch-event-team">
-                                                        <?php foreach (array_slice($teamNames, 0, 3) as $teamName): ?><span class="sch-mini-avatar" title="<?= schH($teamName) ?>"><?= schH(schInitials($teamName)) ?></span><?php endforeach; ?>
-                                                        <?php if (count($teamNames) > 3): ?><span class="sch-team-more">+<?= count($teamNames) - 3 ?></span><?php endif; ?>
-                                                    </span>
-                                                <?php endif; ?>
-                                            </a>
-                                        <?php endforeach; ?>
+                                <?php foreach($resourceRows as $idx=>$resource): ?>
+                                    <?php $rid=(int)$resource['id'];$rowItems=array();foreach($dayTimedEvents as $event){$ids=array_map('intval',$event['assignee_ids']);if(($rid===0&&!$ids)||($rid>0&&in_array($rid,$ids,true)))$rowItems[]=$event;} ?>
+                                    <div class="sch2-resource-row <?= $idx%2?'alt':'' ?>">
+                                        <span class="sch2-resource-avatar <?= $rid===0?'unassigned':'' ?>"><?= $rid===0?'<i class="bi bi-person-slash"></i>':schH($resource['initials']) ?></span>
+                                        <span class="sch2-resource-copy"><span class="sch2-resource-name"><?= schH($resource['name']) ?></span><span class="sch2-resource-count"><?= count($rowItems) ?><?= count($rowItems)?' visit'.(count($rowItems)===1?'':'s'):'' ?></span></span>
+                                    </div>
+                                    <div class="sch2-resource-timeline <?= $idx%2?'alt':'' ?>">
+                                        <div class="sch2-day-timeline-inner">
+                                            <?php foreach($rowItems as $event): ?>
+                                                <?php $st=strtotime($event['start']);$et=strtotime($event['end']);if(!$et||$et<=$st)$et=$st+3600;$minute=(int)date('G',$st)*60+(int)date('i',$st);$dur=max(15,($et-$st)/60);$left=$minute/60*96;$width=max(48,$dur/60*96); ?>
+                                                <button type="button" class="sch2-day-event schedule-event" data-event-key="<?= schH($event['key']) ?>" style="left:<?= number_format($left,2,'.','') ?>px;width:<?= number_format($width,2,'.','') ?>px"><span class="line1"><?= schH($event['service']!==''?$event['service']:$event['title']) ?></span><span class="line2"><?= schH(date('g:i A',$st)) ?></span></button>
+                                            <?php endforeach; ?>
+                                        </div>
                                     </div>
                                 <?php endforeach; ?>
                             </div>
                         </div>
+                        <aside class="sch2-anytime-drawer" id="anytimeDrawer">
+                            <div class="sch2-anytime-drawer-head"><span>Anytime</span><button type="button" class="sch2-popover-close" id="anytimeClose">&times;</button></div>
+                            <div class="sch2-anytime-drawer-list">
+                                <?php if(!$dayAnytimeEvents): ?><div style="padding:8px;color:#83909d;font-size:9px">No anytime visits.</div><?php endif; ?>
+                                <?php foreach($dayAnytimeEvents as $event): ?><button type="button" class="sch2-anytime-drawer-event schedule-event" data-event-key="<?= schH($event['key']) ?>"><?= schH($event['service']!==''?$event['service']:$event['title']) ?></button><?php endforeach; ?>
+                            </div>
+                        </aside>
                     <?php endif; ?>
-
-                    <div class="sch-legend">
-                        <span class="sch-legend-item"><span class="sch-legend-dot"></span> Scheduled</span>
-                        <span class="sch-legend-item"><span class="sch-legend-dot progress"></span> In Progress</span>
-                        <span class="sch-legend-item"><span class="sch-legend-dot completed"></span> Completed</span>
-                        <span class="sch-legend-item"><span class="sch-legend-dot rescheduled"></span> Rescheduled / Follow-up</span>
-                        <span class="sch-legend-item"><span class="sch-legend-dot cancelled"></span> Cancelled / No Access</span>
-                        <span class="sch-legend-note">Click a calendar item to open Job View.</span>
                     </div>
                 </section>
             </div>
@@ -1652,45 +1703,68 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer { margin-left: var(--fieldplx-s
     </main>
 </div>
 <?php require_once __DIR__ . '/includes/footer.php'; ?>
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
-<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+
+<div class="sch2-popover" id="eventPopover" aria-hidden="true">
+    <div class="sch2-popover-head"><div><div class="sch2-popover-kicker" id="popKicker">Visit</div><div class="sch2-popover-title" id="popTitle">-</div></div><button type="button" class="sch2-popover-close" id="popClose">&times;</button></div>
+    <div class="sch2-popover-body" id="popBody"></div>
+    <div class="sch2-pop-actions"><button type="button" class="sch2-btn" id="popFindTime"><i class="bi bi-clock"></i> Find a time</button><a class="sch2-btn" id="popEdit" href="#">Edit</a><button type="button" class="sch2-btn primary" id="popDetails">Details</button></div>
+</div>
+
+<div class="sch2-modal" id="visitModal" aria-hidden="true">
+    <div class="sch2-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="visitModalTitle">
+        <div class="sch2-modal-head"><h2 class="sch2-modal-title" id="visitModalTitle">Visit Details</h2><button type="button" class="sch2-modal-close" id="visitModalClose">&times;</button></div>
+        <div class="sch2-modal-body">
+            <div class="sch2-visit-top"><div><div class="sch2-visit-name" id="modalVisitName">-</div><div class="sch2-visit-customer" id="modalCustomer"></div></div><div class="sch2-visit-meta" id="modalMeta"></div></div>
+            <div class="sch2-modal-actions"><button type="button" class="sch2-complete" id="modalComplete">Mark Complete</button><a class="sch2-more-action" id="modalEdit" href="#">Edit Job</a></div>
+            <div class="sch2-tabs"><button type="button" class="sch2-tab active" data-tab="info">Info</button><button type="button" class="sch2-tab" data-tab="client">Customer</button><button type="button" class="sch2-tab" data-tab="notes">Notes</button></div>
+            <div class="sch2-tab-panel active" data-panel="info" id="modalInfo"></div>
+            <div class="sch2-tab-panel" data-panel="client" id="modalClient"></div>
+            <div class="sch2-tab-panel" data-panel="notes" id="modalNotes"></div>
+        </div>
+    </div>
+</div>
+<div class="sch2-toast" id="scheduleToast"></div>
 <script>
 (function(){
-    'use strict';
-    if (window.jQuery && jQuery.fn && jQuery.fn.select2) {
-        jQuery('#employeeFilter').select2({width:'100%',placeholder:'All Employees'});
-    }
-    var form=document.getElementById('scheduleFilter');
-    if(form){
-        var autoFields=form.querySelectorAll('select[name="branch_id"],select[name="status"],input[name="date"]');
-        Array.prototype.forEach.call(autoFields,function(el){el.addEventListener('change',function(){form.submit();});});
-        if(window.jQuery){jQuery('#employeeFilter').on('change',function(){form.submit();});}
-    }
-
-    function placeNowLine(){
-        var body=document.querySelector('.sch-calendar-body');
-        if(!body)return;
-        var now=new Date();
-        var y=now.getFullYear();
-        var m=String(now.getMonth()+1).padStart(2,'0');
-        var d=String(now.getDate()).padStart(2,'0');
-        var key=y+'-'+m+'-'+d;
-        var column=document.querySelector('.sch-day-column[data-day="'+key+'"]');
-        if(!column)return;
-        var startHour=parseInt(body.getAttribute('data-start-hour')||'7',10);
-        var endHour=parseInt(body.getAttribute('data-end-hour')||'20',10);
-        var slotHeight=parseFloat(body.getAttribute('data-slot-height')||'64');
-        var minute=now.getHours()*60+now.getMinutes();
-        if(minute < startHour*60 || minute > endHour*60)return;
-        var top=((minute-startHour*60)/60)*slotHeight;
-        var line=document.createElement('div');
-        line.className='sch-now-line';
-        line.style.top=top+'px';
-        line.title='Current time';
-        column.appendChild(line);
-    }
-    placeNowLine();
+'use strict';
+var EVENTS=<?= $eventJson ? $eventJson : '[]' ?>;
+var CURRENCY=<?= $currencyJson ? $currencyJson : '{}'; ?>;
+var CSRF=<?= json_encode($scheduleCsrfToken) ?>;
+var eventMap={};EVENTS.forEach(function(e){eventMap[e.key]=e;});
+var activeEvent=null;
+function qs(s,r){return (r||document).querySelector(s)}function qsa(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s))}
+function esc(v){var d=document.createElement('div');d.textContent=v==null?'':String(v);return d.innerHTML}
+function title(v){return String(v||'').replace(/_/g,' ').replace(/\b\w/g,function(c){return c.toUpperCase()})}
+function money(v){var n=Number(v||0),d=parseInt(CURRENCY.decimal_places||2,10);if(isNaN(d))d=2;var value=n.toFixed(d),sym=String(CURRENCY.symbol||'');return String(CURRENCY.symbol_position||'before')==='after'?value+sym:sym+value}
+function fmt(dt){if(!dt)return '-';var d=new Date(String(dt).replace(' ','T'));if(isNaN(d.getTime()))return dt;return d.toLocaleString([], {month:'short',day:'2-digit',year:'numeric',hour:'numeric',minute:'2-digit'})}
+function toast(msg,error){var t=qs('#scheduleToast');t.textContent=msg;t.className='sch2-toast show'+(error?' error':'');setTimeout(function(){t.className='sch2-toast'},2600)}
+function closeDropdowns(except){qsa('.sch2-dropdown.open').forEach(function(d){if(d!==except)d.classList.remove('open')})}
+qsa('[data-dropdown]').forEach(function(btn){btn.addEventListener('click',function(e){e.stopPropagation();var d=qs('#'+btn.getAttribute('data-dropdown'));var open=d.classList.contains('open');closeDropdowns();if(!open)d.classList.add('open')})});
+document.addEventListener('click',function(e){if(!e.target.closest('.sch2-filter-wrap')&&!e.target.closest('.sch2-menu-wrap'))closeDropdowns()});
+function submitTeam(){var checked=qsa('.team-check:checked').map(function(x){return x.value});qs('#teamFilterFlag').value='1';qs('#teamIdsInput').value=checked.join(',');qs('#teamUnassignedInput').value=qs('#teamUnassigned').checked?'1':'0';qs('#scheduleHiddenFilter').submit()}
+qsa('.team-check').forEach(function(x){x.addEventListener('change',function(){submitTeam()})});qs('#teamUnassigned').addEventListener('change',submitTeam);
+qs('#teamSelectAll').addEventListener('click',function(){qsa('.team-check').forEach(function(x){x.checked=true});qs('#teamUnassigned').checked=true;qs('#teamFilterFlag').value='0';qs('#teamIdsInput').value='';qs('#teamUnassignedInput').value='1';qs('#scheduleHiddenFilter').submit()});
+qs('#teamClear').addEventListener('click',function(){qsa('.team-check').forEach(function(x){x.checked=false});qs('#teamUnassigned').checked=false;submitTeam()});
+qs('#teamSearch').addEventListener('input',function(){var q=this.value.toLowerCase().trim();qsa('.team-choice').forEach(function(row){row.style.display=!q||String(row.getAttribute('data-search')||'').indexOf(q)!==-1?'flex':'none'})});
+function submitStatus(){var checked=qsa('.status-check:checked').map(function(x){return x.value});qs('#statusFilterFlag').value='1';qs('#statusesInput').value=checked.join(',');qs('#scheduleHiddenFilter').submit()}
+qsa('.status-check').forEach(function(x){x.addEventListener('change',submitStatus)});qs('#statusSelectAll').addEventListener('click',function(){qs('#statusFilterFlag').value='0';qs('#statusesInput').value='';qs('#scheduleHiddenFilter').submit()});qs('#statusClear').addEventListener('click',function(){qsa('.status-check').forEach(function(x){x.checked=false});submitStatus()});
+function teamHtml(e){if(!e.assignee_names||!e.assignee_names.length)return '<span style="color:#8996a3">Unassigned</span>';return '<div class="sch2-team-chips">'+e.assignee_names.map(function(n){var initials=n.split(/\s+/).map(function(p){return p.charAt(0)}).join('').slice(0,2).toUpperCase();return '<span class="sch2-team-chip"><span class="sch2-chip-avatar">'+esc(initials)+'</span>'+esc(n)+'</span>'}).join('')+'</div>'}
+function linesHtml(e){if(!e.line_items||!e.line_items.length)return '<div style="padding:8px;color:#8894a0">No line items.</div>';var h=e.line_items.map(function(i){return '<div class="sch2-pop-line"><span>'+esc(Number(i.quantity||0))+'x&nbsp; '+esc(i.name)+'</span><strong>'+money(i.line_total)+'</strong></div>'}).join('');return h+'<div class="sch2-pop-total">Total '+money(e.total)+'</div>'}
+function showPopover(btn,e){activeEvent=e;qs('#popKicker').textContent=e.source==='visit'?'Visit':'Job';qs('#popTitle').textContent=e.service||e.title||'Scheduled work';var complete=String(e.status||'').toLowerCase()==='completed';qs('#popBody').innerHTML='<label style="display:flex;align-items:center;gap:7px;margin-bottom:8px"><input type="checkbox" id="popCompleted" '+(complete?'checked':'')+' '+(complete?'disabled':'')+'> Completed</label><div class="sch2-pop-row"><span class="sch2-pop-label">Details</span>'+esc(e.customer||'-')+' · <a href="job-view.php?job_id='+Number(e.job_id)+'" style="color:#4f8b25">'+esc(e.job_no||'Job')+'</a></div><div class="sch2-pop-row"><span class="sch2-pop-label">Team</span>'+teamHtml(e)+'</div><div class="sch2-pop-row"><span class="sch2-pop-label">Location</span>'+esc(e.location||'-')+'</div><div class="sch2-pop-row"><span class="sch2-pop-label">Start</span>'+esc(fmt(e.start))+'</div><div class="sch2-pop-row"><span class="sch2-pop-label">Line items</span><div class="sch2-pop-lines">'+linesHtml(e)+'</div></div>';
+qs('#popEdit').href='job-form.php?job_id='+Number(e.job_id);var p=qs('#eventPopover');p.classList.add('open');p.setAttribute('aria-hidden','false');var r=btn.getBoundingClientRect();var w=335;var left=Math.min(window.innerWidth-w-10,Math.max(10,r.left));var top=r.bottom+7;if(top+420>window.innerHeight)top=Math.max(74,r.top-420);p.style.left=left+'px';p.style.top=top+'px';var c=qs('#popCompleted');if(c&&!complete)c.addEventListener('change',function(){if(c.checked)markComplete(e)})}
+function hidePopover(){var p=qs('#eventPopover');p.classList.remove('open');p.setAttribute('aria-hidden','true')}
+qsa('.schedule-event').forEach(function(btn){btn.addEventListener('click',function(ev){ev.preventDefault();ev.stopPropagation();var e=eventMap[btn.getAttribute('data-event-key')];if(e)showPopover(btn,e)})});qs('#popClose').addEventListener('click',hidePopover);document.addEventListener('click',function(e){if(!e.target.closest('#eventPopover')&&!e.target.closest('.schedule-event'))hidePopover()});
+function modalPanel(name){qsa('.sch2-tab').forEach(function(t){t.classList.toggle('active',t.getAttribute('data-tab')===name)});qsa('.sch2-tab-panel').forEach(function(p){p.classList.toggle('active',p.getAttribute('data-panel')===name)})}
+function openModal(e){activeEvent=e;hidePopover();qs('#modalVisitName').textContent=e.service||e.title||'Scheduled work';qs('#modalCustomer').innerHTML=esc(e.customer||'-')+'<br>'+esc(e.location||'');qs('#modalMeta').innerHTML='<div class="sch2-visit-meta-row"><i class="bi bi-calendar3"></i><span>'+esc(fmt(e.start))+'</span></div>'+(e.client_phone?'<div class="sch2-visit-meta-row"><i class="bi bi-telephone"></i><span>'+esc(e.client_phone)+'</span></div>':'')+(e.location?'<div class="sch2-visit-meta-row"><i class="bi bi-geo-alt"></i><span>'+esc(e.location)+'</span></div>':'');qs('#modalEdit').href='job-form.php?job_id='+Number(e.job_id);var completed=String(e.status||'').toLowerCase()==='completed';qs('#modalComplete').disabled=completed;qs('#modalComplete').textContent=completed?'Completed':'Mark Complete';qs('#modalInfo').innerHTML='<div class="sch2-info-block"><div class="sch2-info-title">Instructions</div><div class="sch2-info-text">'+esc(e.instructions||'No additional instructions')+'</div></div><div class="sch2-info-block"><div class="sch2-info-grid"><div><div class="sch2-info-title">Job</div><div class="sch2-info-text"><a href="job-view.php?job_id='+Number(e.job_id)+'" style="color:#4f8b25">'+esc(e.job_no||'Job')+'</a><br>'+esc(e.title||'')+'</div></div><div><div class="sch2-info-title">Team</div>'+teamHtml(e)+'</div></div></div><div class="sch2-info-block"><div class="sch2-info-title">Line items</div><div class="sch2-modal-line-items">'+(e.line_items&&e.line_items.length?e.line_items.map(function(i){return '<div class="sch2-modal-line"><span>'+esc(i.name)+'<span class="desc">'+esc(i.description||'')+'</span></span><span>'+esc(Number(i.quantity||0))+'</span></div>'}).join(''):'<div class="sch2-info-text">No line items.</div>')+'</div></div>';
+qs('#modalClient').innerHTML='<div class="sch2-info-block"><div class="sch2-info-title">Customer</div><div class="sch2-info-text">'+esc(e.customer||'-')+'<br>'+esc(e.client_phone||'')+'<br>'+esc(e.client_email||'')+'</div></div><div class="sch2-info-block"><div class="sch2-info-title">Service Location</div><div class="sch2-info-text">'+esc(e.location||'-')+'</div></div>';
+qs('#modalNotes').innerHTML='<div class="sch2-info-block"><div class="sch2-info-title">Visit / Job Notes</div><div class="sch2-info-text">'+esc(e.instructions||'No notes')+'</div></div>';
+modalPanel('info');qs('#visitModal').classList.add('open');qs('#visitModal').setAttribute('aria-hidden','false')}
+function closeModal(){qs('#visitModal').classList.remove('open');qs('#visitModal').setAttribute('aria-hidden','true')}
+qs('#popDetails').addEventListener('click',function(){if(activeEvent)openModal(activeEvent)});qs('#popFindTime').addEventListener('click',function(){if(activeEvent)window.location.href='schedule.php?view=day&date='+encodeURIComponent(String(activeEvent.start).slice(0,10))});qs('#visitModalClose').addEventListener('click',closeModal);qs('#visitModal').addEventListener('click',function(e){if(e.target===this)closeModal()});qsa('.sch2-tab').forEach(function(t){t.addEventListener('click',function(){modalPanel(t.getAttribute('data-tab'))})});
+function markComplete(e){var fd=new FormData();fd.append('schedule_action','mark_complete');fd.append('csrf_token',CSRF);fd.append('visit_id',String(e.visit_id||0));fd.append('job_id',String(e.job_id||0));fetch('schedule.php',{method:'POST',body:fd,credentials:'same-origin',headers:{'X-Requested-With':'XMLHttpRequest'}}).then(function(r){return r.json().then(function(j){if(!r.ok||!j.success)throw new Error(j.message||'Unable to complete visit.');return j})}).then(function(j){toast(j.message||'Visit marked complete.');setTimeout(function(){window.location.reload()},450)}).catch(function(err){toast(err.message||'Unable to complete visit.',true)})}
+qs('#modalComplete').addEventListener('click',function(){if(activeEvent)markComplete(activeEvent)});
+var anyToggle=qs('#anytimeToggle'),anyDrawer=qs('#anytimeDrawer'),anyClose=qs('#anytimeClose');if(anyToggle&&anyDrawer)anyToggle.addEventListener('click',function(){anyDrawer.classList.toggle('open')});if(anyClose&&anyDrawer)anyClose.addEventListener('click',function(){anyDrawer.classList.remove('open')});
+document.addEventListener('keydown',function(e){if(e.key==='Escape'){hidePopover();closeModal();closeDropdowns();if(anyDrawer)anyDrawer.classList.remove('open')}});
 })();
 </script>
 </body>

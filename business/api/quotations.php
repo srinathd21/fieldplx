@@ -155,6 +155,68 @@ function qNext(PDO $pdo, $tenant, $branch)
     $u->execute(array(':n' => $next, ':k' => $key, ':id' => $r['id']));
     return $no;
 }
+
+function qPreviewNext(PDO $pdo, $tenant, $branch)
+{
+    $sep = qCol($pdo, 'document_sequences', 'number_separator') ? 'number_separator' : 'separator';
+    $s = $pdo->prepare("SELECT ds.*,b.branch_code FROM document_sequences ds LEFT JOIN branches b ON b.id=ds.branch_id AND b.tenant_id=ds.tenant_id WHERE ds.tenant_id=:t AND ds.document_type='quote' AND ds.is_active=1 AND (ds.branch_id=:b OR ds.branch_id IS NULL) ORDER BY CASE WHEN ds.branch_id=:b2 THEN 0 ELSE 1 END,ds.id LIMIT 1");
+    $s->execute(array(':t' => $tenant, ':b' => $branch > 0 ? $branch : 0, ':b2' => $branch > 0 ? $branch : 0));
+    $r = $s->fetch(PDO::FETCH_ASSOC);
+    if (!$r) {
+        $q = $pdo->prepare("SELECT MAX(CAST(SUBSTRING_INDEX(quote_no,'-',-1) AS UNSIGNED)) FROM quotes WHERE tenant_id=:t AND quote_no LIKE 'QUO-%'");
+        $q->execute(array(':t' => $tenant));
+        return 'QUO-' . str_pad((string) ((int) $q->fetchColumn() + 1), 6, '0', STR_PAD_LEFT);
+    }
+    $now = new DateTime('now');
+    $y = $now->format('Y');
+    $mo = $now->format('m');
+    $fyStart = max(1, min(12, (int) $r['financial_year_start_month']));
+    $fyY = (int) $now->format('n') >= $fyStart ? (int) $y : (int) $y - 1;
+    $fy = $fyY . '-' . substr((string) ($fyY + 1), -2);
+    $key = 'never';
+    if ($r['reset_period'] === 'monthly') $key = $y . $mo;
+    elseif ($r['reset_period'] === 'yearly') $key = $y;
+    elseif ($r['reset_period'] === 'financial_year') $key = $fy;
+    $cur = (int) $r['current_number'];
+    if ($r['reset_period'] !== 'never' && (string) $r['last_reset_key'] !== (string) $key) $cur = 0;
+    $next = $cur + 1;
+    $mid = '';
+    if ($r['middle_format'] === 'year') $mid = $y;
+    elseif ($r['middle_format'] === 'year_month') $mid = $y . $mo;
+    elseif ($r['middle_format'] === 'financial_year') $mid = $fy;
+    elseif ($r['middle_format'] === 'branch_year') $mid = (!empty($r['branch_code']) ? $r['branch_code'] : 'BR') . $y;
+    $parts = array();
+    if (!empty($r['prefix'])) $parts[] = $r['prefix'];
+    if ($mid !== '') $parts[] = $mid;
+    $parts[] = str_pad((string) $next, max(1, (int) $r['number_length']), '0', STR_PAD_LEFT);
+    if (!empty($r['suffix'])) $parts[] = $r['suffix'];
+    return implode(isset($r[$sep]) ? (string) $r[$sep] : '-', $parts);
+}
+
+function qQuoteOwned(PDO $pdo, $tenant, $quoteId)
+{
+    if ($quoteId <= 0) return false;
+    $s = $pdo->prepare("SELECT id FROM quotes WHERE id=:q AND tenant_id=:t LIMIT 1");
+    $s->execute(array(':q'=>$quoteId, ':t'=>$tenant));
+    return (bool)$s->fetchColumn();
+}
+
+function qUploadDirectory($tenant, $quoteId)
+{
+    $base = dirname(__DIR__) . '/uploads/quotations/' . (int)$tenant . '/' . (int)$quoteId;
+    if (!is_dir($base) && !@mkdir($base, 0755, true) && !is_dir($base)) {
+        throw new RuntimeException('Unable to create quotation upload directory.');
+    }
+    return $base;
+}
+
+function qSafeFileName($name)
+{
+    $name = preg_replace('/[^A-Za-z0-9._-]+/', '-', basename((string)$name));
+    $name = trim((string)$name, '-.');
+    return $name !== '' ? $name : 'file';
+}
+
 function qLog(PDO $pdo, $tenant, $branch, $user, $quoteId, $client, $type, $title, $details)
 {
     try {
@@ -570,7 +632,32 @@ try {
         $clients = $cl->fetchAll(PDO::FETCH_ASSOC);
         $lo = $pdo->prepare("SELECT id,client_id,name,address_line1,city,state,postal_code,is_primary FROM client_locations WHERE tenant_id=:t AND deleted_at IS NULL AND status='active' ORDER BY is_primary DESC,name");
         $lo->execute(array(':t' => $tenant));
-        qRes(200, true, 'Quotation form data loaded.', array('meta' => array('requests' => $sources, 'catalog' => $c->fetchAll(PDO::FETCH_ASSOC), 'products' => qProducts($pdo, $tenant), 'clients' => $clients, 'locations' => $lo->fetchAll(PDO::FETCH_ASSOC), 'currency' => qCurrency($pdo, $tenant))));
+        $salespersons = array();
+        if (qTable($pdo, 'users')) {
+            $us = $pdo->prepare("SELECT id,first_name,last_name,email,job_title FROM users WHERE tenant_id=:t AND deleted_at IS NULL AND status='active' ORDER BY first_name,last_name,id");
+            $us->execute(array(':t'=>$tenant));
+            $salespersons = $us->fetchAll(PDO::FETCH_ASSOC);
+        }
+        $previewBranch = $sessionBranch;
+        if ($editingQuote && !empty($editingQuote['id'])) {
+            $qb = $pdo->prepare("SELECT branch_id,quote_no FROM quotes WHERE id=:id AND tenant_id=:t LIMIT 1");
+            $qb->execute(array(':id'=>(int)$editingQuote['id'], ':t'=>$tenant));
+            $qbRow = $qb->fetch(PDO::FETCH_ASSOC);
+            $nextPreview = $qbRow && !empty($qbRow['quote_no']) ? $qbRow['quote_no'] : qPreviewNext($pdo,$tenant,$previewBranch);
+        } else {
+            $nextPreview = qPreviewNext($pdo,$tenant,$previewBranch);
+        }
+        qRes(200, true, 'Quotation form data loaded.', array('meta' => array(
+            'requests' => $sources,
+            'catalog' => $c->fetchAll(PDO::FETCH_ASSOC),
+            'products' => qProducts($pdo, $tenant),
+            'clients' => $clients,
+            'locations' => $lo->fetchAll(PDO::FETCH_ASSOC),
+            'salespersons' => $salespersons,
+            'current_user_id' => $user,
+            'next_quote_no' => $nextPreview,
+            'currency' => qCurrency($pdo, $tenant)
+        )));
     }
     if ($action === 'create_product') {
         if (!qTable($pdo, 'products'))
@@ -620,7 +707,19 @@ try {
             $approval = $at->fetch(PDO::FETCH_ASSOC) ?: null;
         }
         $q['can_resend_email'] = (!in_array($q['status'], array('approved','rejected','converted','archived'), true) && !empty($q['client_email'])) ? 1 : 0;
-        qRes(200, true, 'Quotation loaded.', array('quotation' => $q, 'items' => $i->fetchAll(PDO::FETCH_ASSOC), 'currency' => qCurrency($pdo, $tenant), 'approval' => $approval));
+        $sections = array();
+        if (qTable($pdo, 'quote_sections')) {
+            $sq = $pdo->prepare("SELECT id,section_key,title,body,sort_order FROM quote_sections WHERE tenant_id=:t AND quote_id=:q ORDER BY sort_order,id");
+            $sq->execute(array(':t'=>$tenant, ':q'=>$id));
+            $sections = $sq->fetchAll(PDO::FETCH_ASSOC);
+        }
+        $files = array();
+        if (qTable($pdo, 'quote_files')) {
+            $fq = $pdo->prepare("SELECT id,file_category,original_name,file_path,mime_type,file_size,sort_order,created_at FROM quote_files WHERE tenant_id=:t AND quote_id=:q ORDER BY file_category,sort_order,id");
+            $fq->execute(array(':t'=>$tenant, ':q'=>$id));
+            $files = $fq->fetchAll(PDO::FETCH_ASSOC);
+        }
+        qRes(200, true, 'Quotation loaded.', array('quotation' => $q, 'items' => $i->fetchAll(PDO::FETCH_ASSOC), 'sections'=>$sections, 'files'=>$files, 'currency' => qCurrency($pdo, $tenant), 'approval' => $approval));
     }
     if ($action === 'list') {
         $page = max(1, (int) qP('page', 1));
@@ -749,6 +848,67 @@ try {
         }
     }
 
+    if ($action === 'upload_file') {
+        if (!qTable($pdo, 'quote_files')) {
+            qRes(500, false, 'Quotation file support is not installed. Run migration_quotation_jobber_builder.sql once.');
+        }
+        $quoteId = (int) qP('quote_id', 0);
+        $category = strtolower(trim((string) qP('file_category', 'attachment')));
+        $allowedCategories = array('attachment','image','introduction_image');
+        if (!in_array($category, $allowedCategories, true)) qRes(422, false, 'Invalid quotation file category.');
+        if (!qQuoteOwned($pdo, $tenant, $quoteId)) qRes(404, false, 'Quotation not found.');
+        if (empty($_FILES['file']) || !is_array($_FILES['file'])) qRes(422, false, 'Select a file to upload.');
+        $f = $_FILES['file'];
+        if ((int)$f['error'] !== UPLOAD_ERR_OK) qRes(422, false, 'The selected file could not be uploaded.');
+        $max = $category === 'attachment' ? 50 * 1024 * 1024 : 25 * 1024 * 1024;
+        if ((int)$f['size'] <= 0 || (int)$f['size'] > $max) qRes(422, false, $category === 'attachment' ? 'Attachments must be 50MB or smaller.' : 'Images must be 25MB or smaller.');
+        $ext = strtolower(pathinfo((string)$f['name'], PATHINFO_EXTENSION));
+        $imageExt = array('jpg','jpeg','png','gif','webp','avif','heic');
+        $attachmentExt = array('jpg','jpeg','png','gif','webp','avif','heic','pdf','doc','docx');
+        $allowedExt = $category === 'attachment' ? $attachmentExt : $imageExt;
+        if (!in_array($ext, $allowedExt, true)) qRes(422, false, 'This file type is not allowed.');
+        $cnt = $pdo->prepare("SELECT COUNT(*) FROM quote_files WHERE tenant_id=:t AND quote_id=:q AND file_category=:c");
+        $cnt->execute(array(':t'=>$tenant, ':q'=>$quoteId, ':c'=>$category));
+        if ((int)$cnt->fetchColumn() >= 10) qRes(422, false, 'A maximum of 10 files is allowed in this section.');
+        $mime = 'application/octet-stream';
+        if (function_exists('finfo_open')) {
+            $fi = finfo_open(FILEINFO_MIME_TYPE);
+            if ($fi) {
+                $detected = finfo_file($fi, $f['tmp_name']);
+                if ($detected) $mime = (string)$detected;
+                finfo_close($fi);
+            }
+        }
+        if ($category !== 'attachment' && strpos($mime, 'image/') !== 0 && $ext !== 'heic') qRes(422, false, 'Only image files can be uploaded here.');
+        $dir = qUploadDirectory($tenant, $quoteId);
+        $safe = qSafeFileName($f['name']);
+        $stored = date('YmdHis') . '-' . bin2hex(random_bytes(5)) . '-' . $safe;
+        $dest = $dir . '/' . $stored;
+        if (!@move_uploaded_file($f['tmp_name'], $dest)) qRes(500, false, 'Unable to store the uploaded quotation file.');
+        $relative = 'uploads/quotations/' . (int)$tenant . '/' . (int)$quoteId . '/' . $stored;
+        try {
+            $ins = $pdo->prepare("INSERT INTO quote_files(tenant_id,quote_id,file_category,original_name,stored_name,file_path,mime_type,file_size,sort_order,created_by,created_at) VALUES(:t,:q,:c,:o,:s,:p,:m,:z,0,:u,NOW())");
+            $ins->execute(array(':t'=>$tenant, ':q'=>$quoteId, ':c'=>$category, ':o'=>substr((string)$f['name'],0,255), ':s'=>$stored, ':p'=>$relative, ':m'=>$mime, ':z'=>(int)$f['size'], ':u'=>$user));
+        } catch (Throwable $e) {
+            @unlink($dest);
+            throw $e;
+        }
+        qRes(200, true, 'File uploaded successfully.', array('file'=>array('id'=>(int)$pdo->lastInsertId(),'file_category'=>$category,'original_name'=>(string)$f['name'],'file_path'=>$relative,'mime_type'=>$mime,'file_size'=>(int)$f['size'])));
+    }
+
+    if ($action === 'delete_file') {
+        if (!qTable($pdo, 'quote_files')) qRes(500, false, 'Quotation file support is not installed.');
+        $fileId = (int) qP('file_id', 0);
+        $s = $pdo->prepare("SELECT qf.* FROM quote_files qf INNER JOIN quotes q ON q.id=qf.quote_id AND q.tenant_id=qf.tenant_id WHERE qf.id=:id AND qf.tenant_id=:t LIMIT 1");
+        $s->execute(array(':id'=>$fileId, ':t'=>$tenant));
+        $row = $s->fetch(PDO::FETCH_ASSOC);
+        if (!$row) qRes(404, false, 'Quotation file not found.');
+        $pdo->prepare("DELETE FROM quote_files WHERE id=:id AND tenant_id=:t")->execute(array(':id'=>$fileId, ':t'=>$tenant));
+        $full = dirname(__DIR__) . '/' . ltrim((string)$row['file_path'], '/');
+        if (is_file($full)) @unlink($full);
+        qRes(200, true, 'Quotation file deleted.');
+    }
+
     if ($action === 'save') {
         if (!qTable($pdo, 'quotation_action_tokens'))
             qRes(500, false, 'Quotation approval support is not installed. Run migration_quotation_products_approval.sql once.');
@@ -763,7 +923,40 @@ try {
         if (!in_array($status, $allowed, true))
             qRes(422, false, 'Select a valid quotation status.');
         $requestedStatus = $status;
+        if (!qCol($pdo,'quotes','introduction_title') || !qCol($pdo,'quotes','client_message') || !qCol($pdo,'quotes','disclaimer') || !qCol($pdo,'quotes','internal_notes') || !qCol($pdo,'quotes','custom_fields_json') || !qTable($pdo,'quote_sections')) {
+            qRes(500, false, 'Jobber-style quotation builder fields are not installed. Run migration_quotation_jobber_builder.sql once.');
+        }
+        $introTitle = trim((string) qP('introduction_title', ''));
         $intro = trim((string) qP('introduction', ''));
+        $clientMessage = trim((string) qP('client_message', ''));
+        $disclaimer = trim((string) qP('disclaimer', ''));
+        $internalNotes = trim((string) qP('internal_notes', ''));
+        $customFieldsRaw = trim((string) qP('custom_fields_json', '[]'));
+        $customFields = json_decode($customFieldsRaw !== '' ? $customFieldsRaw : '[]', true);
+        if (!is_array($customFields)) qRes(422, false, 'Custom quotation fields are invalid.');
+        if (count($customFields) > 20) qRes(422, false, 'A maximum of 20 custom fields is allowed.');
+        $cleanCustomFields = array();
+        foreach ($customFields as $cf) {
+            if (!is_array($cf)) continue;
+            $label = trim((string)(isset($cf['label']) ? $cf['label'] : ''));
+            $value = trim((string)(isset($cf['value']) ? $cf['value'] : ''));
+            if ($label === '' && $value === '') continue;
+            $cleanCustomFields[] = array('label'=>substr($label,0,120),'value'=>substr($value,0,500));
+        }
+        $customFieldsJson = json_encode($cleanCustomFields, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        $sections = json_decode((string) qP('sections_json', '[]'), true);
+        if (!is_array($sections)) qRes(422, false, 'Quotation sections are invalid.');
+        if (count($sections) > 30) qRes(422, false, 'A maximum of 30 quotation text sections is allowed.');
+        $salespersonId = (int) qP('salesperson_id', 0);
+        if ($salespersonId > 0) {
+            $sp = $pdo->prepare("SELECT id FROM users WHERE id=:id AND tenant_id=:t AND deleted_at IS NULL AND status='active' LIMIT 1");
+            $sp->execute(array(':id'=>$salespersonId, ':t'=>$tenant));
+            if (!$sp->fetchColumn()) qRes(422, false, 'Selected salesperson is invalid.');
+        }
+        $depositRequired = (int) qP('deposit_required', 0) === 1 ? 1 : 0;
+        $depositType = trim((string) qP('deposit_type', 'fixed'));
+        if (!in_array($depositType, array('fixed','percent'), true)) $depositType = 'fixed';
+        $depositValue = max(0, (float) qP('deposit_value', 0));
         $valid = trim((string) qP('valid_until', ''));
         $items = json_decode((string) qP('items_json', '[]'), true);
         if ($title === '')
@@ -868,14 +1061,23 @@ try {
             $tot += $lt;
             $norm[] = array('psid' => $psid, 'prodid' => $prodId, 'name' => $name, 'description' => trim((string) (isset($x['description']) ? $x['description'] : '')), 'qty' => $qty, 'cost' => $cost, 'price' => $price, 'disc' => $d, 'tp' => $tp, 'ta' => $ta, 'lt' => $lt, 'optional' => !empty($x['is_optional']) ? 1 : 0, 'sort' => $idx);
         }
+        $depositAmount = 0.00;
+        if ($depositRequired) {
+            $depositAmount = $depositType === 'percent'
+                ? min($tot, max(0, $tot * min(100, $depositValue) / 100))
+                : min($tot, $depositValue);
+        } else {
+            $depositType = null;
+            $depositValue = null;
+        }
         $pdo->beginTransaction();
         try {
             $clientId = (int) $client['id'];
             $locationId = $location ? (int) $location['id'] : null;
             if ($id > 0) {
                 $setRevisit = $hasRevisitColumn ? ',assessment_reschedule_id=:ar' : '';
-                $u = $pdo->prepare("UPDATE quotes SET branch_id=:b,client_id=:c,location_id=:l,request_id=:r $setRevisit,title=:title,introduction=:intro,status=:status,subtotal=:sub,discount_total=:disc,tax_total=:tax,total=:tot,valid_until=:vu WHERE id=:id AND tenant_id=:t");
-                $up = array(':b' => $branch > 0 ? $branch : null, ':c' => $clientId, ':l' => $locationId, ':r' => $requestId > 0 ? $requestId : null, ':title' => $title, ':intro' => $intro !== '' ? $intro : null, ':status' => $persistStatus, ':sub' => $sub, ':disc' => $disc, ':tax' => $tax, ':tot' => $tot, ':vu' => $valid !== '' ? $valid : null, ':id' => $id, ':t' => $tenant);
+                $u = $pdo->prepare("UPDATE quotes SET branch_id=:b,client_id=:c,location_id=:l,request_id=:r $setRevisit,salesperson_id=:sp,title=:title,introduction_title=:it,introduction=:intro,client_message=:cm,disclaimer=:disclaimer,internal_notes=:notes,custom_fields_json=:cf,status=:status,subtotal=:sub,discount_total=:disc,tax_total=:tax,total=:tot,deposit_required=:dr,deposit_type=:dt,deposit_value=:dv,deposit_amount=:da,valid_until=:vu WHERE id=:id AND tenant_id=:t");
+                $up = array(':b' => $branch > 0 ? $branch : null, ':c' => $clientId, ':l' => $locationId, ':r' => $requestId > 0 ? $requestId : null, ':sp'=>$salespersonId > 0 ? $salespersonId : null, ':title' => $title, ':it'=>$introTitle !== '' ? substr($introTitle,0,190) : null, ':intro' => $intro !== '' ? $intro : null, ':cm'=>$clientMessage !== '' ? $clientMessage : null, ':disclaimer'=>$disclaimer !== '' ? $disclaimer : null, ':notes'=>$internalNotes !== '' ? $internalNotes : null, ':cf'=>$customFieldsJson, ':status' => $persistStatus, ':sub' => $sub, ':disc' => $disc, ':tax' => $tax, ':tot' => $tot, ':dr'=>$depositRequired, ':dt'=>$depositType, ':dv'=>$depositValue, ':da'=>$depositAmount, ':vu' => $valid !== '' ? $valid : null, ':id' => $id, ':t' => $tenant);
                 if ($hasRevisitColumn)
                     $up[':ar'] = $revisitId > 0 ? $revisitId : null;
                 $u->execute($up);
@@ -884,11 +1086,11 @@ try {
             } else {
                 $quoteNo = qNext($pdo, $tenant, $branch);
                 if ($hasRevisitColumn) {
-                    $ins = $pdo->prepare("INSERT INTO quotes(tenant_id,branch_id,quote_no,revision_no,client_id,location_id,request_id,assessment_reschedule_id,title,introduction,status,subtotal,discount_total,tax_total,total,valid_until,created_by) VALUES(:t,:b,:no,0,:c,:l,:r,:ar,:title,:intro,:status,:sub,:disc,:tax,:tot,:vu,:u)");
-                    $ins->execute(array(':t' => $tenant, ':b' => $branch > 0 ? $branch : null, ':no' => $quoteNo, ':c' => $clientId, ':l' => $locationId, ':r' => $requestId > 0 ? $requestId : null, ':ar' => $revisitId > 0 ? $revisitId : null, ':title' => $title, ':intro' => $intro !== '' ? $intro : null, ':status' => $persistStatus, ':sub' => $sub, ':disc' => $disc, ':tax' => $tax, ':tot' => $tot, ':vu' => $valid !== '' ? $valid : null, ':u' => $user));
+                    $ins = $pdo->prepare("INSERT INTO quotes(tenant_id,branch_id,quote_no,revision_no,client_id,location_id,request_id,assessment_reschedule_id,salesperson_id,title,introduction_title,introduction,client_message,disclaimer,internal_notes,custom_fields_json,status,subtotal,discount_total,tax_total,total,deposit_required,deposit_type,deposit_value,deposit_amount,valid_until,created_by) VALUES(:t,:b,:no,0,:c,:l,:r,:ar,:sp,:title,:it,:intro,:cm,:disclaimer,:notes,:cf,:status,:sub,:disc,:tax,:tot,:dr,:dt,:dv,:da,:vu,:u)");
+                    $ins->execute(array(':t' => $tenant, ':b' => $branch > 0 ? $branch : null, ':no' => $quoteNo, ':c' => $clientId, ':l' => $locationId, ':r' => $requestId > 0 ? $requestId : null, ':ar' => $revisitId > 0 ? $revisitId : null, ':sp'=>$salespersonId > 0 ? $salespersonId : null, ':title' => $title, ':it'=>$introTitle !== '' ? substr($introTitle,0,190) : null, ':intro' => $intro !== '' ? $intro : null, ':cm'=>$clientMessage !== '' ? $clientMessage : null, ':disclaimer'=>$disclaimer !== '' ? $disclaimer : null, ':notes'=>$internalNotes !== '' ? $internalNotes : null, ':cf'=>$customFieldsJson, ':status' => $persistStatus, ':sub' => $sub, ':disc' => $disc, ':tax' => $tax, ':tot' => $tot, ':dr'=>$depositRequired, ':dt'=>$depositType, ':dv'=>$depositValue, ':da'=>$depositAmount, ':vu' => $valid !== '' ? $valid : null, ':u' => $user));
                 } else {
-                    $ins = $pdo->prepare("INSERT INTO quotes(tenant_id,branch_id,quote_no,revision_no,client_id,location_id,request_id,title,introduction,status,subtotal,discount_total,tax_total,total,valid_until,created_by) VALUES(:t,:b,:no,0,:c,:l,:r,:title,:intro,:status,:sub,:disc,:tax,:tot,:vu,:u)");
-                    $ins->execute(array(':t' => $tenant, ':b' => $branch > 0 ? $branch : null, ':no' => $quoteNo, ':c' => $clientId, ':l' => $locationId, ':r' => $requestId > 0 ? $requestId : null, ':title' => $title, ':intro' => $intro !== '' ? $intro : null, ':status' => $persistStatus, ':sub' => $sub, ':disc' => $disc, ':tax' => $tax, ':tot' => $tot, ':vu' => $valid !== '' ? $valid : null, ':u' => $user));
+                    $ins = $pdo->prepare("INSERT INTO quotes(tenant_id,branch_id,quote_no,revision_no,client_id,location_id,request_id,salesperson_id,title,introduction_title,introduction,client_message,disclaimer,internal_notes,custom_fields_json,status,subtotal,discount_total,tax_total,total,deposit_required,deposit_type,deposit_value,deposit_amount,valid_until,created_by) VALUES(:t,:b,:no,0,:c,:l,:r,:sp,:title,:it,:intro,:cm,:disclaimer,:notes,:cf,:status,:sub,:disc,:tax,:tot,:dr,:dt,:dv,:da,:vu,:u)");
+                    $ins->execute(array(':t' => $tenant, ':b' => $branch > 0 ? $branch : null, ':no' => $quoteNo, ':c' => $clientId, ':l' => $locationId, ':r' => $requestId > 0 ? $requestId : null, ':sp'=>$salespersonId > 0 ? $salespersonId : null, ':title' => $title, ':it'=>$introTitle !== '' ? substr($introTitle,0,190) : null, ':intro' => $intro !== '' ? $intro : null, ':cm'=>$clientMessage !== '' ? $clientMessage : null, ':disclaimer'=>$disclaimer !== '' ? $disclaimer : null, ':notes'=>$internalNotes !== '' ? $internalNotes : null, ':cf'=>$customFieldsJson, ':status' => $persistStatus, ':sub' => $sub, ':disc' => $disc, ':tax' => $tax, ':tot' => $tot, ':dr'=>$depositRequired, ':dt'=>$depositType, ':dv'=>$depositValue, ':da'=>$depositAmount, ':vu' => $valid !== '' ? $valid : null, ':u' => $user));
                 }
                 $id = (int) $pdo->lastInsertId();
             }
@@ -903,6 +1105,20 @@ try {
                     $li->execute(array(':q' => $id, ':ps' => $x['psid'], ':name' => $x['name'], ':d' => $x['description'] !== '' ? $x['description'] : null, ':qty' => $x['qty'], ':cost' => $x['cost'], ':price' => $x['price'], ':disc' => $x['disc'], ':tp' => $x['tp'], ':ta' => $x['ta'], ':lt' => $x['lt'], ':opt' => $x['optional'], ':sort' => $x['sort']));
                 }
             }
+            $pdo->prepare("DELETE FROM quote_sections WHERE tenant_id=:t AND quote_id=:q")->execute(array(':t'=>$tenant, ':q'=>$id));
+            if ($sections) {
+                $secIns = $pdo->prepare("INSERT INTO quote_sections(tenant_id,quote_id,section_key,title,body,sort_order,created_by,created_at) VALUES(:t,:q,:k,:title,:body,:sort,:u,NOW())");
+                $secSort = 0;
+                foreach ($sections as $sec) {
+                    if (!is_array($sec)) continue;
+                    $key = preg_replace('/[^a-z0-9_-]+/i','', (string)(isset($sec['section_key']) ? $sec['section_key'] : 'text'));
+                    if ($key === '') $key = 'text';
+                    $secTitle = trim((string)(isset($sec['title']) ? $sec['title'] : ''));
+                    $secBody = trim((string)(isset($sec['body']) ? $sec['body'] : ''));
+                    if ($secTitle === '' && $secBody === '') continue;
+                    $secIns->execute(array(':t'=>$tenant, ':q'=>$id, ':k'=>substr($key,0,40), ':title'=>$secTitle !== '' ? substr($secTitle,0,190) : null, ':body'=>$secBody !== '' ? $secBody : null, ':sort'=>$secSort++, ':u'=>$user));
+                }
+            }
             $pdo->commit();
         } catch (Throwable $e) {
             if ($pdo->inTransaction())
@@ -910,7 +1126,7 @@ try {
             throw $e;
         }
         $mail = array('status' => 'skipped', 'notice' => 'Email not sent.');
-        if (!$existing && $requestedStatus === 'sent') {
+        if ($requestedStatus === 'sent' && (!$existing || in_array((string)$existing['status'], array('draft','internal_approval','sent','viewed','changes_requested','expired'), true))) {
             $mailToken = null;
             try {
                 if (!qTable($pdo, 'quotation_action_tokens')) {
@@ -964,7 +1180,7 @@ try {
                 error_log('quote audit ' . $ae->getMessage());
             }
         }
-        qRes(200, true, 'Quotation ' . $quoteNo . ($existing ? ' updated' : ' created') . ' successfully.', array('quote_id' => $id, 'quote_no' => $quoteNo, 'source' => $requestId > 0 ? ($revisitId > 0 ? 'revisit' : 'original_enquiry') : 'direct_quotation', 'status' => $status, 'email_status' => $mail['status'], 'email_notice' => $mail['notice'], 'api_file' => 'quotations-api-v3.0.0.php'));
+        qRes(200, true, 'Quotation ' . $quoteNo . ($existing ? ' updated' : ' created') . ' successfully.', array('quote_id' => $id, 'quote_no' => $quoteNo, 'source' => $requestId > 0 ? ($revisitId > 0 ? 'revisit' : 'original_enquiry') : 'direct_quotation', 'status' => $status, 'email_status' => $mail['status'], 'email_notice' => $mail['notice'], 'api_file' => 'quotations-api-v4.2.0.php'));
     }
     qRes(400, false, 'Unsupported quotation action.');
 } catch (PDOException $e) {

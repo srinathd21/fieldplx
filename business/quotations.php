@@ -16,6 +16,155 @@ $csrfToken = (string) $_SESSION['quotations_csrf_token'];
 
 /*
 |--------------------------------------------------------------------------
+| Quotations permissions
+|--------------------------------------------------------------------------
+| - Page requires quotation/quotes VIEW permission.
+| - Add/Create controls require CREATE permission.
+| - Direct user permission overrides role permission.
+| - A direct/role DENY takes precedence over the matching ALLOW at that level.
+| - Supports both module codes used by existing FieldPlx quotation installs:
+|   "quotations" (current), plus legacy "quotation" / "quotes".
+|--------------------------------------------------------------------------
+*/
+$quotationCanView = false;
+$quotationCanCreate = false;
+
+function quotationUserCan(PDO $pdo, $tenantId, $userId, $actionCode)
+{
+  $tenantId = (int) $tenantId;
+  $userId = (int) $userId;
+  $actionCode = strtolower(trim((string) $actionCode));
+
+  if ($tenantId <= 0 || $userId <= 0 || $actionCode === '') {
+    return false;
+  }
+
+  $userStmt = $pdo->prepare(
+    "SELECT id, role_id
+     FROM users
+     WHERE id = :user_id
+       AND tenant_id = :tenant_id
+       AND deleted_at IS NULL
+     LIMIT 1"
+  );
+  $userStmt->execute(array(
+    ':user_id' => $userId,
+    ':tenant_id' => $tenantId
+  ));
+  $user = $userStmt->fetch(PDO::FETCH_ASSOC);
+
+  if (!$user) {
+    return false;
+  }
+
+  $roleId = !empty($user['role_id']) ? (int) $user['role_id'] : 0;
+
+  $permissionStmt = $pdo->prepare(
+    "SELECT p.id
+     FROM permissions p
+     INNER JOIN modules m ON m.id = p.module_id
+     WHERE m.module_code IN ('quotations', 'quotation', 'quotes')
+       AND m.is_active = 1
+       AND LOWER(p.action_code) = :action_code"
+  );
+  $permissionStmt->execute(array(':action_code' => $actionCode));
+  $permissionIds = $permissionStmt->fetchAll(PDO::FETCH_COLUMN);
+
+  if (!$permissionIds) {
+    return false;
+  }
+
+  $permissionIds = array_values(array_unique(array_map('intval', $permissionIds)));
+  $placeholders = implode(',', array_fill(0, count($permissionIds), '?'));
+
+  /* Direct user permission has the highest priority. */
+  $userPermissionStmt = $pdo->prepare(
+    "SELECT access_type
+     FROM user_permissions
+     WHERE tenant_id = ?
+       AND user_id = ?
+       AND permission_id IN ($placeholders)
+     ORDER BY CASE access_type WHEN 'deny' THEN 0 ELSE 1 END, permission_id ASC"
+  );
+  $params = array_merge(array($tenantId, $userId), $permissionIds);
+  $userPermissionStmt->execute($params);
+  $directPermissions = $userPermissionStmt->fetchAll(PDO::FETCH_COLUMN);
+
+  if ($directPermissions) {
+    foreach ($directPermissions as $accessType) {
+      if ($accessType === 'deny') {
+        return false;
+      }
+    }
+    foreach ($directPermissions as $accessType) {
+      if ($accessType === 'allow') {
+        return true;
+      }
+    }
+  }
+
+  if ($roleId <= 0) {
+    return false;
+  }
+
+  $rolePermissionStmt = $pdo->prepare(
+    "SELECT access_type
+     FROM role_permissions
+     WHERE tenant_id = ?
+       AND role_id = ?
+       AND permission_id IN ($placeholders)
+     ORDER BY CASE access_type WHEN 'deny' THEN 0 ELSE 1 END, permission_id ASC"
+  );
+  $params = array_merge(array($tenantId, $roleId), $permissionIds);
+  $rolePermissionStmt->execute($params);
+  $rolePermissions = $rolePermissionStmt->fetchAll(PDO::FETCH_COLUMN);
+
+  if (!$rolePermissions) {
+    return false;
+  }
+
+  foreach ($rolePermissions as $accessType) {
+    if ($accessType === 'deny') {
+      return false;
+    }
+  }
+
+  foreach ($rolePermissions as $accessType) {
+    if ($accessType === 'allow') {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+try {
+  $permissionTenantId = isset($_SESSION['tenant_id']) ? (int) $_SESSION['tenant_id'] : 0;
+  $permissionUserId = !empty($_SESSION['tenant_user_id'])
+    ? (int) $_SESSION['tenant_user_id']
+    : (!empty($_SESSION['user_id']) ? (int) $_SESSION['user_id'] : 0);
+
+  if ((!isset($pdo) || !($pdo instanceof PDO)) && isset($db) && $db instanceof PDO) {
+    $pdo = $db;
+  }
+
+  if ($permissionTenantId > 0 && $permissionUserId > 0 && isset($pdo) && $pdo instanceof PDO) {
+    $quotationCanView = quotationUserCan($pdo, $permissionTenantId, $permissionUserId, 'view');
+    $quotationCanCreate = quotationUserCan($pdo, $permissionTenantId, $permissionUserId, 'create');
+  }
+} catch (Throwable $permissionException) {
+  error_log('FieldPlx quotation permission check failed: ' . $permissionException->getMessage());
+  $quotationCanView = false;
+  $quotationCanCreate = false;
+}
+
+if (!$quotationCanView) {
+  http_response_code(403);
+  exit('You do not have permission to view quotations.');
+}
+
+/*
+|--------------------------------------------------------------------------
 | Quotations page statistics
 |--------------------------------------------------------------------------
 | Statistics are loaded directly on this page from the database.
@@ -6393,6 +6542,18 @@ try {
       font-weight: 600
     }
 
+
+    .fq-clickable-row {
+      cursor: pointer;
+      transition: background-color .16s ease, box-shadow .16s ease;
+    }
+
+    .fq-clickable-row:hover,
+    .fq-clickable-row:focus {
+      background: #f8fbf4;
+      outline: none;
+      box-shadow: inset 3px 0 0 var(--fd-green);
+    }
     @media(max-width:767.98px) {
       .fq-head {
         flex-direction: column
@@ -6444,8 +6605,8 @@ try {
                 follow the tenant currency configuration.</p>
             </div>
             <div class="fq-actions"><button type="button" class="fq-btn" id="refreshButton"><i
-                  class="bi bi-arrow-clockwise"></i> Refresh</button><a class="fq-btn primary"
-                href="add-quotation"><i class="bi bi-plus-lg"></i> Add Quotation</a></div>
+                  class="bi bi-arrow-clockwise"></i> Refresh</button><?php if ($quotationCanCreate): ?><a class="fq-btn primary"
+                href="add-quotation"><i class="bi bi-plus-lg"></i> Add Quotation</a><?php endif; ?></div>
           </section>
           <div id="quotationDataView">
           <section class="row g-3 fq-summary">
@@ -6584,12 +6745,11 @@ try {
                     <th>Tax</th>
                     <th>Total</th>
                     <th>Status</th>
-                    <th>Action</th>
                   </tr>
                 </thead>
                 <tbody id="quoteRows">
                   <tr>
-                    <td colspan="12" class="fq-empty">Loading quotations...</td>
+                    <td colspan="11" class="fq-empty">Loading quotations...</td>
                   </tr>
                 </tbody>
               </table>
@@ -6605,10 +6765,17 @@ try {
             <div class="fq-empty-inner">
               <h2>Manage quotations</h2>
               <p>Create your first customer quotation and move approved work smoothly into the job workflow.</p>
+              <?php if ($quotationCanCreate): ?>
               <a class="fq-empty-create-card" href="add-quotation">
                 <strong>Create a Quotation</strong>
                 <span class="fq-empty-plus"><i class="bi bi-plus-lg"></i></span>
               </a>
+              <?php else: ?>
+              <div class="fq-empty-create-card" aria-disabled="true" style="cursor:default;">
+                <strong>No quotations found</strong>
+                <span style="color:#7f8da0;font-size:10px;">You have view access only.</span>
+              </div>
+              <?php endif; ?>
             </div>
           </section>
         </div>
@@ -6765,7 +6932,7 @@ try {
         }
 
         if (!rows.length) {
-          body.innerHTML = '<tr><td colspan="12" class="fq-empty">No quotations found.</td></tr>';
+          body.innerHTML = '<tr><td colspan="11" class="fq-empty">No quotations found.</td></tr>';
           return;
         }
 
@@ -6777,20 +6944,8 @@ try {
           var sourceTitle = row.quotation_source ||
             (row.request_no ? 'Original Enquiry' : 'Direct Quotation');
 
-          var actions =
-            '<a class="fq-icon" href="quotation-view?quote_id=' + quoteId + '" title="View Quotation">' +
-              '<i class="bi bi-eye"></i>' +
-            '</a>';
-
-          if (editable) {
-            actions +=
-              '<a class="fq-icon" href="add-quotation?quote_id=' + quoteId + '" title="Edit Quotation">' +
-                '<i class="bi bi-pencil"></i>' +
-              '</a>';
-          }
-
           html.push(
-            '<tr>' +
+            '<tr class="fq-clickable-row" data-quote-id="' + quoteId + '" tabindex="0" role="link" aria-label="Open quotation ' + esc(row.quote_no || quoteId) + '">' +
               '<td>' + Number((pagination.from || 1) + index) + '</td>' +
               '<td>' +
                 '<div class="fq-main">' +
@@ -6819,12 +6974,40 @@ try {
               '<td><span class="fq-badge ' + esc(row.status || 'draft') + '">' +
                 esc(statusTitle(row.status)) +
               '</span></td>' +
-              '<td><div class="fq-row-actions">' + actions + '</div></td>' +
             '</tr>'
           );
         });
 
         body.innerHTML = html.join('');
+      }
+
+      var quoteRowsNode = el('quoteRows');
+      if (quoteRowsNode) {
+        quoteRowsNode.addEventListener('click', function (event) {
+          var row = event.target.closest('.fq-clickable-row');
+          if (!row) {
+            return;
+          }
+          var quoteId = Number(row.getAttribute('data-quote-id') || 0);
+          if (quoteId > 0) {
+            window.location.href = 'quotation-view?quote_id=' + encodeURIComponent(quoteId);
+          }
+        });
+
+        quoteRowsNode.addEventListener('keydown', function (event) {
+          if (event.key !== 'Enter' && event.key !== ' ') {
+            return;
+          }
+          var row = event.target.closest('.fq-clickable-row');
+          if (!row) {
+            return;
+          }
+          event.preventDefault();
+          var quoteId = Number(row.getAttribute('data-quote-id') || 0);
+          if (quoteId > 0) {
+            window.location.href = 'quotation-view?quote_id=' + encodeURIComponent(quoteId);
+          }
+        });
       }
 
       function formatPeriodDate(date) {

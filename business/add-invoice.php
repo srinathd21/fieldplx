@@ -1,6 +1,7 @@
 <?php
-/* FieldPlx Add Invoice - Version 1.0.0 - 2026-09-02
- * Job-based or Direct Invoice + Select2 + split payment allocation.
+/* FieldPlx Add Invoice - Version 2.1.0 - 2026-09-06
+ * Jobber-style invoice form with Job Card / Direct source, Services / Products / Manual items,
+ * custom label/value fields, Images, Attachments and automatic customer email after creation.
  */
 require_once __DIR__ . '/includes/auth.php';
 $pageTitle = 'Create Invoice';
@@ -1040,85 +1041,78 @@ $preLocationId = isset($_GET['location_id']) ? (int)$_GET['location_id'] : 0;
                 padding-left:31px!important;
             }
         }
+
         :root{
-            --ai-navy:#001131;
-            --ai-green:#74b824;
-            --ai-green-dark:#5d971b;
-            --ai-green-soft:#f0f8e5;
-            --ai-red:#e45b66;
-            --ai-orange:#a97814;
-            --ai-text:#0b1933;
-            --ai-muted:#6f7b90;
-            --ai-border:#e5eaf1;
-            --ai-bg:#f6f8fb;
+            --ni-navy:#001131;
+            --ni-green:#2f8d25;
+            --ni-green-dark:#24751d;
+            --ni-green-soft:#f2f8ee;
+            --ni-text:#0b2b37;
+            --ni-muted:#5f7380;
+            --ni-border:#dce4e8;
+            --ni-soft:#f8fafb;
+            --ni-danger:#c74646;
         }
-        .ai-page{width:100%;max-width:1600px;margin:auto;padding:25px 27px 36px}
-        .ai-head{margin-bottom:18px;display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
-        .ai-title{margin:0;color:var(--ai-text);font-size:21px;line-height:1.2;font-weight:700}
-        .ai-sub{max-width:820px;margin:7px 0 0;color:var(--ai-muted);font-size:10.5px;line-height:1.55}
-        .ai-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-        .ai-btn{min-height:40px;padding:0 13px;display:inline-flex;align-items:center;justify-content:center;gap:7px;border:1px solid #dfe5ec;border-radius:8px;color:#43546c;background:#fff;font-size:10px;font-weight:700;cursor:pointer;box-shadow:none}
-        .ai-btn:hover{border-color:#c7d3df;color:var(--ai-navy);background:#fbfcfd}
-        .ai-btn.primary{border-color:var(--ai-green);color:#fff;background:linear-gradient(90deg,#7fc92d,#68aa1d);box-shadow:0 7px 16px rgba(104,170,29,.16)}
-        .ai-btn.primary:hover{color:#fff;border-color:var(--ai-green-dark)}
-        .ai-btn.soft{border-color:#dce8ce;color:var(--ai-green-dark);background:#f8fbf3}
-        .ai-btn.danger{color:#b9444d;background:#fff;border-color:#f0d9dc}
-        .ai-btn:disabled{opacity:.55;cursor:not-allowed}
-        .ai-btn.loading .ai-btn-text{opacity:.7}.ai-btn.loading:before{width:12px;height:12px;border:2px dotted currentColor;border-radius:50%;content:"";animation:aiSpin .8s linear infinite}
-        @keyframes aiSpin{to{transform:rotate(360deg)}}
-
-        .ai-layout{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(310px,.62fr);gap:16px;align-items:start}
-        .ai-stack{display:grid;gap:14px}
-        .ai-card{border:1px solid #dfe6ef;border-radius:12px;background:#fff;box-shadow:0 3px 12px rgba(24,45,76,.035);overflow:hidden}
-        .ai-card-head{min-height:61px;padding:13px 15px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--ai-border);background:#fff}
-        .ai-card-icon{width:34px;height:34px;flex:0 0 34px;display:grid;place-items:center;border-radius:9px;color:var(--ai-green-dark);background:var(--ai-green-soft);font-size:15px}
-        .ai-card-copy{min-width:0}.ai-card-copy h2{margin:0;color:#263750;font-size:12px;font-weight:700}.ai-card-copy p{margin:4px 0 0;color:#8793a5;font-size:8.5px;line-height:1.45}
-        .ai-card-body{padding:14px 15px}
-        .ai-section-label{margin:1px 0 9px;color:#718096;font-size:8px;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
-        .ai-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px}
-        .ai-grid.three{grid-template-columns:repeat(3,minmax(0,1fr))}.ai-field.full{grid-column:1/-1}
-        .ai-field label{display:block;margin-bottom:5px;color:#42536c;font-size:9px;font-weight:700}
-        .ai-field input,.ai-field select,.ai-field textarea{width:100%;min-height:39px;padding:8px 10px;border:1px solid #dfe5ec;border-radius:8px;outline:0;background:#fff;color:#263750;font-family:inherit;font-size:10px;box-shadow:none}
-        .ai-field textarea{min-height:82px;resize:vertical;line-height:1.5}
-        .ai-field input:focus,.ai-field select:focus,.ai-field textarea:focus{border-color:#b8d88d;box-shadow:0 0 0 3px rgba(116,184,36,.1)}
-        .ai-hint{margin-top:5px;color:#929dad;font-size:8px;line-height:1.45}
-        .ai-required{color:#c94d57}
-
-        .ai-source-types{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:13px}
-        .ai-radio-card{position:relative;padding:12px 12px 12px 39px;border:1px solid #dfe6ed;border-radius:9px;background:#fff;cursor:pointer}
-        .ai-radio-card input{position:absolute;left:13px;top:15px;width:14px;height:14px;accent-color:var(--ai-green)}
-        .ai-radio-card strong,.ai-radio-card small{display:block}.ai-radio-card strong{color:#273951;font-size:9.5px}.ai-radio-card small{margin-top:4px;color:#7e8b9d;font-size:8px;line-height:1.5}
-        .ai-radio-card.selected{border-color:#a8d174;background:#f9fcf5}
-        .ai-source-panel{display:none}.ai-source-panel.show{display:block}
-        .ai-context{margin-top:11px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
-        .ai-context-item{min-height:58px;padding:9px 10px;border:1px solid #e7ecf1;border-radius:8px;background:#fbfcfd}
-        .ai-context-item span,.ai-context-item strong{display:block}.ai-context-item span{margin-bottom:5px;color:#8793a5;font-size:7.8px;text-transform:uppercase;font-weight:700}.ai-context-item strong{overflow:hidden;color:#263750;font-size:9px;text-overflow:ellipsis;white-space:nowrap}
-        .ai-warning{display:none;margin-top:10px;padding:9px 10px;border:1px solid #f0d89e;border-radius:8px;background:#fff9e8;color:#80631b;font-size:8.5px;line-height:1.5}.ai-warning.show{display:block}
-
-        .select2-container{width:100%!important}.select2-container .select2-selection--single{height:39px!important;border:1px solid #dfe5ec!important;border-radius:8px!important;background:#fff!important}.select2-container .select2-selection--single .select2-selection__rendered{height:37px!important;line-height:37px!important;padding-left:10px!important;padding-right:28px!important;color:#263750!important;font-size:10px!important}.select2-container .select2-selection--single .select2-selection__arrow{height:37px!important}.select2-container--focus .select2-selection--single,.select2-container--open .select2-selection--single{border-color:#b8d88d!important;box-shadow:0 0 0 3px rgba(116,184,36,.1)!important}.select2-dropdown{border:1px solid #dfe5ec!important;border-radius:8px!important;overflow:hidden;box-shadow:0 12px 28px rgba(24,45,76,.12)!important}.select2-search--dropdown{padding:8px!important}.select2-search__field{height:34px!important;border:1px solid #dfe5ec!important;border-radius:7px!important;font-size:10px!important}.select2-results__option{padding:8px 10px!important;font-size:9.5px!important}.select2-results__option--highlighted[aria-selected]{background:#f0f8e5!important;color:#35551d!important}
-
-        .ai-item-tools{display:grid;grid-template-columns:minmax(220px,1fr) auto auto;gap:8px;align-items:end;margin-bottom:11px}
-        .ai-table-wrap{overflow:auto;border:1px solid #e7ecf1;border-radius:9px}
-        .ai-items{width:100%;min-width:930px;border-collapse:collapse}.ai-items th{padding:9px 8px;color:#718096;background:#f8fafc;border-bottom:1px solid var(--ai-border);font-size:7.8px;font-weight:700;text-transform:uppercase;white-space:nowrap}.ai-items td{padding:7px 6px;border-bottom:1px solid #edf1f4;vertical-align:top}.ai-items tbody tr:last-child td{border-bottom:0}
-        .ai-line-input{width:100%;height:34px;padding:6px 7px;border:1px solid #dfe5ec;border-radius:7px;color:#344760;background:#fff;font-size:9px;outline:0}.ai-line-input:focus{border-color:#b8d88d;box-shadow:0 0 0 2px rgba(116,184,36,.08)}
-        .ai-item-name{min-width:170px}.ai-item-desc{min-width:150px}.ai-num{width:84px;text-align:right}.ai-tax{width:72px;text-align:right}.ai-line-total{min-width:92px;padding-top:9px!important;text-align:right;color:#15283f;font-size:9.5px;font-weight:700;white-space:nowrap}.ai-remove{width:29px;height:29px;margin-top:2px;display:grid;place-items:center;border:0;border-radius:7px;color:#a65057;background:#fff0f1;cursor:pointer}
-        .ai-empty{padding:25px!important;text-align:center;color:#8b97a8;font-size:9px!important}
-
-        .ai-payment-list{display:grid;gap:10px}.ai-payment-row{border:1px solid #e3e9ef;border-radius:10px;background:#fbfcfd;overflow:hidden}.ai-payment-head{padding:9px 10px;display:flex;align-items:center;gap:8px;border-bottom:1px solid #e8edf2;background:#fff}.ai-payment-no{width:25px;height:25px;display:grid;place-items:center;border-radius:7px;color:var(--ai-green-dark);background:var(--ai-green-soft);font-size:8px;font-weight:700}.ai-payment-head strong{color:#33475f;font-size:9px}.ai-payment-head .ai-remove{margin-left:auto;margin-top:0}.ai-payment-body{padding:10px}.ai-payment-grid{display:grid;grid-template-columns:180px 150px minmax(0,1fr);gap:9px}.ai-payment-details{grid-column:1/-1;margin-top:1px;padding-top:9px;border-top:1px dashed #dde4eb;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}.ai-payment-details.cash,.ai-payment-details.credit{grid-template-columns:1fr}.ai-payment-saved{grid-column:1/-1}
-        .ai-payment-note{margin-top:9px;padding:8px 9px;border-radius:7px;background:#fff;color:#748297;font-size:8px;line-height:1.5}.ai-credit-note{color:#8a620e;background:#fff8e7}
-        .ai-use-balance{height:32px;padding:0 9px;border:1px solid #dce7cf;border-radius:7px;color:var(--ai-green-dark);background:#f8fbf3;font-size:8px;font-weight:700;cursor:pointer}
-        .ai-payment-safe{margin-top:10px;padding:9px 10px;display:flex;gap:8px;border:1px solid #e1e8ef;border-radius:8px;background:#fbfcfd;color:#718096;font-size:8px;line-height:1.5}.ai-payment-safe i{color:var(--ai-green-dark);font-size:14px}
-
-        .ai-side{position:sticky;top:86px;display:grid;gap:14px}.ai-total-list{display:grid;gap:9px}.ai-total-row{display:flex;align-items:center;justify-content:space-between;gap:12px;color:#66768a;font-size:9px}.ai-total-row strong{color:#263750;font-size:10px}.ai-total-row.grand{margin-top:3px;padding-top:11px;border-top:1px solid #e5eaf0;color:#273951;font-size:10px;font-weight:700}.ai-total-row.grand strong{font-size:17px;color:#0f2139}.ai-total-row.paid strong{color:var(--ai-green-dark)}.ai-total-row.credit strong{color:#96670d}.ai-total-row.remaining strong.bad{color:#b9444d}.ai-total-row.remaining strong.good{color:var(--ai-green-dark)}
-        .ai-summary-status{margin-top:12px;padding:9px 10px;border-radius:8px;background:#f8fafc;color:#68788e;font-size:8.5px;line-height:1.5}.ai-summary-status strong{color:#2f435c}
-        .ai-save-card .ai-btn{width:100%;margin-top:10px}.ai-mini{margin-top:10px;color:#8a96a7;font-size:8px;line-height:1.5}
-
-        .ai-toast{position:fixed;top:82px;right:18px;z-index:14000;width:min(390px,calc(100vw - 36px));padding:12px 14px;border-radius:9px;color:#fff;background:#123d70;box-shadow:0 12px 30px rgba(0,17,49,.18);opacity:0;transform:translateY(-8px);pointer-events:none;transition:.18s;font-size:10px;font-weight:700}.ai-toast.show{opacity:1;transform:translateY(0)}.ai-toast.error{background:#e45b66}.ai-toast.success{background:#5d971b}.ai-toast.warning{background:#9a741a}
-
-        @media(max-width:1199.98px){.ai-layout{grid-template-columns:1fr}.ai-side{position:static;grid-template-columns:repeat(2,minmax(0,1fr))}.ai-context{grid-template-columns:repeat(2,minmax(0,1fr))}}
-        @media(max-width:991.98px){.ai-grid.three{grid-template-columns:repeat(2,minmax(0,1fr))}.ai-payment-grid{grid-template-columns:1fr 1fr}.ai-payment-details{grid-template-columns:1fr 1fr}.ai-payment-saved{grid-column:1/-1}}
-        @media(max-width:767.98px){.ai-page{padding:17px 13px 28px}.ai-head{flex-direction:column}.ai-actions{width:100%}.ai-actions .ai-btn{flex:1}.ai-source-types,.ai-grid,.ai-grid.three,.ai-side{grid-template-columns:1fr}.ai-context{grid-template-columns:1fr 1fr}.ai-item-tools{grid-template-columns:1fr 1fr}.ai-item-tools .ai-field{grid-column:1/-1}.ai-payment-grid,.ai-payment-details{grid-template-columns:1fr}.ai-payment-saved{grid-column:auto}.ai-field.full{grid-column:auto}}
-        @media(max-width:575.98px){.ai-context{grid-template-columns:1fr}.ai-item-tools{grid-template-columns:1fr}.ai-actions{display:grid;grid-template-columns:1fr 1fr}.ai-payment-head{align-items:flex-start}}
+        body{background:#fff!important}
+        .ni-page{width:100%;max-width:none;margin:0;background:#fff;padding:0 0 88px}
+        .ni-form{background:#fff}
+        .ni-top{padding:24px 28px 30px;border-bottom:1px solid var(--ni-border);background:#fff}
+        .ni-heading{display:flex;align-items:center;gap:12px;margin-bottom:18px}
+        .ni-heading i{color:#2b75ac;font-size:18px}
+        .ni-heading h1{margin:0;color:var(--ni-text);font-size:20px;line-height:1.2;font-weight:700}
+        .ni-subject{margin-bottom:14px}
+        .ni-floating{position:relative}
+        .ni-floating label{position:absolute;top:7px;left:13px;z-index:2;color:#647a87;font-size:9px;line-height:1;pointer-events:none}
+        .ni-floating input,.ni-floating select,.ni-floating textarea{width:100%;border:1px solid var(--ni-border);border-radius:7px;background:#fff;color:#163644;outline:0;font-family:inherit;font-size:12px}
+        .ni-floating input,.ni-floating select{height:43px;padding:17px 12px 6px}
+        .ni-floating textarea{min-height:96px;padding:21px 12px 10px;resize:vertical}
+        .ni-floating input:focus,.ni-floating select:focus,.ni-floating textarea:focus{border-color:#91bd7e;box-shadow:0 0 0 2px rgba(47,141,37,.09)}
+        .ni-source-line{display:flex;align-items:center;gap:10px;margin:0 0 14px}
+        .ni-source-label{color:#526a78;font-size:10px}
+        .ni-segment{display:inline-flex;border:1px solid var(--ni-border);border-radius:8px;overflow:hidden;background:#fff}
+        .ni-segment button{height:34px;padding:0 13px;border:0;border-right:1px solid var(--ni-border);background:#fff;color:#526a78;font:600 10px Arial,Helvetica,sans-serif;cursor:pointer}
+        .ni-segment button:last-child{border-right:0}.ni-segment button.active{background:var(--ni-green-soft);color:var(--ni-green-dark)}
+        .ni-top-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(420px,1fr);gap:18px}
+        .ni-left,.ni-right{min-width:0}
+        .ni-client-wrap,.ni-job-wrap{display:none}.ni-client-wrap.show,.ni-job-wrap.show{display:block}
+        .ni-right-row{min-height:44px;display:grid;grid-template-columns:180px minmax(0,1fr);align-items:center;border-bottom:1px solid var(--ni-border)}
+        .ni-right-row:last-child{border-bottom:0}.ni-right-label{color:#607582;font-size:10px}.ni-right-value{color:#153442;font-size:11px}
+        .ni-right-value input,.ni-right-value select{width:100%;height:33px;padding:6px 10px;border:1px solid var(--ni-border);border-radius:7px;background:#fff;color:#153442;font-family:inherit;font-size:10px;outline:0}
+        .ni-right-value input:focus,.ni-right-value select:focus{border-color:#91bd7e;box-shadow:0 0 0 2px rgba(47,141,37,.08)}
+        .ni-job-context{display:none;margin-top:10px;padding:10px 12px;border:1px solid #e3e9ec;border-radius:7px;background:#fbfcfc;color:#526b78;font-size:9.5px;line-height:1.55}.ni-job-context.show{display:block}.ni-job-context strong{color:#173846}
+        .ni-location-row{margin-top:10px;display:grid;grid-template-columns:1fr 1fr;gap:10px}
+        .ni-section{padding:26px 28px;border-bottom:1px solid var(--ni-border);background:#fff}
+        .ni-box{border:1px solid var(--ni-border);border-radius:8px;background:#fff;overflow:hidden}
+        .ni-box-pad{padding:22px 20px}
+        .ni-section-title{margin:0 0 17px;color:var(--ni-text);font-size:16px;font-weight:700}
+        .ni-item-add{display:flex;align-items:center;gap:8px;margin-bottom:13px;flex-wrap:wrap}
+        .ni-item-mode{display:inline-flex;border:1px solid var(--ni-border);border-radius:7px;overflow:hidden}
+        .ni-item-mode button{height:34px;padding:0 12px;border:0;border-right:1px solid var(--ni-border);background:#fff;color:#566e7b;font-size:9px;font-weight:700;cursor:pointer}.ni-item-mode button:last-child{border-right:0}.ni-item-mode button.active{color:var(--ni-green-dark);background:var(--ni-green-soft)}
+        .ni-item-select{min-width:300px;flex:1 1 360px}.ni-add-line{height:34px;padding:0 13px;border:1px solid var(--ni-green);border-radius:7px;color:#fff;background:var(--ni-green);font-size:9px;font-weight:700;cursor:pointer}.ni-add-line:hover{background:var(--ni-green-dark)}
+        .ni-line{position:relative;padding:13px 14px 15px;border:1px solid var(--ni-border);border-radius:7px;background:#fff;margin-bottom:10px}
+        .ni-line-main{display:grid;grid-template-columns:minmax(260px,1fr) 110px 150px 150px 34px;gap:8px;align-items:start}
+        .ni-line-extra{display:grid;grid-template-columns:1fr 120px 120px 120px;gap:8px;margin-top:8px}
+        .ni-line input,.ni-line textarea{width:100%;border:1px solid var(--ni-border);border-radius:6px;background:#fff;color:#183845;font-family:inherit;font-size:10px;outline:0}.ni-line input{height:39px;padding:7px 9px}.ni-line textarea{min-height:74px;padding:9px;resize:vertical}.ni-line input:focus,.ni-line textarea:focus{border-color:#91bd7e;box-shadow:0 0 0 2px rgba(47,141,37,.07)}
+        .ni-labeled{position:relative}.ni-labeled span{position:absolute;top:5px;left:9px;color:#718692;font-size:7.5px;pointer-events:none}.ni-labeled input{padding-top:15px}
+        .ni-line-total{height:39px;padding:15px 9px 5px;border:1px solid var(--ni-border);border-radius:6px;color:#183845;background:#fff;font-size:10px;font-weight:700;position:relative}.ni-line-total:before{content:'Total';position:absolute;top:5px;left:9px;color:#718692;font-size:7.5px;font-weight:400}
+        .ni-remove{width:34px;height:34px;margin-top:2px;display:grid;place-items:center;border:0;border-radius:6px;color:#6c7f89;background:transparent;cursor:pointer}.ni-remove:hover{color:var(--ni-danger);background:#fff1f1}
+        .ni-empty{padding:26px;border:1px dashed #ccd7dd;border-radius:7px;color:#8797a0;text-align:center;font-size:10px}
+        .ni-summary{margin-top:18px;padding-top:18px;border-top:2px solid #e2e7ea;display:grid;grid-template-columns:1fr minmax(420px,52%);gap:20px}
+        .ni-client-view{display:flex;align-items:flex-start;gap:10px;color:#516a77;font-size:9.5px}.ni-client-view i{font-size:16px;color:#3b5966}.ni-client-view a{color:var(--ni-green-dark);text-decoration:underline!important}
+        .ni-totals{display:grid;gap:0}.ni-total-row{min-height:43px;padding:0 0;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--ni-border);color:#445f6d;font-size:10px}.ni-total-row strong{color:#183845;font-size:10px}.ni-total-row.grand{min-height:48px;border-bottom:3px solid #e1e6e9;font-weight:700}.ni-total-row.grand strong{font-size:16px}.ni-total-row.balance{margin-top:14px;padding:0 12px;border:0;border-radius:6px;background:#faf9f7}.ni-total-link{border:0;background:transparent;color:var(--ni-green-dark);font:600 9px Arial,Helvetica,sans-serif;text-decoration:underline;cursor:pointer}
+        .ni-add-section{padding:12px 28px 0;background:#fff}.ni-add-section-inner{display:inline-flex;align-items:center;gap:7px;padding:7px 9px;border-radius:8px;background:#f1f0ed}.ni-add-section-inner span{color:#3e5966;font-size:9px}.ni-section-chip{height:29px;padding:0 11px;border:1px solid #d5dde1;border-radius:6px;background:#fff;color:#24424f;font-size:9px;font-weight:600;cursor:pointer}.ni-section-chip.active{color:var(--ni-green-dark);border-color:#b9d9ab;background:#f7fbf5}
+        .ni-extra-section{display:none;padding:20px 28px 0;background:#fff}.ni-extra-section.show{display:block}.ni-extra-card{position:relative;padding:21px 20px;border:1px solid var(--ni-border);border-radius:8px;background:#fff}.ni-extra-card h2{margin:0 0 16px;color:var(--ni-text);font-size:15px}.ni-extra-remove{position:absolute;top:17px;right:18px;width:30px;height:30px;border:0;border-radius:6px;background:transparent;color:#46616e;cursor:pointer}.ni-extra-remove:hover{color:var(--ni-danger);background:#fff1f1}
+        .ni-customize-row .ni-right-value{display:flex;justify-content:flex-start}.ni-custom-add{height:31px;padding:0 11px;border:1px solid var(--ni-border);border-radius:7px;background:#fff;color:var(--ni-green-dark);font-size:9px;font-weight:700;cursor:pointer}.ni-custom-add:hover{border-color:#b9d9ab;background:var(--ni-green-soft)}
+        .ni-custom-fields{grid-column:1/-1;display:grid;gap:7px;padding:8px 0 4px}.ni-custom-field{position:relative;display:grid;grid-template-columns:1fr 1fr 31px;gap:7px;align-items:center}.ni-custom-field input{width:100%;height:36px;padding:7px 9px;border:1px solid var(--ni-border);border-radius:7px;background:#fff;color:#183845;font-family:inherit;font-size:9.5px;outline:0}.ni-custom-field input:focus{border-color:#91bd7e;box-shadow:0 0 0 2px rgba(47,141,37,.08)}.ni-custom-field button{width:31px;height:31px;border:0;border-radius:6px;background:transparent;color:#718692;cursor:pointer}.ni-custom-field button:hover{color:var(--ni-danger);background:#fff1f1}
+        .ni-upload-copy{margin:0 0 11px;color:var(--ni-muted);font-size:9.5px}.ni-upload-counter{position:absolute;right:52px;top:23px;color:#718692;font-size:9px}.ni-upload-drop{min-height:74px;padding:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;border:1px dashed #cbd7dd;border-radius:7px;background:#fff;color:#708490;font-size:9px;text-align:center}.ni-upload-btn{height:31px;padding:0 12px;border:1px solid #d5dde1;border-radius:6px;background:#fff;color:var(--ni-green-dark);font-size:9px;font-weight:700;cursor:pointer}.ni-upload-btn:hover{border-color:#b8d89e;background:#f7fbf5}.ni-file-list{margin-top:10px;display:grid;gap:7px}.ni-file-row{min-height:38px;padding:7px 10px;display:flex;align-items:center;gap:8px;border:1px solid #e4eaee;border-radius:7px;background:#fbfcfc;color:#425e6b;font-size:9.5px}.ni-file-row i{color:#607d89}.ni-file-row span{min-width:0;flex:1;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}.ni-file-row small{color:#899aa3}.ni-file-remove{width:28px;height:28px;border:0;border-radius:6px;background:transparent;color:#718692;cursor:pointer}.ni-file-remove:hover{color:var(--ni-danger);background:#fff1f1}
+        .ni-notes{padding:22px 28px 28px}.ni-notes h2{margin:0 0 12px;color:var(--ni-text);font-size:16px}.ni-notes textarea{width:100%;min-height:125px;padding:13px;border:1px dashed #cbd7dd;border-radius:8px;background:#fff;color:#183845;font-family:inherit;font-size:10px;resize:vertical;outline:0}.ni-notes textarea:focus{border-style:solid;border-color:#91bd7e;box-shadow:0 0 0 2px rgba(47,141,37,.08)}
+        .ni-savebar{position:fixed;left:var(--fieldplx-sidebar-width);right:0;bottom:0;z-index:1025;height:64px;padding:10px 28px;display:flex;align-items:center;justify-content:flex-end;gap:8px;border-top:1px solid var(--ni-border);background:rgba(255,255,255,.98);box-shadow:0 -4px 12px rgba(0,17,49,.04)}body.fieldplx-sidebar-collapsed .ni-savebar{left:var(--fieldplx-sidebar-collapsed-width)}
+        .ni-btn{height:38px;padding:0 14px;border:1px solid var(--ni-border);border-radius:7px;background:#fff;color:#31505d;font-size:10px;font-weight:700;cursor:pointer}.ni-btn.primary{border-color:var(--ni-green);background:var(--ni-green);color:#fff}.ni-btn.primary:hover{background:var(--ni-green-dark)}.ni-btn:disabled{opacity:.55;cursor:not-allowed}
+        .ni-toast{position:fixed;top:82px;right:18px;z-index:14000;width:min(390px,calc(100vw - 36px));padding:12px 14px;border-radius:8px;color:#fff;background:#1f5f7a;box-shadow:0 12px 30px rgba(0,17,49,.18);opacity:0;transform:translateY(-8px);pointer-events:none;transition:.18s;font-size:10px;font-weight:700}.ni-toast.show{opacity:1;transform:translateY(0)}.ni-toast.error{background:#c94f55}.ni-toast.success{background:#2f8d25}.ni-toast.warning{background:#9a741a}
+        .select2-container{width:100%!important}.select2-container .select2-selection--single{height:43px!important;border:1px solid var(--ni-border)!important;border-radius:7px!important;background:#fff!important}.select2-container .select2-selection--single .select2-selection__rendered{height:41px!important;line-height:41px!important;padding-left:12px!important;padding-right:28px!important;color:#183845!important;font-size:10px!important}.select2-container .select2-selection--single .select2-selection__arrow{height:41px!important}.select2-container--focus .select2-selection--single,.select2-container--open .select2-selection--single{border-color:#91bd7e!important;box-shadow:0 0 0 2px rgba(47,141,37,.08)!important}.select2-dropdown{border:1px solid var(--ni-border)!important;border-radius:7px!important;overflow:hidden!important;box-shadow:0 12px 24px rgba(0,17,49,.12)!important}.select2-search__field{height:34px!important;border:1px solid var(--ni-border)!important;border-radius:6px!important;font-size:10px!important}.select2-results__option{padding:8px 10px!important;font-size:9.5px!important}.select2-results__option--highlighted[aria-selected]{background:#eaf5e5!important;color:#244f1c!important}
+        @media(max-width:991.98px){.ni-savebar,body.fieldplx-sidebar-collapsed .ni-savebar{left:0}.ni-top-grid{grid-template-columns:1fr}.ni-right-row{grid-template-columns:150px 1fr}.ni-summary{grid-template-columns:1fr}.ni-line-main{grid-template-columns:minmax(220px,1fr) 90px 120px 120px 34px}.ni-line-extra{grid-template-columns:1fr 100px 100px 100px}}
+        @media(max-width:767.98px){.ni-top,.ni-section,.ni-notes{padding-left:14px;padding-right:14px}.ni-add-section,.ni-extra-section{padding-left:14px;padding-right:14px}.ni-location-row{grid-template-columns:1fr}.ni-right-row{grid-template-columns:120px 1fr}.ni-line-main,.ni-line-extra{grid-template-columns:1fr 1fr}.ni-line-main .ni-line-name{grid-column:1/-1}.ni-line-main .ni-remove{position:absolute;top:11px;right:10px}.ni-line-extra textarea{grid-column:1/-1}.ni-summary{grid-template-columns:1fr}.ni-item-select{min-width:0;flex-basis:100%}.ni-savebar{padding-left:14px;padding-right:14px}}
+        @media(max-width:575.98px){.ni-line-main,.ni-line-extra{grid-template-columns:1fr}.ni-right-row{grid-template-columns:1fr;gap:4px;padding:8px 0}.ni-custom-field{grid-template-columns:1fr}.ni-custom-field button{position:absolute;right:0}.ni-item-add{display:grid;grid-template-columns:1fr}.ni-item-mode{width:max-content}.ni-summary{gap:14px}.ni-source-line{align-items:flex-start;flex-direction:column}.ni-segment{width:100%}.ni-segment button{flex:1}}
     </style>
 </head>
 <body>
@@ -1127,132 +1121,142 @@ $preLocationId = isset($_GET['location_id']) ? (int)$_GET['location_id'] : 0;
     <?php require_once __DIR__ . '/includes/sidebar.php'; ?>
     <main class="fieldplx-main-content">
         <div class="fieldplx-content-wrapper">
-            <div class="ai-page">
-                <section class="ai-head">
-                    <div>
-                        <h1 class="ai-title">Create Invoice</h1>
-                        <p class="ai-sub">Create an invoice from an existing Job Card or create a Direct Invoice for a customer. Add billable items and allocate the full total across Cash, Card, Online and Credit.</p>
-                    </div>
-                    <div class="ai-actions">
-                        <a class="ai-btn" href="invoices.php"><i class="bi bi-arrow-left"></i> Back to Invoices</a>
-                    </div>
-                </section>
-
-                <form id="invoiceForm" autocomplete="off">
+            <div class="ni-page">
+                <form id="invoiceForm" class="ni-form" autocomplete="off">
                     <input type="hidden" name="items_json" id="itemsJson" value="[]">
-                    <input type="hidden" name="payments_json" id="paymentsJson" value="[]">
-                    <div class="ai-layout">
-                        <div class="ai-stack">
-                            <section class="ai-card">
-                                <div class="ai-card-head"><span class="ai-card-icon"><i class="bi bi-signpost-split"></i></span><div class="ai-card-copy"><h2>Invoice Source</h2><p>Select a Job Card to pull customer and billing context, or create the invoice directly.</p></div></div>
-                                <div class="ai-card-body">
-                                    <div class="ai-source-types">
-                                        <label class="ai-radio-card" data-source-card="job"><input type="radio" name="source_mode" value="job"><strong>From Job Card</strong><small>Select an existing job. Customer, location, service, quotation and recurring billing visit are loaded automatically.</small></label>
-                                        <label class="ai-radio-card selected" data-source-card="direct"><input type="radio" name="source_mode" value="direct" checked><strong>Direct Invoice</strong><small>Create an invoice without a Job Card. Select the customer and add invoice items directly.</small></label>
-                                    </div>
+                    <input type="hidden" name="source_mode" id="sourceMode" value="direct">
+                    <input type="hidden" name="branch_id" id="branchId" value="">
+                    <input type="hidden" name="custom_fields_json" id="customFieldsJson" value="[]">
 
-                                    <div class="ai-source-panel" id="jobSourcePanel">
-                                        <div class="ai-grid">
-                                            <div class="ai-field full"><label>Job Card <span class="ai-required">*</span></label><select id="jobId" name="job_id"><option value="">Select Job Card</option></select></div>
-                                            <div class="ai-field full" id="jobVisitWrap" style="display:none"><label>Billing Visit / Invoice Slot <span class="ai-required">*</span></label><select id="visitId" name="visit_id"><option value="">Select billing visit</option></select><div class="ai-hint">Recurring jobs can create multiple invoices. Each visit can be invoiced only once.</div></div>
-                                        </div>
-                                        <div class="ai-context" id="jobContext">
-                                            <div class="ai-context-item"><span>Customer</span><strong id="jobCustomer">-</strong></div>
-                                            <div class="ai-context-item"><span>Location</span><strong id="jobLocation">-</strong></div>
-                                            <div class="ai-context-item"><span>Service</span><strong id="jobService">-</strong></div>
-                                            <div class="ai-context-item"><span>Billing</span><strong id="jobBilling">-</strong></div>
-                                            <div class="ai-context-item"><span>Quotation</span><strong id="jobQuote">-</strong></div>
-                                            <div class="ai-context-item"><span>Status</span><strong id="jobStatus">-</strong></div>
-                                            <div class="ai-context-item"><span>Branch</span><strong id="jobBranch">-</strong></div>
-                                            <div class="ai-context-item"><span>Job Total</span><strong id="jobTotal">-</strong></div>
-                                        </div>
-                                        <div class="ai-warning" id="uniqueIndexWarning"><i class="bi bi-exclamation-triangle"></i> This database has the old one-invoice-per-job unique index. Run the recurring invoice migration before creating the second invoice for a recurring Job Card.</div>
-                                    </div>
-
-                                    <div class="ai-source-panel show" id="directSourcePanel">
-                                        <div class="ai-grid">
-                                            <div class="ai-field"><label>Customer <span class="ai-required">*</span></label><select id="clientId" name="client_id"><option value="">Select Customer</option></select></div>
-                                            <div class="ai-field"><label>Customer Location</label><select id="locationId" name="location_id"><option value="">No Location</option></select></div>
-                                            <div class="ai-field full"><label>Branch</label><select id="branchId" name="branch_id"><option value="">Use Customer / Current Branch</option></select></div>
-                                        </div>
-                                    </div>
-                                </div>
-                            </section>
-
-                            <section class="ai-card">
-                                <div class="ai-card-head"><span class="ai-card-icon"><i class="bi bi-receipt"></i></span><div class="ai-card-copy"><h2>Invoice Details</h2><p>Set invoice dates, initial invoice state, payment terms and customer-facing notes.</p></div></div>
-                                <div class="ai-card-body">
-                                    <div class="ai-grid three">
-                                        <div class="ai-field"><label>Issue Date <span class="ai-required">*</span></label><input type="date" name="issue_date" id="issueDate" required></div>
-                                        <div class="ai-field"><label>Due Date <span id="dueRequired" class="ai-required" style="display:none">*</span></label><input type="date" name="due_date" id="dueDate"><div class="ai-hint" id="dueHint">Required automatically when Credit is used.</div></div>
-                                        <div class="ai-field"><label>Invoice Status</label><select name="invoice_status" id="invoiceStatus"><option value="draft">Draft</option><option value="sent">Sent</option></select></div>
-                                        <div class="ai-field full"><label>Payment Terms</label><input type="text" name="payment_terms" id="paymentTerms" maxlength="255" placeholder="Example: Due on receipt / Net 15"></div>
-                                        <div class="ai-field full"><label>Notes</label><textarea name="notes" id="invoiceNotes" placeholder="Invoice notes or billing instructions"></textarea></div>
-                                    </div>
-                                </div>
-                            </section>
-
-                            <section class="ai-card">
-                                <div class="ai-card-head"><span class="ai-card-icon"><i class="bi bi-list-ul"></i></span><div class="ai-card-copy"><h2>Invoice Items</h2><p>Job pricing is suggested automatically. You can still edit the rows or add catalogue/manual items before saving.</p></div></div>
-                                <div class="ai-card-body">
-                                    <div class="ai-item-tools">
-                                        <div class="ai-field"><label>Add from Services / Products / Materials / Fees</label><select id="catalogSelect"><option value="">Search billable item</option></select></div>
-                                        <button type="button" class="ai-btn soft" id="addCatalogButton"><i class="bi bi-plus-lg"></i> Add Item</button>
-                                        <button type="button" class="ai-btn" id="addManualButton"><i class="bi bi-pencil-square"></i> Manual Item</button>
-                                    </div>
-                                    <div class="ai-table-wrap">
-                                        <table class="ai-items">
-                                            <thead><tr><th>#</th><th>Item</th><th>Description</th><th>Qty</th><th>Unit Cost</th><th>Unit Price</th><th>Discount</th><th>Tax %</th><th>Line Total</th><th></th></tr></thead>
-                                            <tbody id="itemRows"><tr><td colspan="10" class="ai-empty">Add an invoice item to continue.</td></tr></tbody>
-                                        </table>
-                                    </div>
-                                </div>
-                            </section>
-
-                            <section class="ai-card">
-                                <div class="ai-card-head"><span class="ai-card-icon"><i class="bi bi-wallet2"></i></span><div class="ai-card-copy"><h2>Payment Details &amp; Split Payment</h2><p>Split the invoice between Cash, Card, Online and Credit. Credit remains outstanding and requires a due date.</p></div><button type="button" class="ai-btn soft" id="addPaymentButton" style="margin-left:auto"><i class="bi bi-plus-lg"></i> Add Split</button></div>
-                                <div class="ai-card-body">
-                                    <div class="ai-payment-list" id="paymentRows"></div>
-                                    <div class="ai-payment-safe"><i class="bi bi-shield-check"></i><span>For Card and Online payments, FieldPlx stores only provider/bank/gateway and transaction references. Full card numbers and CVV are not stored. Previous successful payment references can be reused as input hints.</span></div>
-                                </div>
-                            </section>
+                    <section class="ni-top">
+                        <div class="ni-heading"><i class="bi bi-file-earmark-text"></i><h1>New Invoice</h1></div>
+                        <div class="ni-subject ni-floating">
+                            <label for="invoiceSubject">Subject</label>
+                            <input id="invoiceSubject" name="subject" type="text" maxlength="190" value="For Services Rendered">
                         </div>
 
-                        <aside class="ai-side">
-                            <section class="ai-card">
-                                <div class="ai-card-head"><span class="ai-card-icon"><i class="bi bi-calculator"></i></span><div class="ai-card-copy"><h2>Invoice Summary</h2><p>Calculated from the current invoice items.</p></div></div>
-                                <div class="ai-card-body">
-                                    <div class="ai-total-list">
-                                        <div class="ai-total-row"><span>Subtotal</span><strong id="sumSubtotal">0.00</strong></div>
-                                        <div class="ai-total-row"><span>Discount</span><strong id="sumDiscount">0.00</strong></div>
-                                        <div class="ai-total-row"><span>Tax</span><strong id="sumTax">0.00</strong></div>
-                                        <div class="ai-total-row grand"><span>Total</span><strong id="sumTotal">0.00</strong></div>
-                                    </div>
-                                </div>
-                            </section>
+                        <div class="ni-source-line">
+                            <span class="ni-source-label">Invoice source</span>
+                            <div class="ni-segment" id="sourceButtons">
+                                <button type="button" data-source="job">From Job Card</button>
+                                <button type="button" class="active" data-source="direct">Direct Invoice</button>
+                            </div>
+                        </div>
 
-                            <section class="ai-card ai-save-card">
-                                <div class="ai-card-head"><span class="ai-card-icon"><i class="bi bi-cash-stack"></i></span><div class="ai-card-copy"><h2>Payment Allocation</h2><p>The payment split must equal the invoice total.</p></div></div>
-                                <div class="ai-card-body">
-                                    <div class="ai-total-list">
-                                        <div class="ai-total-row"><span>Invoice Total</span><strong id="payTotal">0.00</strong></div>
-                                        <div class="ai-total-row paid"><span>Received Now</span><strong id="payReceived">0.00</strong></div>
-                                        <div class="ai-total-row credit"><span>Credit / Outstanding</span><strong id="payCredit">0.00</strong></div>
-                                        <div class="ai-total-row remaining"><span>Remaining to Allocate</span><strong id="payRemaining">0.00</strong></div>
-                                    </div>
-                                    <div class="ai-summary-status" id="paymentStatusText"><strong>Allocation:</strong> Credit is initially set to the full invoice balance.</div>
-                                    <button type="submit" class="ai-btn primary" id="saveButton"><span class="ai-btn-text"><i class="bi bi-check2-circle"></i> Create Invoice</span></button>
-                                    <div class="ai-mini">After saving, successful Cash/Card/Online portions are recorded as payments. Credit remains in the invoice balance until collected.</div>
+                        <div class="ni-top-grid">
+                            <div class="ni-left">
+                                <div class="ni-job-wrap" id="jobSourcePanel">
+                                    <select id="jobId" name="job_id"><option value=""></option></select>
+                                    <div class="ni-job-context" id="jobContext"></div>
+                                    <div id="jobVisitWrap" style="display:none;margin-top:10px"><select id="visitId" name="visit_id"><option value=""></option></select></div>
                                 </div>
-                            </section>
-                        </aside>
+                                <div class="ni-client-wrap show" id="directSourcePanel">
+                                    <select id="clientId" name="client_id"><option value=""></option></select>
+                                    <div class="ni-location-row">
+                                        <select id="locationId" name="location_id"><option value=""></option></select>
+                                        <div class="ni-floating"><label>Customer email</label><input id="customerEmail" type="text" readonly></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="ni-right">
+                                <div class="ni-right-row"><div class="ni-right-label">Invoice #</div><div class="ni-right-value"><input type="text" value="Auto" readonly></div></div>
+                                <div class="ni-right-row"><div class="ni-right-label">Issued date</div><div class="ni-right-value"><input type="date" id="issueDate" name="issue_date" required></div></div>
+                                <div class="ni-right-row"><div class="ni-right-label">Payment terms</div><div class="ni-right-value"><select id="paymentTermsPreset"><option value="0">Due upon receipt</option><option value="7">Net 7</option><option value="15">Net 15</option><option value="30">Net 30</option><option value="45">Net 45</option><option value="custom">Custom</option></select><input type="hidden" id="paymentTerms" name="payment_terms" value="Due upon receipt"></div></div>
+                                <div class="ni-right-row" id="dueDateRow" style="display:none"><div class="ni-right-label">Due date</div><div class="ni-right-value"><input type="date" id="dueDate" name="due_date"></div></div>
+                                <div class="ni-right-row"><div class="ni-right-label">Salesperson</div><div class="ni-right-value"><span id="salespersonName">Current user</span></div></div>
+                                <div class="ni-right-row ni-customize-row"><div class="ni-right-label">Customize</div><div class="ni-right-value"><button type="button" class="ni-custom-add" id="addCustomField"><i class="bi bi-plus-lg"></i> Add Field</button></div></div>
+                                <div id="customFields" class="ni-custom-fields"></div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="ni-section">
+                        <div class="ni-box">
+                            <div class="ni-box-pad">
+                                <h2 class="ni-section-title">Product / Service</h2>
+                                <div class="ni-item-add">
+                                    <div class="ni-item-mode" id="itemModeButtons">
+                                        <button type="button" class="active" data-item-mode="service">Service</button>
+                                        <button type="button" data-item-mode="product">Product</button>
+                                        <button type="button" data-item-mode="manual">Manual</button>
+                                    </div>
+                                    <div class="ni-item-select" id="serviceSelectWrap"><select id="serviceSelect"><option value=""></option></select></div>
+                                    <div class="ni-item-select" id="productSelectWrap" style="display:none"><select id="productSelect"><option value=""></option></select></div>
+                                    <button type="button" class="ni-add-line" id="addLineButton"><i class="bi bi-plus-lg"></i> Add Line Item</button>
+                                </div>
+                                <div id="itemRows"><div class="ni-empty">Add a service, product or manual line item.</div></div>
+
+                                <div class="ni-summary">
+                                    <div class="ni-client-view"><i class="bi bi-eye"></i><div><span>Customer view</span><br><a href="#" id="changeCustomerLink">Change</a></div></div>
+                                    <div class="ni-totals">
+                                        <div class="ni-total-row"><span>Subtotal</span><strong id="sumSubtotal">0.00</strong></div>
+                                        <div class="ni-total-row"><span>Discount</span><button type="button" class="ni-total-link" id="discountLink">Add Discount</button><strong id="sumDiscount" style="display:none">0.00</strong></div>
+                                        <div class="ni-total-row"><span>Tax</span><button type="button" class="ni-total-link" id="taxLink">Add Tax</button><strong id="sumTax" style="display:none">0.00</strong></div>
+                                        <div class="ni-total-row grand"><span>Total</span><strong id="sumTotal">0.00</strong></div>
+                                        <div class="ni-total-row balance"><span>Invoice balance</span><strong id="sumBalance">0.00</strong></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </section>
+
+                    <div class="ni-add-section">
+                        <div class="ni-add-section-inner"><span><i class="bi bi-plus-lg"></i> Add section</span><button type="button" class="ni-section-chip" data-section-toggle="clientMessageSection">Client Message</button><button type="button" class="ni-section-chip" data-section-toggle="imagesSection">Images</button><button type="button" class="ni-section-chip" data-section-toggle="attachmentsSection">Attachments</button><button type="button" class="ni-section-chip active" data-section-toggle="contractSection">Contract / Disclaimer</button></div>
+                    </div>
+
+                    <section class="ni-extra-section" id="clientMessageSection">
+                        <div class="ni-extra-card"><button type="button" class="ni-extra-remove" data-remove-section="clientMessageSection"><i class="bi bi-trash"></i></button><h2>Client Message</h2><div class="ni-floating"><label>Description</label><textarea name="client_message" id="clientMessage"></textarea></div></div>
+                    </section>
+
+                    <section class="ni-extra-section show" id="contractSection">
+                        <div class="ni-extra-card"><button type="button" class="ni-extra-remove" data-remove-section="contractSection"><i class="bi bi-trash"></i></button><h2>Contract / Disclaimer</h2><div class="ni-floating"><label>Description</label><textarea name="contract_disclaimer" id="contractDisclaimer">Thank you for your business. Please contact us with any questions regarding this invoice.</textarea></div></div>
+                    </section>
+
+                    <section class="ni-extra-section" id="imagesSection">
+                        <div class="ni-extra-card">
+                            <button type="button" class="ni-extra-remove" data-remove-section="imagesSection"><i class="bi bi-trash"></i></button>
+                            <h2>Images</h2>
+                            <p class="ni-upload-copy">Add images from before and after the job</p>
+                            <div class="ni-upload-counter" id="imageCounter">0 of 10 uploaded</div>
+                            <div class="ni-upload-drop">
+                                <input type="file" id="imageInput" accept="image/avif,image/jpeg,image/png,image/webp,image/heic,.heic" multiple hidden>
+                                <button type="button" class="ni-upload-btn" data-pick-file="imageInput">Add Images</button>
+                                <span>AVIF, JPEG, PNG, WEBP, HEIC up to 25MB each</span>
+                            </div>
+                            <div class="ni-file-list" id="imageList"></div>
+                        </div>
+                    </section>
+
+                    <section class="ni-extra-section" id="attachmentsSection">
+                        <div class="ni-extra-card">
+                            <button type="button" class="ni-extra-remove" data-remove-section="attachmentsSection"><i class="bi bi-trash"></i></button>
+                            <h2>Attachments</h2>
+                            <p class="ni-upload-copy">Include all attachments for your invoice in one place</p>
+                            <div class="ni-upload-counter" id="attachmentCounter">0 of 10 uploaded</div>
+                            <div class="ni-upload-drop">
+                                <input type="file" id="attachmentInput" accept=".avif,.jpg,.jpeg,.png,.webp,.heic,.pdf,.doc,.docx" multiple hidden>
+                                <button type="button" class="ni-upload-btn" data-pick-file="attachmentInput">Select Files</button>
+                                <span>AVIF, JPEG, PNG, WEBP, HEIC, PDF, DOCX up to 50MB each</span>
+                            </div>
+                            <div class="ni-file-list" id="attachmentList"></div>
+                        </div>
+                    </section>
+
+                    <section class="ni-notes">
+                        <h2>Notes</h2>
+                        <textarea name="notes" id="invoiceNotes" placeholder="Leave an internal note for yourself or a team member"></textarea>
+                    </section>
+
+                    <div class="ni-savebar">
+                        <button type="button" class="ni-btn" id="cancelButton">Cancel</button>
+                        <button type="submit" class="ni-btn primary" id="saveButton">Save Invoice</button>
                     </div>
                 </form>
             </div>
         </div>
     </main>
 </div>
-<div class="ai-toast" id="toast">Notification</div>
+<div class="ni-toast" id="toast">Notification</div>
 <?php require_once __DIR__ . '/includes/footer.php'; ?>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
@@ -1262,91 +1266,62 @@ $preLocationId = isset($_GET['location_id']) ? (int)$_GET['location_id'] : 0;
 'use strict';
 var csrfToken=<?= json_encode($invoiceFormCsrfToken) ?>;
 var preJobId=<?= (int)$preJobId ?>,preClientId=<?= (int)$preClientId ?>,preLocationId=<?= (int)$preLocationId ?>;
-var meta={clients:[],locations:[],branches:[],catalog:[],jobs:[],currency:{},has_recurring_job_unique_index:0};
-var cart=[];
-var paymentHints={card:[],online:[]};
-var paymentSeq=0;
-var currentJob=null;
-var currentJobContext=null;
-var toastTimer=null;
-
-function el(id){return document.getElementById(id)}
+var meta={clients:[],locations:[],branches:[],jobs:[],services:[],products:[],currency:{},current_user:{}};
+var cart=[],source='direct',itemMode='service',currentJob=null,customFields=[],pendingFiles={image:[],attachment:[]},toastTimer=null;
+function E(id){return document.getElementById(id)}
 function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;')}
-function title(v){return String(v||'-').replace(/_/g,' ').replace(/\b\w/g,function(x){return x.toUpperCase()})}
-function notify(type,message){var t=el('toast');if(toastTimer)clearTimeout(toastTimer);t.className='ai-toast '+(type||'')+' show';t.textContent=message||'Notification';toastTimer=setTimeout(function(){t.classList.remove('show')},3400)}
-function parse(response){return response.text().then(function(raw){var text=String(raw||'').trim(),d;try{d=text?JSON.parse(text):{}}catch(e){throw new Error(text.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim()||'Invalid server response.')}if(!response.ok||!d.success)throw new Error(d.message||'Request failed.');return d})}
+function title(v){return String(v||'').replace(/_/g,' ').replace(/\b\w/g,function(x){return x.toUpperCase()})}
+function toast(type,msg){var t=E('toast');if(toastTimer)clearTimeout(toastTimer);t.className='ni-toast '+(type||'')+' show';t.textContent=msg||'Notification';toastTimer=setTimeout(function(){t.classList.remove('show')},3200)}
+function parse(r){return r.text().then(function(raw){var d;try{d=raw?JSON.parse(raw):{}}catch(e){throw new Error(raw.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim()||'Invalid server response.')}if(!r.ok||!d.success)throw new Error(d.message||'Request failed.');return d})}
 function request(fd){fd.append('csrf_token',csrfToken);return fetch('api/invoice-form.php',{method:'POST',body:fd,credentials:'same-origin',cache:'no-store',headers:{'X-Requested-With':'XMLHttpRequest','Accept':'application/json'}}).then(parse)}
-function money(v){var c=meta.currency||{},places=parseInt(c.decimal_places,10);if(isNaN(places))places=2;var n=Number(v||0).toFixed(places),sym=c.symbol||'';return c.symbol_position==='after'?n+(sym?' '+sym:''):(sym||'')+n}
-function today(){var d=new Date(),off=d.getTimezoneOffset();d=new Date(d.getTime()-off*60000);return d.toISOString().slice(0,10)}
-function fmtDateTime(v){if(!v)return '-';var d=new Date(String(v).replace(' ','T'));return isNaN(d.getTime())?String(v):d.toLocaleString(undefined,{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})}
-function loading(button,on){button.disabled=!!on;button.classList.toggle('loading',!!on)}
-function sourceMode(){var x=document.querySelector('input[name="source_mode"]:checked');return x?x.value:'direct'}
-
-function initSelect2(selector,placeholder){$(selector).select2({width:'100%',placeholder:placeholder||'',allowClear:true})}
-function destroySelect2(selector){if($(selector).hasClass('select2-hidden-accessible'))$(selector).select2('destroy')}
-function setOptions(id,html,placeholder){var node=el(id);destroySelect2('#'+id);node.innerHTML=html;initSelect2('#'+id,placeholder)}
-
-function setMeta(m){meta=m||meta;var jobs='<option value=""></option>';meta.jobs.forEach(function(j){jobs+='<option value="'+Number(j.id)+'">'+esc(j.job_no+' · '+j.client_name+' · '+(j.service_name||j.title)+' · '+title(j.status))+'</option>'});setOptions('jobId',jobs,'Search Job Card');
-var clients='<option value=""></option>';meta.clients.forEach(function(c){clients+='<option value="'+Number(c.id)+'">'+esc(c.name+(c.company_name?' · '+c.company_name:'')+(c.phone?' · '+c.phone:''))+'</option>'});setOptions('clientId',clients,'Search Customer');
-var branches='<option value=""></option>';meta.branches.forEach(function(b){branches+='<option value="'+Number(b.id)+'">'+esc(b.name+(b.branch_code?' · '+b.branch_code:''))+'</option>'});setOptions('branchId',branches,'Use Customer / Current Branch');
-var catalog='<option value=""></option>';meta.catalog.forEach(function(x){catalog+='<option value="'+Number(x.id)+'">'+esc(x.name+' · '+title(x.item_type)+' · '+money(x.unit_price))+'</option>'});setOptions('catalogSelect',catalog,'Search billable item');
-filterLocations(0,0);
-}
-
-function filterLocations(clientId,selectedId){clientId=Number(clientId||0);var html='<option value=""></option>';meta.locations.filter(function(x){return clientId>0&&Number(x.client_id)===clientId}).forEach(function(x){var addr=[x.address_line1,x.city,x.state].filter(Boolean).join(', ');html+='<option value="'+Number(x.id)+'">'+esc(x.name+(addr?' · '+addr:''))+'</option>'});setOptions('locationId',html,'No Location');if(selectedId>0)$('#locationId').val(String(selectedId)).trigger('change.select2')}
-function selectedClient(){var id=Number(el('clientId').value||0);return meta.clients.find(function(x){return Number(x.id)===id})||null}
-function applyClient(selectedLocation){var c=selectedClient();filterLocations(c?c.id:0,selectedLocation||0);if(c&&c.branch_id&&!el('branchId').value)$('#branchId').val(String(c.branch_id)).trigger('change.select2');loadPaymentHints(c?c.id:0)}
-
-function loadPaymentHints(clientId){paymentHints={card:[],online:[]};if(Number(clientId)<=0){refreshPaymentRows();return Promise.resolve()}var fd=new FormData();fd.append('action','payment_hints');fd.append('client_id',clientId);return request(fd).then(function(d){paymentHints=d.hints||paymentHints;refreshPaymentRows()}).catch(function(e){paymentHints={card:[],online:[]};refreshPaymentRows()})}
-
-function updateSource(){var mode=sourceMode();el('jobSourcePanel').classList.toggle('show',mode==='job');el('directSourcePanel').classList.toggle('show',mode==='direct');document.querySelectorAll('[data-source-card]').forEach(function(c){c.classList.toggle('selected',c.getAttribute('data-source-card')===mode)});if(mode==='job'&&el('jobId').value)loadJobContext(el('jobId').value,el('visitId').value);if(mode==='direct')loadPaymentHints(Number(el('clientId').value||0))}
-
-function resetJobContext(){currentJob=null;currentJobContext=null;['jobCustomer','jobLocation','jobService','jobBilling','jobQuote','jobStatus','jobBranch','jobTotal'].forEach(function(id){el(id).textContent='-'});el('jobVisitWrap').style.display='none';destroySelect2('#visitId');el('visitId').innerHTML='<option value=""></option>';initSelect2('#visitId','Select billing visit')}
-function renderJobContext(d){currentJob=d.job||null;currentJobContext=d;if(!currentJob){resetJobContext();return}el('jobCustomer').textContent=currentJob.client_name||'-';el('jobLocation').textContent=currentJob.location_name||'-';el('jobService').textContent=currentJob.service_name||currentJob.title||'-';el('jobBilling').textContent=title(currentJob.billing_type||'visit_based')+' · '+Number(currentJob.total_invoices||1)+' invoice(s)';el('jobQuote').textContent=currentJob.quote_no||'Direct Job';el('jobStatus').textContent=title(currentJob.status);el('jobBranch').textContent=currentJob.branch_name||'Current Branch';el('jobTotal').textContent=money(currentJob.total||0);paymentHints=d.payment_hints||{card:[],online:[]};
-var slots=Array.isArray(d.billing_slots)?d.billing_slots:[],available=slots.filter(function(x){return Number(x.invoiced||0)===0}),requires=Number(currentJob.total_invoices||1)>1||available.length>1;var html='<option value=""></option>';available.forEach(function(s){var label=s.visit_no||('Visit '+s.visit_number);if(s.scheduled_start)label+=' · '+fmtDateTime(s.scheduled_start);html+='<option value="'+(s.visit_id?Number(s.visit_id):'')+'">'+esc(label)+'</option>'});setOptions('visitId',html,'Select billing visit');el('jobVisitWrap').style.display=requires?'block':'none';if(available.length===1&&available[0].visit_id){$('#visitId').val(String(available[0].visit_id)).trigger('change.select2')}cart=(d.items||[]).map(normalizeItem);renderItems();refreshPaymentRows();syncAutoCredit();}
-function loadJobContext(jobId,visitId){jobId=Number(jobId||0);if(jobId<=0){resetJobContext();cart=[];renderItems();paymentHints={card:[],online:[]};refreshPaymentRows();return Promise.resolve()}var fd=new FormData();fd.append('action','job_context');fd.append('job_id',jobId);if(Number(visitId)>0)fd.append('visit_id',visitId);return request(fd).then(function(d){renderJobContext(d);return d}).catch(function(e){resetJobContext();cart=[];renderItems();notify('error',e.message);throw e})}
-
-function normalizeItem(x){return{product_service_id:x&&x.product_service_id?Number(x.product_service_id):null,item_name:x&&x.item_name?String(x.item_name):'',description:x&&x.description?String(x.description):'',quantity:Math.max(.001,Number(x&&x.quantity||1)),unit_cost:Math.max(0,Number(x&&x.unit_cost||0)),unit_price:Math.max(0,Number(x&&x.unit_price||0)),discount_amount:Math.max(0,Number(x&&x.discount_amount||0)),tax_percent:Math.max(0,Number(x&&x.tax_percent||0))}}
-function lineCalc(x){var base=Math.round(Number(x.quantity||0)*Number(x.unit_price||0)*100)/100,disc=Math.max(0,Math.min(base,Number(x.discount_amount||0))),taxable=Math.max(0,base-disc),tax=Math.round(taxable*Number(x.tax_percent||0))/100,total=Math.round((taxable+tax)*100)/100;return{base:base,discount:disc,tax:tax,total:total}}
-function totals(){var out={subtotal:0,discount:0,tax:0,total:0};cart.forEach(function(x){var c=lineCalc(x);out.subtotal+=c.base;out.discount+=c.discount;out.tax+=c.tax;out.total+=c.total});Object.keys(out).forEach(function(k){out[k]=Math.round(out[k]*100)/100});return out}
-function renderItems(){var body=el('itemRows');if(!cart.length){body.innerHTML='<tr><td colspan="10" class="ai-empty">Add an invoice item to continue.</td></tr>';updateTotals();return}var html='';cart.forEach(function(x,i){var c=lineCalc(x);html+='<tr data-index="'+i+'"><td style="padding-top:14px;text-align:center;color:#8a96a7;font-size:8px">'+(i+1)+'</td><td><input class="ai-line-input ai-item-name" data-field="item_name" value="'+esc(x.item_name)+'" placeholder="Item name"></td><td><input class="ai-line-input ai-item-desc" data-field="description" value="'+esc(x.description)+'" placeholder="Description"></td><td><input class="ai-line-input ai-num" data-field="quantity" type="number" min="0.001" step="0.001" value="'+esc(x.quantity)+'"></td><td><input class="ai-line-input ai-num" data-field="unit_cost" type="number" min="0" step="0.01" value="'+esc(x.unit_cost)+'"></td><td><input class="ai-line-input ai-num" data-field="unit_price" type="number" min="0" step="0.01" value="'+esc(x.unit_price)+'"></td><td><input class="ai-line-input ai-num" data-field="discount_amount" type="number" min="0" step="0.01" value="'+esc(x.discount_amount)+'"></td><td><input class="ai-line-input ai-tax" data-field="tax_percent" type="number" min="0" step="0.01" value="'+esc(x.tax_percent)+'"></td><td class="ai-line-total">'+esc(money(c.total))+'</td><td><button type="button" class="ai-remove" data-remove-item="'+i+'" title="Remove"><i class="bi bi-trash"></i></button></td></tr>'});body.innerHTML=html;updateTotals()}
-function updateTotals(){var t=totals();el('sumSubtotal').textContent=money(t.subtotal);el('sumDiscount').textContent=money(t.discount);el('sumTax').textContent=money(t.tax);el('sumTotal').textContent=money(t.total);el('payTotal').textContent=money(t.total);syncAutoCredit();updatePaymentSummary()}
-function addCatalog(){var id=Number(el('catalogSelect').value||0);if(id<=0){notify('warning','Select a billable item first.');return}var x=meta.catalog.find(function(r){return Number(r.id)===id});if(!x)return;cart.push(normalizeItem({product_service_id:x.id,item_name:x.name,description:x.description||'',quantity:1,unit_cost:x.unit_cost,unit_price:x.unit_price,discount_amount:0,tax_percent:x.tax_percent}));renderItems();$('#catalogSelect').val(null).trigger('change')}
-function addManual(){cart.push(normalizeItem({item_name:'',description:'',quantity:1,unit_cost:0,unit_price:0,discount_amount:0,tax_percent:0}));renderItems();var rows=el('itemRows').querySelectorAll('tr[data-index]');if(rows.length){var n=rows[rows.length-1].querySelector('[data-field="item_name"]');if(n)n.focus()}}
-
-function paymentMethodOptions(selected){return['cash','card','online','credit'].map(function(m){return'<option value="'+m+'" '+(m===selected?'selected':'')+'>'+title(m)+'</option>'}).join('')}
-function savedOptions(method){var rows=paymentHints[method]||[],html='<option value="">Enter new details</option>';rows.forEach(function(x,i){var label=(x.provider||title(method))+(x.reference?' · '+x.reference:'')+(x.received_at?' · '+String(x.received_at).slice(0,10):'');html+='<option value="'+i+'">'+esc(label)+'</option>'});return html}
-function paymentDetailHtml(row){var method=row.getAttribute('data-method')||'credit',id=row.getAttribute('data-payment-id');if(method==='cash')return'<div class="ai-payment-details cash"><div class="ai-field"><label>Cash Notes / Reference</label><input type="text" data-pay-notes placeholder="Optional cash reference"></div></div>';if(method==='credit')return'<div class="ai-payment-details credit"><div class="ai-payment-note ai-credit-note"><strong>Credit:</strong> This amount is not recorded as a payment. It remains outstanding on the invoice. A Due Date is required.</div></div>';var rows=paymentHints[method]||[],saved=rows.length?'<div class="ai-field ai-payment-saved"><label>Previous '+title(method)+' Payment Detail</label><select data-saved-detail><option value="">Enter new details</option>'+savedOptions(method).replace('<option value="">Enter new details</option>','')+'</select><div class="ai-hint">Select a previous provider/reference to reuse it, or enter new details below.</div></div>':'';return'<div class="ai-payment-details">'+saved+'<div class="ai-field"><label>'+(method==='card'?'Card Provider / Bank':'Online Provider / Gateway')+'</label><input type="text" data-pay-provider placeholder="'+(method==='card'?'Example: HDFC POS / Visa':'Example: Razorpay / Bank Transfer')+'"></div><div class="ai-field"><label>'+(method==='card'?'Transaction / Terminal Reference':'Transaction / UTR Reference')+'</label><input type="text" data-pay-reference placeholder="Reference number"></div><div class="ai-field"><label>Notes</label><input type="text" data-pay-notes placeholder="Optional payment notes"></div></div>'}
-function addPayment(method,amount,autoCredit){paymentSeq++;var row=document.createElement('div');row.className='ai-payment-row';row.setAttribute('data-payment-id',paymentSeq);row.setAttribute('data-method',method||'cash');row.setAttribute('data-auto-credit',autoCredit?'1':'0');row.innerHTML='<div class="ai-payment-head"><span class="ai-payment-no">'+(el('paymentRows').children.length+1)+'</span><strong>Payment Split</strong><button type="button" class="ai-remove" data-remove-payment title="Remove"><i class="bi bi-trash"></i></button></div><div class="ai-payment-body"><div class="ai-payment-grid"><div class="ai-field"><label>Method</label><select data-pay-method>'+paymentMethodOptions(method||'cash')+'</select></div><div class="ai-field"><label>Amount</label><input type="number" min="0" step="0.01" data-pay-amount value="'+(Number(amount||0)>0?Number(amount).toFixed(2):'')+'"></div><div class="ai-field" data-balance-wrap style="display:'+(method==='credit'?'block':'none')+'"><label>&nbsp;</label><button type="button" class="ai-use-balance" data-use-balance><i class="bi bi-arrow-down-circle"></i> Use Remaining Balance</button></div></div><div data-payment-detail>'+paymentDetailHtml(row)+'</div></div>';el('paymentRows').appendChild(row);initPaymentRow(row);renumberPayments();syncAutoCredit();updatePaymentSummary();return row}
-function initPaymentRow(row){var methodSel=row.querySelector('[data-pay-method]');$(methodSel).select2({width:'100%',minimumResultsForSearch:Infinity});var saved=row.querySelector('[data-saved-detail]');if(saved)$(saved).select2({width:'100%'});methodSel.addEventListener('change',function(){row.setAttribute('data-method',this.value);if(this.value!=='credit')row.setAttribute('data-auto-credit','0');row.querySelector('[data-balance-wrap]').style.display=this.value==='credit'?'block':'none';row.querySelector('[data-payment-detail]').innerHTML=paymentDetailHtml(row);var s=row.querySelector('[data-saved-detail]');if(s){$(s).select2({width:'100%'});$(s).on('change',function(){applySavedDetail(row)})}updateDueRequirement();syncAutoCredit();updatePaymentSummary()});var amount=row.querySelector('[data-pay-amount]');amount.addEventListener('input',function(){if(row.getAttribute('data-method')==='credit')row.setAttribute('data-auto-credit','0');updatePaymentSummary()});row.querySelector('[data-remove-payment]').addEventListener('click',function(){if(el('paymentRows').children.length<=1){notify('warning','Keep at least one payment allocation row.');return}row.remove();renumberPayments();syncAutoCredit();updatePaymentSummary()});row.querySelector('[data-use-balance]').addEventListener('click',function(){var remaining=remainingExcluding(row);amount.value=Math.max(0,remaining).toFixed(2);row.setAttribute('data-auto-credit','1');updatePaymentSummary()});var s=row.querySelector('[data-saved-detail]');if(s)$(s).on('change',function(){applySavedDetail(row)})}
-function applySavedDetail(row){var method=row.getAttribute('data-method'),s=row.querySelector('[data-saved-detail]'),idx=s?parseInt(s.value,10):NaN;if(isNaN(idx)||!(paymentHints[method]||[])[idx])return;var x=paymentHints[method][idx],p=row.querySelector('[data-pay-provider]'),r=row.querySelector('[data-pay-reference]');if(p)p.value=x.provider||'';if(r)r.value=x.reference||''}
-function renumberPayments(){el('paymentRows').querySelectorAll('.ai-payment-row').forEach(function(row,i){row.querySelector('.ai-payment-no').textContent=i+1})}
-function refreshPaymentRows(){el('paymentRows').querySelectorAll('.ai-payment-row').forEach(function(row){var detail=row.querySelector('[data-payment-detail]'),provider=row.querySelector('[data-pay-provider]'),reference=row.querySelector('[data-pay-reference]'),notes=row.querySelector('[data-pay-notes]'),old={provider:provider?provider.value:'',reference:reference?reference.value:'',notes:notes?notes.value:''};detail.innerHTML=paymentDetailHtml(row);provider=row.querySelector('[data-pay-provider]');reference=row.querySelector('[data-pay-reference]');notes=row.querySelector('[data-pay-notes]');if(provider)provider.value=old.provider;if(reference)reference.value=old.reference;if(notes)notes.value=old.notes;var s=row.querySelector('[data-saved-detail]');if(s)$(s).select2({width:'100%'}).on('change',function(){applySavedDetail(row)})})}
-function remainingExcluding(exclude){var total=totals().total,allocated=0;el('paymentRows').querySelectorAll('.ai-payment-row').forEach(function(row){if(row===exclude)return;allocated+=Math.max(0,Number(row.querySelector('[data-pay-amount]').value||0))});return Math.round((total-allocated)*100)/100}
-function syncAutoCredit(){var total=totals().total,rows=Array.prototype.slice.call(el('paymentRows').querySelectorAll('.ai-payment-row')),autoRows=rows.filter(function(r){return r.getAttribute('data-method')==='credit'&&r.getAttribute('data-auto-credit')==='1'});if(!autoRows.length)return;var auto=autoRows[0],other=0;rows.forEach(function(r){if(r===auto)return;other+=Math.max(0,Number(r.querySelector('[data-pay-amount]').value||0))});auto.querySelector('[data-pay-amount]').value=Math.max(0,Math.round((total-other)*100)/100).toFixed(2)}
-function updateDueRequirement(){var hasCredit=false;el('paymentRows').querySelectorAll('.ai-payment-row').forEach(function(row){if(row.getAttribute('data-method')==='credit'&&Number(row.querySelector('[data-pay-amount]').value||0)>0.001)hasCredit=true});el('dueRequired').style.display=hasCredit?'inline':'none';el('dueDate').required=hasCredit;el('dueHint').textContent=hasCredit?'Required because this invoice has a Credit balance.':'Required automatically when Credit is used.'}
-function paymentData(){var out=[];el('paymentRows').querySelectorAll('.ai-payment-row').forEach(function(row){var method=row.getAttribute('data-method')||'cash',amount=Math.max(0,Number(row.querySelector('[data-pay-amount]').value||0)),provider=row.querySelector('[data-pay-provider]'),reference=row.querySelector('[data-pay-reference]'),notes=row.querySelector('[data-pay-notes]');if(amount>0)out.push({method:method,amount:amount,provider:provider?provider.value.trim():'',reference:reference?reference.value.trim():'',notes:notes?notes.value.trim():''})});return out}
-function updatePaymentSummary(){var t=totals().total,received=0,credit=0;paymentData().forEach(function(p){if(p.method==='credit')credit+=p.amount;else received+=p.amount});received=Math.round(received*100)/100;credit=Math.round(credit*100)/100;var allocated=Math.round((received+credit)*100)/100,remaining=Math.round((t-allocated)*100)/100;el('payReceived').textContent=money(received);el('payCredit').textContent=money(credit);el('payRemaining').textContent=money(Math.abs(remaining)<.005?0:remaining);el('payRemaining').className=Math.abs(remaining)<=.01?'good':'bad';var text;if(Math.abs(remaining)<=.01)text='<strong>Allocation complete.</strong> '+(credit>0?'Credit balance will remain outstanding until the due date.':'Invoice is fully allocated to received payments.');else if(remaining>0)text='<strong>Still to allocate:</strong> '+money(remaining)+'. Add a split or use Credit for the remaining balance.';else text='<strong>Over allocated:</strong> Reduce the split payments by '+money(Math.abs(remaining))+'.';el('paymentStatusText').innerHTML=text;updateDueRequirement()}
-
-function serialize(){el('itemsJson').value=JSON.stringify(cart.map(function(x){return{product_service_id:x.product_service_id,item_name:x.item_name,description:x.description,quantity:Number(x.quantity),unit_cost:Number(x.unit_cost),unit_price:Number(x.unit_price),discount_amount:Number(x.discount_amount),tax_percent:Number(x.tax_percent)}}));el('paymentsJson').value=JSON.stringify(paymentData())}
-function validate(){var mode=sourceMode();if(mode==='job'){if(!el('jobId').value){notify('warning','Select a Job Card.');return false}if(currentJob&&Number(currentJob.total_invoices||1)>1&&el('jobVisitWrap').style.display!=='none'&&!el('visitId').value){notify('warning','Select a billing visit for this recurring job.');return false}}else{if(!el('clientId').value){notify('warning','Select a customer.');return false}}if(!cart.length){notify('warning','Add at least one invoice item.');return false}for(var i=0;i<cart.length;i++){if(!String(cart[i].item_name||'').trim()){notify('warning','Invoice item '+(i+1)+' needs an item name.');return false}if(Number(cart[i].quantity)<=0){notify('warning','Invoice item '+(i+1)+' needs a valid quantity.');return false}}var t=totals();if(t.total<=0){notify('warning','Invoice total must be greater than zero.');return false}var p=paymentData(),allocated=0,credit=0;p.forEach(function(x){allocated+=x.amount;if(x.method==='credit')credit+=x.amount});if(Math.abs(allocated-t.total)>.01){notify('warning','Split payments must equal the invoice total.');return false}if(credit>0&&!el('dueDate').value){notify('warning','Select a due date for the Credit balance.');el('dueDate').focus();return false}return true}
-
-function loadMeta(){var fd=new FormData();fd.append('action','form_meta');return request(fd).then(function(d){setMeta(d.meta||{});el('uniqueIndexWarning').classList.toggle('show',Number(meta.has_recurring_job_unique_index||0)===1);if(preJobId>0){document.querySelector('input[name="source_mode"][value="job"]').checked=true;updateSource();$('#jobId').val(String(preJobId)).trigger('change.select2');return loadJobContext(preJobId,0)}if(preClientId>0){document.querySelector('input[name="source_mode"][value="direct"]').checked=true;updateSource();$('#clientId').val(String(preClientId)).trigger('change.select2');applyClient(preLocationId)}return Promise.resolve()})}
-
-el('issueDate').value=today();
-document.querySelectorAll('input[name="source_mode"]').forEach(function(x){x.addEventListener('change',function(){updateSource()})});
-$('#jobId').on('change',function(){loadJobContext(this.value,0)});
-$('#visitId').on('change',function(){if(el('jobId').value&&this.value)loadJobContext(el('jobId').value,this.value)});
-$('#clientId').on('change',function(){applyClient(0)});
-el('addCatalogButton').addEventListener('click',addCatalog);el('addManualButton').addEventListener('click',addManual);el('addPaymentButton').addEventListener('click',function(){addPayment('cash',0,false)});
-el('itemRows').addEventListener('input',function(e){var row=e.target.closest('tr[data-index]');if(!row||!e.target.matches('[data-field]'))return;var i=Number(row.getAttribute('data-index')),field=e.target.getAttribute('data-field');if(!cart[i])return;if(['quantity','unit_cost','unit_price','discount_amount','tax_percent'].indexOf(field)>=0)cart[i][field]=Math.max(field==='quantity'?.001:0,Number(e.target.value||0));else cart[i][field]=e.target.value;var totalCell=row.querySelector('.ai-line-total');if(totalCell)totalCell.textContent=money(lineCalc(cart[i]).total);updateTotals()});
-el('itemRows').addEventListener('click',function(e){var b=e.target.closest('[data-remove-item]');if(!b)return;cart.splice(Number(b.getAttribute('data-remove-item')),1);renderItems()});
-
-el('invoiceForm').addEventListener('submit',function(e){e.preventDefault();if(!this.reportValidity()){notify('warning','Complete the required invoice fields.');return}serialize();if(!validate())return;serialize();var fd=new FormData(this);fd.append('action','save');var b=el('saveButton');loading(b,true);request(fd).then(function(d){notify('success',d.message||'Invoice created successfully.');setTimeout(function(){window.location.href='invoice-view?invoice_id='+Number(d.invoice_id)},850)}).catch(function(err){notify('error',err.message)}).finally(function(){loading(b,false)})});
-
-initSelect2('#visitId','Select billing visit');
-addPayment('credit',0,true);
-loadMeta().then(function(){updateSource();renderItems();syncAutoCredit();updatePaymentSummary()}).catch(function(e){notify('error',e.message)});
+function money(v){var c=meta.currency||{},p=parseInt(c.decimal_places,10);if(isNaN(p))p=2;var n=Number(v||0).toFixed(p),s=c.symbol||'';return c.symbol_position==='after'?n+(s?' '+s:''):(s||'')+n}
+function today(){var d=new Date(),o=d.getTimezoneOffset();d=new Date(d.getTime()-o*60000);return d.toISOString().slice(0,10)}
+function initSelect(id,placeholder,opts){opts=opts||{};var cfg={width:'100%',placeholder:placeholder||'',allowClear:true};Object.keys(opts).forEach(function(k){cfg[k]=opts[k]});$('#'+id).select2(cfg)}
+function resetSelect(id,html,placeholder,opts){var $n=$('#'+id);if($n.hasClass('select2-hidden-accessible'))$n.select2('destroy');E(id).innerHTML=html;initSelect(id,placeholder,opts)}
+function setSource(next){source=next==='job'?'job':'direct';E('sourceMode').value=source;document.querySelectorAll('[data-source]').forEach(function(b){b.classList.toggle('active',b.getAttribute('data-source')===source)});E('jobSourcePanel').classList.toggle('show',source==='job');E('directSourcePanel').classList.toggle('show',source==='direct');if(source==='job'&&E('jobId').value)loadJob(E('jobId').value,E('visitId').value);updateCustomerView()}
+function setItemMode(next){itemMode=['service','product','manual'].indexOf(next)>=0?next:'service';document.querySelectorAll('[data-item-mode]').forEach(function(b){b.classList.toggle('active',b.getAttribute('data-item-mode')===itemMode)});E('serviceSelectWrap').style.display=itemMode==='service'?'block':'none';E('productSelectWrap').style.display=itemMode==='product'?'block':'none'}
+function setMeta(m){meta=m||meta;var jobs='<option value=""></option>';meta.jobs.forEach(function(j){jobs+='<option value="'+Number(j.id)+'">'+esc(j.job_no+' - '+j.client_name+' - '+(j.title||j.service_name||''))+'</option>'});resetSelect('jobId',jobs,'Select a Job Card');var clients='<option value=""></option>';meta.clients.forEach(function(c){clients+='<option value="'+Number(c.id)+'">'+esc(c.name+(c.company_name?' - '+c.company_name:'')+(c.phone?' - '+c.phone:''))+'</option>'});resetSelect('clientId',clients,'Select a customer');var services='<option value=""></option>';meta.services.forEach(function(s){services+='<option value="'+Number(s.id)+'">'+esc(s.name+' - '+money(s.unit_price))+'</option>'});resetSelect('serviceSelect',services,'Select service');var products='<option value=""></option>';meta.products.forEach(function(p){products+='<option value="'+Number(p.id)+'">'+esc(p.name+' - '+money(p.selling_price))+'</option>'});resetSelect('productSelect',products,'Select product or type a new product',{tags:true,createTag:function(params){var term=$.trim(params.term||'');if(!term)return null;return{id:'new:'+term,text:term,newTag:true}}});E('salespersonName').textContent=(meta.current_user&&meta.current_user.name)?meta.current_user.name:'Current user';filterLocations(0,0)}
+function filterLocations(clientId,selected){var html='<option value=""></option>';meta.locations.filter(function(x){return Number(x.client_id)===Number(clientId||0)}).forEach(function(x){var a=[x.address_line1,x.city,x.state].filter(Boolean).join(', ');html+='<option value="'+Number(x.id)+'">'+esc(x.name+(a?' - '+a:''))+'</option>'});resetSelect('locationId',html,'Service location');if(Number(selected)>0)$('#locationId').val(String(selected)).trigger('change.select2')}
+function currentClient(){var id=source==='job'&&currentJob?Number(currentJob.client_id):Number(E('clientId').value||0);return meta.clients.find(function(c){return Number(c.id)===id})||null}
+function applyClient(selectedLocation){var c=currentClient();if(source==='direct')filterLocations(c?c.id:0,selectedLocation||0);E('customerEmail').value=c&&c.email?c.email:'';if(c&&c.branch_id)E('branchId').value=String(c.branch_id);updateCustomerView()}
+function updateCustomerView(){var c=currentClient(),link=E('changeCustomerLink');link.textContent=c?c.name:'Change';link.onclick=function(e){e.preventDefault();if(source==='job'){$('#jobId').select2('open')}else{$('#clientId').select2('open')}}}
+function renderCustomFields(){var box=E('customFields');box.innerHTML=customFields.map(function(x,i){return '<div class="ni-custom-field"><input data-custom-f="label" data-custom-i="'+i+'" value="'+esc(x.label||'')+'" maxlength="190" placeholder="Field name"><input data-custom-f="value" data-custom-i="'+i+'" value="'+esc(x.value||'')+'" maxlength="1000" placeholder="Value"><button type="button" data-remove-custom="'+i+'" title="Remove"><i class="bi bi-x-lg"></i></button></div>'}).join('');E('customFieldsJson').value=JSON.stringify(customFields)}
+function fileSize(n){n=Number(n||0);if(n>=1024*1024)return (n/(1024*1024)).toFixed(1)+' MB';if(n>=1024)return Math.round(n/1024)+' KB';return n+' B'}
+function renderPendingFiles(){function draw(cat,listId,counterId){var a=pendingFiles[cat]||[],box=E(listId);box.innerHTML=a.map(function(f,i){return '<div class="ni-file-row"><i class="bi bi-paperclip"></i><span>'+esc(f.name)+' <small>('+esc(fileSize(f.size))+')</small></span><button type="button" class="ni-file-remove" data-remove-file="'+cat+'" data-file-index="'+i+'" title="Remove"><i class="bi bi-x-lg"></i></button></div>'}).join('');E(counterId).textContent=a.length+' of 10 uploaded'}draw('image','imageList','imageCounter');draw('attachment','attachmentList','attachmentCounter')}
+function queueFiles(input,cat){var files=Array.prototype.slice.call(input.files||[]),max=cat==='image'?25*1024*1024:50*1024*1024,allowedImage=['avif','jpg','jpeg','png','webp','heic'],allowedAttachment=['avif','jpg','jpeg','png','webp','heic','pdf','doc','docx'],allowed=cat==='image'?allowedImage:allowedAttachment,current=pendingFiles[cat].length;files.forEach(function(f){if(current>=10){toast('warning','Maximum 10 '+(cat==='image'?'images':'attachments')+' allowed.');return}var ext=(f.name.split('.').pop()||'').toLowerCase();if(allowed.indexOf(ext)<0){toast('warning',f.name+' has an unsupported file type.');return}if(Number(f.size||0)<=0||Number(f.size)>max){toast('warning',f.name+' exceeds the '+(cat==='image'?'25':'50')+'MB limit.');return}pendingFiles[cat].push(f);current++});input.value='';renderPendingFiles()}
+function appendPendingFiles(fd){pendingFiles.image.forEach(function(f){fd.append('invoice_images[]',f,f.name)});pendingFiles.attachment.forEach(function(f){fd.append('invoice_attachments[]',f,f.name)})}
+function resetJob(){currentJob=null;E('jobContext').classList.remove('show');E('jobContext').innerHTML='';E('jobVisitWrap').style.display='none';cart=[];renderItems();updateCustomerView()}
+function renderJob(d){currentJob=d.job||null;if(!currentJob){resetJob();return}E('branchId').value=currentJob.branch_id||'';var text='<strong>'+esc(currentJob.job_no||'Job')+'</strong> &nbsp; '+esc(currentJob.client_name||'')+(currentJob.location_name?' &nbsp; - &nbsp; '+esc(currentJob.location_name):'')+(currentJob.quote_no?' &nbsp; - &nbsp; '+esc(currentJob.quote_no):'');E('jobContext').innerHTML=text;E('jobContext').classList.add('show');var slots=Array.isArray(d.billing_slots)?d.billing_slots:[],available=slots.filter(function(x){return Number(x.invoiced||0)===0}),html='<option value=""></option>';available.forEach(function(s){html+='<option value="'+(s.visit_id?Number(s.visit_id):'')+'">'+esc((s.visit_no||('Visit '+s.visit_number))+(s.scheduled_start?' - '+String(s.scheduled_start).slice(0,16):''))+'</option>'});resetSelect('visitId',html,'Select billing visit');E('jobVisitWrap').style.display=(Number(currentJob.total_invoices||1)>1||available.length>1)?'block':'none';if(available.length===1&&available[0].visit_id)$('#visitId').val(String(available[0].visit_id)).trigger('change.select2');cart=(d.items||[]).map(normalize);renderItems();applyClient(0)}
+function loadJob(id,visitId){id=Number(id||0);if(id<=0){resetJob();return Promise.resolve()}var fd=new FormData();fd.append('action','job_context');fd.append('job_id',id);if(Number(visitId)>0)fd.append('visit_id',visitId);return request(fd).then(function(d){renderJob(d);return d}).catch(function(e){resetJob();toast('error',e.message);throw e})}
+function normalize(x){var src=String(x&&x.item_source||((x&&x.product_id)?'product':((x&&x.product_service_id)?'service':'manual')));if(src==='product_service')src='service';return{product_service_id:Number(x&&x.product_service_id||0)||null,product_id:Number(x&&x.product_id||0)||null,item_source:src,new_product_name:String(x&&x.new_product_name||''),item_name:String(x&&x.item_name||''),description:String(x&&x.description||''),quantity:Math.max(.001,Number(x&&x.quantity||1)),unit_cost:Math.max(0,Number(x&&x.unit_cost||0)),unit_price:Math.max(0,Number(x&&x.unit_price||0)),discount_amount:Math.max(0,Number(x&&x.discount_amount||0)),tax_percent:Math.max(0,Number(x&&x.tax_percent||0)),service_date:String(x&&x.service_date||'')}}
+function calc(x){var base=Math.round(x.quantity*x.unit_price*100)/100,disc=Math.min(base,Math.max(0,x.discount_amount)),taxable=Math.max(0,base-disc),tax=Math.round(taxable*x.tax_percent)/100,total=Math.round((taxable+tax)*100)/100;return{base:base,discount:disc,tax:tax,total:total}}
+function totals(){var o={subtotal:0,discount:0,tax:0,total:0};cart.forEach(function(x){var c=calc(x);o.subtotal+=c.base;o.discount+=c.discount;o.tax+=c.tax;o.total+=c.total});Object.keys(o).forEach(function(k){o[k]=Math.round(o[k]*100)/100});return o}
+function renderItems(){var w=E('itemRows');if(!cart.length){w.innerHTML='<div class="ni-empty">Add a service, product or manual line item.</div>';updateTotals();return}var h='';cart.forEach(function(x,i){var c=calc(x);h+='<div class="ni-line" data-index="'+i+'"><div class="ni-line-main"><input class="ni-line-name" data-f="item_name" value="'+esc(x.item_name)+'" placeholder="Name"><div class="ni-labeled"><span>Quantity</span><input data-f="quantity" type="number" min="0.001" step="0.001" value="'+esc(x.quantity)+'"></div><div class="ni-labeled"><span>Unit price</span><input data-f="unit_price" type="number" min="0" step="0.01" value="'+esc(x.unit_price)+'"></div><div class="ni-line-total">'+esc(money(c.total))+'</div><button type="button" class="ni-remove" data-remove="'+i+'" title="Remove"><i class="bi bi-trash"></i></button></div><div class="ni-line-extra"><textarea data-f="description" placeholder="Description">'+esc(x.description)+'</textarea><div class="ni-labeled"><span>Unit cost</span><input data-f="unit_cost" type="number" min="0" step="0.01" value="'+esc(x.unit_cost)+'"></div><div class="ni-labeled"><span>Discount</span><input data-f="discount_amount" type="number" min="0" step="0.01" value="'+esc(x.discount_amount)+'"></div><div class="ni-labeled"><span>Tax %</span><input data-f="tax_percent" type="number" min="0" step="0.01" value="'+esc(x.tax_percent)+'"></div></div></div>'});w.innerHTML=h;updateTotals()}
+function updateTotals(){var t=totals();E('sumSubtotal').textContent=money(t.subtotal);E('sumDiscount').textContent=money(t.discount);E('sumTax').textContent=money(t.tax);E('sumTotal').textContent=money(t.total);E('sumBalance').textContent=money(t.total);E('sumDiscount').style.display=t.discount>0?'inline':'none';E('discountLink').style.display=t.discount>0?'none':'inline';E('sumTax').style.display=t.tax>0?'inline':'none';E('taxLink').style.display=t.tax>0?'none':'inline'}
+function addSelected(){if(itemMode==='manual'){cart.push(normalize({item_source:'manual',quantity:1}));renderItems();focusLast();return}if(itemMode==='service'){var id=Number(E('serviceSelect').value||0),x=meta.services.find(function(s){return Number(s.id)===id});if(!x){toast('warning','Select a service.');return}cart.push(normalize({product_service_id:x.id,item_source:'service',item_name:x.name,description:x.description,quantity:1,unit_cost:x.unit_cost,unit_price:x.unit_price,tax_percent:x.tax_percent}));$('#serviceSelect').val(null).trigger('change');renderItems();return}var raw=String(E('productSelect').value||'');if(!raw){toast('warning','Select a product or type a new product.');return}if(raw.indexOf('new:')===0){var name=raw.slice(4).trim();cart.push(normalize({item_source:'product',new_product_name:name,item_name:name,quantity:1}));$('#productSelect').val(null).trigger('change');renderItems();return}var idp=Number(raw),p=meta.products.find(function(x){return Number(x.id)===idp});if(!p){toast('warning','Select a valid product.');return}cart.push(normalize({product_id:p.id,item_source:'product',item_name:p.name,description:p.description,quantity:1,unit_cost:p.base_unit_price,unit_price:p.selling_price,tax_percent:p.tax_percent}));$('#productSelect').val(null).trigger('change');renderItems()}
+function focusLast(){var rows=E('itemRows').querySelectorAll('.ni-line');if(rows.length){var x=rows[rows.length-1].querySelector('[data-f="item_name"]');if(x)x.focus()}}
+function syncTerms(){var v=E('paymentTermsPreset').value,issue=E('issueDate').value||today(),d=new Date(issue+'T00:00:00');if(v==='custom'){E('dueDateRow').style.display='grid';E('paymentTerms').value='Custom';return}var days=Number(v||0);d.setDate(d.getDate()+days);E('dueDate').value=d.toISOString().slice(0,10);E('dueDateRow').style.display='none';E('paymentTerms').value=days===0?'Due upon receipt':'Net '+days}
+function serialize(){E('itemsJson').value=JSON.stringify(cart.map(function(x){return{product_service_id:x.product_service_id,product_id:x.product_id,item_source:x.item_source,new_product_name:x.new_product_name,item_name:x.item_name,description:x.description,quantity:Number(x.quantity),unit_cost:Number(x.unit_cost),unit_price:Number(x.unit_price),discount_amount:Number(x.discount_amount),tax_percent:Number(x.tax_percent),service_date:x.service_date}}));E('customFieldsJson').value=JSON.stringify(customFields.filter(function(x){return String(x.label||'').trim()!==''||String(x.value||'').trim()!==''}))}
+function validate(){if(source==='job'){if(!E('jobId').value){toast('warning','Select a Job Card.');return false}if(currentJob&&Number(currentJob.total_invoices||1)>1&&E('jobVisitWrap').style.display!=='none'&&!E('visitId').value){toast('warning','Select the billing visit.');return false}}else if(!E('clientId').value){toast('warning','Select a customer.');return false}if(!cart.length){toast('warning','Add at least one invoice item.');return false}for(var i=0;i<cart.length;i++){if(!cart[i].item_name.trim()){toast('warning','Line item '+(i+1)+' needs a name.');return false}if(Number(cart[i].quantity)<=0){toast('warning','Line item '+(i+1)+' needs a valid quantity.');return false}}if(totals().total<=0){toast('warning','Invoice total must be greater than zero.');return false}if(!E('dueDate').value){toast('warning','Select a due date.');return false}return true}
+function loadMeta(){var fd=new FormData();fd.append('action','form_meta');return request(fd).then(function(d){setMeta(d.meta||{});if(preJobId>0){setSource('job');$('#jobId').val(String(preJobId)).trigger('change.select2');return loadJob(preJobId,0)}if(preClientId>0){setSource('direct');$('#clientId').val(String(preClientId)).trigger('change.select2');applyClient(preLocationId)}return Promise.resolve()})}
+E('issueDate').value=today();syncTerms();
+document.querySelectorAll('[data-source]').forEach(function(b){b.addEventListener('click',function(){setSource(this.getAttribute('data-source'))})});
+document.querySelectorAll('[data-item-mode]').forEach(function(b){b.addEventListener('click',function(){setItemMode(this.getAttribute('data-item-mode'))})});
+$('#jobId').on('change',function(){loadJob(this.value,0)});$('#visitId').on('change',function(){if(E('jobId').value&&this.value)loadJob(E('jobId').value,this.value)});$('#clientId').on('change',function(){applyClient(0)});
+E('paymentTermsPreset').addEventListener('change',syncTerms);E('issueDate').addEventListener('change',syncTerms);E('addLineButton').addEventListener('click',addSelected);
+E('itemRows').addEventListener('input',function(e){var r=e.target.closest('.ni-line');if(!r||!e.target.matches('[data-f]'))return;var i=Number(r.getAttribute('data-index')),f=e.target.getAttribute('data-f');if(!cart[i])return;if(['quantity','unit_cost','unit_price','discount_amount','tax_percent'].indexOf(f)>=0)cart[i][f]=Math.max(f==='quantity'?.001:0,Number(e.target.value||0));else cart[i][f]=e.target.value;var t=r.querySelector('.ni-line-total');if(t)t.textContent=money(calc(cart[i]).total);updateTotals()});
+E('itemRows').addEventListener('click',function(e){var b=e.target.closest('[data-remove]');if(!b)return;cart.splice(Number(b.getAttribute('data-remove')),1);renderItems()});
+E('discountLink').addEventListener('click',function(){if(!cart.length){toast('warning','Add an invoice item first.');return}var x=E('itemRows').querySelector('[data-f="discount_amount"]');if(x){x.focus();x.select()}});E('taxLink').addEventListener('click',function(){if(!cart.length){toast('warning','Add an invoice item first.');return}var x=E('itemRows').querySelector('[data-f="tax_percent"]');if(x){x.focus();x.select()}});
+E('addCustomField').addEventListener('click',function(){customFields.push({label:'',value:''});renderCustomFields();var rows=E('customFields').querySelectorAll('[data-custom-f="label"]');if(rows.length)rows[rows.length-1].focus()});
+E('customFields').addEventListener('input',function(e){var i=Number(e.target.getAttribute('data-custom-i')),f=e.target.getAttribute('data-custom-f');if(!f||!customFields[i])return;customFields[i][f]=e.target.value;E('customFieldsJson').value=JSON.stringify(customFields)});
+E('customFields').addEventListener('click',function(e){var b=e.target.closest('[data-remove-custom]');if(!b)return;customFields.splice(Number(b.getAttribute('data-remove-custom')),1);renderCustomFields()});
+document.querySelectorAll('[data-pick-file]').forEach(function(b){b.addEventListener('click',function(){var el=E(this.getAttribute('data-pick-file'));if(el)el.click()})});
+E('imageInput').addEventListener('change',function(){queueFiles(this,'image')});E('attachmentInput').addEventListener('change',function(){queueFiles(this,'attachment')});
+document.addEventListener('click',function(e){var b=e.target.closest('[data-remove-file]');if(!b)return;var cat=b.getAttribute('data-remove-file'),i=Number(b.getAttribute('data-file-index'));if(pendingFiles[cat])pendingFiles[cat].splice(i,1);renderPendingFiles()});
+document.querySelectorAll('[data-section-toggle]').forEach(function(b){b.addEventListener('click',function(){var id=this.getAttribute('data-section-toggle'),s=E(id),show=!s.classList.contains('show');s.classList.toggle('show',show);this.classList.toggle('active',show)})});document.querySelectorAll('[data-remove-section]').forEach(function(b){b.addEventListener('click',function(){var id=this.getAttribute('data-remove-section');E(id).classList.remove('show');var t=document.querySelector('[data-section-toggle="'+id+'"]');if(t)t.classList.remove('active');if(id==='imagesSection'){pendingFiles.image=[];renderPendingFiles()}if(id==='attachmentsSection'){pendingFiles.attachment=[];renderPendingFiles()}if(id==='clientMessageSection')E('clientMessage').value='';if(id==='contractSection')E('contractDisclaimer').value=''})});
+E('cancelButton').addEventListener('click',function(){window.location.href='invoices.php'});
+E('invoiceForm').addEventListener('submit',function(e){e.preventDefault();serialize();if(!validate())return;serialize();var fd=new FormData(this);appendPendingFiles(fd);fd.append('action','save');var b=E('saveButton');b.disabled=true;b.textContent='Saving...';request(fd).then(function(d){var type=d.email_sent===0&&d.email_message?'warning':'success',msg=d.message||'Invoice created successfully.';if(d.email_message)msg+=' '+d.email_message;if(d.upload_message)msg+=' '+d.upload_message;toast(type,msg);setTimeout(function(){window.location.href='invoice-view.php?invoice_id='+Number(d.invoice_id)},type==='warning'?1800:1000)}).catch(function(err){toast('error',err.message)}).finally(function(){b.disabled=false;b.textContent='Save Invoice'})});
+initSelect('visitId','Select billing visit');renderCustomFields();renderPendingFiles();loadMeta().then(function(){setSource(source);setItemMode(itemMode);renderItems();updateCustomerView()}).catch(function(e){toast('error',e.message)});
 })();
 </script>
 </body>

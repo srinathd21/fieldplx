@@ -1,23 +1,386 @@
 <?php
+/**
+ * FieldPlx Invoice View - Direct Backend Version 2.1.0
+ * PHP 7.2 compatible.
+ *
+ * All invoice loading and payment collection are handled directly in this page.
+ * No api/invoices.php request is used.
+ */
 require_once __DIR__ . '/includes/auth.php';
+if (file_exists(__DIR__ . '/includes/audit.php')) {
+    require_once __DIR__ . '/includes/audit.php';
+}
 
-$pageTitle='Invoice';
-$activePage='invoices';
+$pageTitle = 'Invoice';
+$activePage = 'invoices';
 
-if(session_status()===PHP_SESSION_NONE){
+if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
 
-if(empty($_SESSION['invoices_csrf_token'])){
-    $_SESSION['invoices_csrf_token']=bin2hex(random_bytes(32));
+if (empty($_SESSION['invoices_csrf_token'])) {
+    $_SESSION['invoices_csrf_token'] = bin2hex(random_bytes(32));
 }
 
-$invoiceCsrfToken=(string)$_SESSION['invoices_csrf_token'];
-$invoiceId=isset($_GET['invoice_id'])?(int)$_GET['invoice_id']:0;
-$jobId=isset($_GET['job_id'])?(int)$_GET['job_id']:0;
-$openCollect=isset($_GET['collect'])&&$_GET['collect']==='1';
-?>
-<!DOCTYPE html>
+$invoiceCsrfToken = (string) $_SESSION['invoices_csrf_token'];
+$tenantId = !empty($_SESSION['tenant_id']) ? (int) $_SESSION['tenant_id'] : 0;
+$userId = !empty($_SESSION['tenant_user_id'])
+    ? (int) $_SESSION['tenant_user_id']
+    : (!empty($_SESSION['user_id']) ? (int) $_SESSION['user_id'] : 0);
+
+if ($tenantId <= 0 || $userId <= 0) {
+    http_response_code(401);
+    exit('Authentication required.');
+}
+
+function ivh($value)
+{
+    return htmlspecialchars((string) ($value === null ? '' : $value), ENT_QUOTES, 'UTF-8');
+}
+
+function ivTable(PDO $pdo, $table)
+{
+    static $cache = array();
+    if (isset($cache[$table])) return $cache[$table];
+    $stmt = $pdo->prepare("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=:t");
+    $stmt->execute(array(':t' => $table));
+    $cache[$table] = ((int) $stmt->fetchColumn() > 0);
+    return $cache[$table];
+}
+
+function ivColumn(PDO $pdo, $table, $column)
+{
+    static $cache = array();
+    $key = $table . '.' . $column;
+    if (isset($cache[$key])) return $cache[$key];
+    $stmt = $pdo->prepare("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=:t AND COLUMN_NAME=:c");
+    $stmt->execute(array(':t' => $table, ':c' => $column));
+    $cache[$key] = ((int) $stmt->fetchColumn() > 0);
+    return $cache[$key];
+}
+
+function ivMoney($value, $currency)
+{
+    $places = isset($currency['decimal_places']) ? (int) $currency['decimal_places'] : 2;
+    $places = max(0, min(4, $places));
+    $number = number_format((float) $value, $places, '.', ',');
+    $symbol = isset($currency['symbol']) ? (string) $currency['symbol'] : '';
+    $position = isset($currency['symbol_position']) ? (string) $currency['symbol_position'] : 'before';
+    if ($symbol === '') return $number;
+    return $position === 'after' ? $number . ' ' . $symbol : $symbol . $number;
+}
+
+function ivDate($value)
+{
+    if (!$value) return '-';
+    $time = strtotime((string) $value);
+    return $time ? date('d M Y', $time) : (string) $value;
+}
+
+function ivDateTime($value)
+{
+    if (!$value) return '-';
+    $time = strtotime((string) $value);
+    return $time ? date('d M Y, h:i A', $time) : (string) $value;
+}
+
+function ivTitle($value)
+{
+    $text = str_replace('_', ' ', trim((string) $value));
+    return $text !== '' ? ucwords($text) : '-';
+}
+
+function ivAddress($parts)
+{
+    $out = array();
+    foreach ($parts as $part) {
+        $part = trim((string) $part);
+        if ($part !== '') $out[] = $part;
+    }
+    return $out ? implode(', ', $out) : '-';
+}
+
+function ivFallbackPaymentNo(PDO $pdo, $tenantId)
+{
+    $stmt = $pdo->prepare("SELECT COALESCE(MAX(id),0)+1 FROM payments WHERE tenant_id=:t");
+    $stmt->execute(array(':t' => $tenantId));
+    $next = max(1, (int) $stmt->fetchColumn());
+    for ($i = 0; $i < 1000; $i++) {
+        $no = 'PAY-' . str_pad((string) ($next + $i), 6, '0', STR_PAD_LEFT);
+        $check = $pdo->prepare("SELECT id FROM payments WHERE tenant_id=:t AND payment_no=:n LIMIT 1");
+        $check->execute(array(':t' => $tenantId, ':n' => $no));
+        if (!$check->fetchColumn()) return $no;
+    }
+    throw new RuntimeException('Unable to generate payment number.');
+}
+
+function ivNextPaymentNo(PDO $pdo, $tenantId, $branchId)
+{
+    if (!ivTable($pdo, 'document_sequences')) {
+        return ivFallbackPaymentNo($pdo, $tenantId);
+    }
+
+    if ($branchId > 0) {
+        $stmt = $pdo->prepare("SELECT ds.*,b.branch_code FROM document_sequences ds LEFT JOIN branches b ON b.id=ds.branch_id AND b.tenant_id=ds.tenant_id WHERE ds.tenant_id=:t AND ds.document_type='payment' AND ds.is_active=1 AND (ds.branch_id=:b OR ds.branch_id IS NULL) ORDER BY CASE WHEN ds.branch_id=:b2 THEN 0 ELSE 1 END,ds.id LIMIT 1 FOR UPDATE");
+        $stmt->execute(array(':t' => $tenantId, ':b' => $branchId, ':b2' => $branchId));
+    } else {
+        $stmt = $pdo->prepare("SELECT ds.*,NULL AS branch_code FROM document_sequences ds WHERE ds.tenant_id=:t AND ds.document_type='payment' AND ds.is_active=1 AND ds.branch_id IS NULL ORDER BY ds.id LIMIT 1 FOR UPDATE");
+        $stmt->execute(array(':t' => $tenantId));
+    }
+
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$row) return ivFallbackPaymentNo($pdo, $tenantId);
+
+    $now = new DateTime('now');
+    $year = $now->format('Y');
+    $month = $now->format('m');
+    $fyStart = max(1, min(12, (int) $row['financial_year_start_month']));
+    $yearNum = (int) $now->format('Y');
+    $fyYear = (int) $now->format('n') >= $fyStart ? $yearNum : $yearNum - 1;
+    $fy = $fyYear . '-' . substr((string) ($fyYear + 1), -2);
+
+    $resetKey = 'never';
+    if ($row['reset_period'] === 'monthly') $resetKey = $year . $month;
+    elseif ($row['reset_period'] === 'yearly') $resetKey = $year;
+    elseif ($row['reset_period'] === 'financial_year') $resetKey = $fy;
+
+    $current = (int) $row['current_number'];
+    if ($row['reset_period'] !== 'never' && (string) $row['last_reset_key'] !== (string) $resetKey) {
+        $current = 0;
+    }
+    $next = $current + 1;
+
+    $middle = '';
+    if ($row['middle_format'] === 'year') $middle = $year;
+    elseif ($row['middle_format'] === 'year_month') $middle = $year . $month;
+    elseif ($row['middle_format'] === 'financial_year') $middle = $fy;
+    elseif ($row['middle_format'] === 'branch_year') $middle = (!empty($row['branch_code']) ? $row['branch_code'] : 'BR') . $year;
+
+    $parts = array();
+    if (!empty($row['prefix'])) $parts[] = $row['prefix'];
+    if ($middle !== '') $parts[] = $middle;
+    $parts[] = str_pad((string) $next, max(1, (int) $row['number_length']), '0', STR_PAD_LEFT);
+    if (!empty($row['suffix'])) $parts[] = $row['suffix'];
+    $separator = isset($row['number_separator']) ? (string) $row['number_separator'] : '-';
+    $number = implode($separator, $parts);
+
+    $update = $pdo->prepare("UPDATE document_sequences SET current_number=:n,last_reset_key=:k WHERE id=:id");
+    $update->execute(array(':n' => $next, ':k' => $resetKey, ':id' => $row['id']));
+    return $number;
+}
+
+function ivCurrency(PDO $pdo, $tenantId, $branchId)
+{
+    $stmt = $pdo->prepare("SELECT c.id,c.currency_code,c.currency_name,c.symbol,c.symbol_position,c.decimal_places,c.decimal_separator,c.thousand_separator FROM tenants t LEFT JOIN branches b ON b.id=:b AND b.tenant_id=t.id INNER JOIN currencies c ON c.id=COALESCE(b.currency_id,t.currency_id) WHERE t.id=:t LIMIT 1");
+    $stmt->execute(array(':b' => $branchId > 0 ? $branchId : 0, ':t' => $tenantId));
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if ($row) return $row;
+    return array('id' => 1, 'currency_code' => '', 'currency_name' => '', 'symbol' => '', 'symbol_position' => 'before', 'decimal_places' => 2, 'decimal_separator' => '.', 'thousand_separator' => ',');
+}
+
+$invoiceId = isset($_GET['invoice_id']) ? (int) $_GET['invoice_id'] : 0;
+$jobId = isset($_GET['job_id']) ? (int) $_GET['job_id'] : 0;
+$openCollect = isset($_GET['collect']) && $_GET['collect'] === '1';
+$flashSuccess = isset($_SESSION['invoice_view_success']) ? (string) $_SESSION['invoice_view_success'] : '';
+$flashError = isset($_SESSION['invoice_view_error']) ? (string) $_SESSION['invoice_view_error'] : '';
+unset($_SESSION['invoice_view_success'], $_SESSION['invoice_view_error']);
+
+/* ----------------------------------------------------------
+   Collect payment - handled directly on this page
+   ---------------------------------------------------------- */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action']) && $_POST['action'] === 'collect_payment') {
+    $postedToken = isset($_POST['csrf_token']) ? (string) $_POST['csrf_token'] : '';
+    if ($postedToken === '' || !hash_equals($invoiceCsrfToken, $postedToken)) {
+        $_SESSION['invoice_view_error'] = 'Your form session expired. Refresh and try again.';
+        header('Location: ' . basename($_SERVER['PHP_SELF']) . '?invoice_id=' . (int) $_POST['invoice_id']);
+        exit;
+    }
+
+    $postInvoiceId = isset($_POST['invoice_id']) ? (int) $_POST['invoice_id'] : 0;
+    $amount = isset($_POST['amount']) ? round((float) $_POST['amount'], 2) : 0.0;
+    $method = isset($_POST['payment_method']) ? strtolower(trim((string) $_POST['payment_method'])) : 'cash';
+    $reference = isset($_POST['reference']) ? trim((string) $_POST['reference']) : '';
+    $receivedAtRaw = isset($_POST['received_at']) ? trim((string) $_POST['received_at']) : '';
+    $paymentNotes = isset($_POST['payment_notes']) ? trim((string) $_POST['payment_notes']) : '';
+    $allowedMethods = array('cash','card','bank','upi','cheque','wallet','other');
+
+    try {
+        if ($postInvoiceId <= 0) throw new RuntimeException('Invalid invoice selected.');
+        if ($amount <= 0) throw new RuntimeException('Enter a valid payment amount.');
+        if (!in_array($method, $allowedMethods, true)) throw new RuntimeException('Select a valid payment method.');
+
+        $receivedAt = date('Y-m-d H:i:s');
+        if ($receivedAtRaw !== '') {
+            $ts = strtotime(str_replace('T', ' ', $receivedAtRaw));
+            if ($ts === false) throw new RuntimeException('Select a valid received date and time.');
+            $receivedAt = date('Y-m-d H:i:s', $ts);
+        }
+
+        $pdo->beginTransaction();
+        $lock = $pdo->prepare("SELECT id,tenant_id,branch_id,client_id,quote_id,invoice_no,status,total,amount_paid,balance_due FROM invoices WHERE id=:id AND tenant_id=:t LIMIT 1 FOR UPDATE");
+        $lock->execute(array(':id' => $postInvoiceId, ':t' => $tenantId));
+        $invoiceLock = $lock->fetch(PDO::FETCH_ASSOC);
+        if (!$invoiceLock) throw new RuntimeException('Invoice not found.');
+        if (in_array((string) $invoiceLock['status'], array('cancelled','archived','written_off'), true)) {
+            throw new RuntimeException('Payment cannot be collected for this invoice status.');
+        }
+        $balanceBefore = round((float) $invoiceLock['balance_due'], 2);
+        if ($balanceBefore <= 0.005) throw new RuntimeException('This invoice has no balance due.');
+        if ($amount > $balanceBefore + 0.005) throw new RuntimeException('Payment cannot exceed the balance due.');
+
+        if (!ivTable($pdo, 'payments')) throw new RuntimeException('Payments table is not available.');
+        $branchIdForPayment = !empty($invoiceLock['branch_id']) ? (int) $invoiceLock['branch_id'] : 0;
+        $currency = ivCurrency($pdo, $tenantId, $branchIdForPayment);
+        $currencyId = (int) $currency['id'];
+        $paymentNo = ivNextPaymentNo($pdo, $tenantId, $branchIdForPayment);
+
+        $insert = $pdo->prepare("INSERT INTO payments(tenant_id,branch_id,payment_no,client_id,invoice_id,quote_id,payment_method,payment_channel,status,amount,currency_id,provider,provider_payment_id,transaction_fee,received_at,notes,created_by,created_at) VALUES(:t,:b,:no,:c,:i,:q,:m,'manual','succeeded',:amt,:cur,'manual_collection',:ref,0,:received,:notes,:u,NOW())");
+        $insert->execute(array(
+            ':t' => $tenantId,
+            ':b' => $branchIdForPayment > 0 ? $branchIdForPayment : null,
+            ':no' => $paymentNo,
+            ':c' => (int) $invoiceLock['client_id'],
+            ':i' => $postInvoiceId,
+            ':q' => !empty($invoiceLock['quote_id']) ? (int) $invoiceLock['quote_id'] : null,
+            ':m' => $method,
+            ':amt' => $amount,
+            ':cur' => $currencyId,
+            ':ref' => $reference !== '' ? $reference : null,
+            ':received' => $receivedAt,
+            ':notes' => $paymentNotes !== '' ? $paymentNotes : null,
+            ':u' => $userId
+        ));
+        $paymentId = (int) $pdo->lastInsertId();
+
+        $sumStmt = $pdo->prepare("SELECT COALESCE(SUM(amount),0) FROM payments WHERE tenant_id=:t AND invoice_id=:i AND status='succeeded'");
+        $sumStmt->execute(array(':t' => $tenantId, ':i' => $postInvoiceId));
+        $paid = round((float) $sumStmt->fetchColumn(), 2);
+        $invoiceTotal = round((float) $invoiceLock['total'], 2);
+        $balance = max(0, round($invoiceTotal - $paid, 2));
+        $newStatus = $balance <= 0.005 ? 'paid' : ($paid > 0.005 ? 'partially_paid' : (string) $invoiceLock['status']);
+
+        $update = $pdo->prepare("UPDATE invoices SET amount_paid=:paid,balance_due=:bal,status=:st,paid_at=CASE WHEN :st2='paid' THEN COALESCE(paid_at,NOW()) ELSE NULL END,updated_at=NOW() WHERE id=:id AND tenant_id=:t");
+        $update->execute(array(':paid' => $paid, ':bal' => $balance, ':st' => $newStatus, ':st2' => $newStatus, ':id' => $postInvoiceId, ':t' => $tenantId));
+
+        $pdo->commit();
+
+        if (function_exists('tenantAuditLog')) {
+            try {
+                tenantAuditLog($pdo, 'PAYMENT_RECEIVED', $tenantId, $branchIdForPayment, $userId, 'payment', $paymentId, null, array(
+                    'invoice_id' => $postInvoiceId,
+                    'invoice_no' => $invoiceLock['invoice_no'],
+                    'payment_no' => $paymentNo,
+                    'amount' => $amount,
+                    'balance_due' => $balance
+                ));
+            } catch (Throwable $auditError) {
+                error_log('Invoice view payment audit: ' . $auditError->getMessage());
+            }
+        }
+
+        $_SESSION['invoice_view_success'] = 'Payment ' . $paymentNo . ' collected successfully.';
+        header('Location: ' . basename($_SERVER['PHP_SELF']) . '?invoice_id=' . $postInvoiceId);
+        exit;
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        error_log('FieldPlx invoice direct payment: ' . $e->getMessage());
+        $_SESSION['invoice_view_error'] = $e->getMessage() !== '' ? $e->getMessage() : 'Unable to collect payment.';
+        header('Location: ' . basename($_SERVER['PHP_SELF']) . '?invoice_id=' . $postInvoiceId);
+        exit;
+    }
+}
+
+/* ----------------------------------------------------------
+   Load invoice directly from database
+   ---------------------------------------------------------- */
+if ($invoiceId <= 0 && $jobId > 0) {
+    $find = $pdo->prepare("SELECT id FROM invoices WHERE tenant_id=:t AND job_id=:j AND status NOT IN('cancelled','archived') ORDER BY id DESC LIMIT 1");
+    $find->execute(array(':t' => $tenantId, ':j' => $jobId));
+    $invoiceId = (int) $find->fetchColumn();
+}
+
+$invoice = null;
+$items = array();
+$payments = array();
+$pageError = '';
+$currency = array('id' => 0, 'symbol' => '', 'symbol_position' => 'before', 'decimal_places' => 2);
+
+if ($invoiceId > 0) {
+    try {
+        $sql = "SELECT i.*,
+                       c.display_name AS client_name,c.company_name AS client_company,c.email AS client_email,c.phone AS client_phone,
+                       cl.name AS location_name,cl.address_line1,cl.address_line2,cl.city,cl.state,cl.postal_code,
+                       j.job_no,q.quote_no,
+                       b.name AS branch_name,b.email AS branch_email,b.phone AS branch_phone,b.address_line1 AS branch_address_line1,b.address_line2 AS branch_address_line2,b.city AS branch_city,b.state AS branch_state,b.postal_code AS branch_postal_code,b.logo_path AS branch_logo_path,b.invoice_logo_path AS branch_invoice_logo_path,b.currency_id AS branch_currency_id,
+                       t.legal_name AS tenant_legal_name,t.display_name AS tenant_name,t.email AS tenant_email,t.phone AS tenant_phone,t.tax_number AS tenant_tax_number,t.address_line1 AS tenant_address_line1,t.address_line2 AS tenant_address_line2,t.city AS tenant_city,t.state AS tenant_state,t.postal_code AS tenant_postal_code,t.logo_path AS tenant_logo_path,t.invoice_logo_path AS tenant_invoice_logo_path,t.currency_id AS tenant_currency_id
+                FROM invoices i
+                INNER JOIN clients c ON c.id=i.client_id AND c.tenant_id=i.tenant_id
+                LEFT JOIN client_locations cl ON cl.id=i.location_id AND cl.tenant_id=i.tenant_id
+                LEFT JOIN jobs j ON j.id=i.job_id AND j.tenant_id=i.tenant_id
+                LEFT JOIN quotes q ON q.id=i.quote_id AND q.tenant_id=i.tenant_id
+                LEFT JOIN branches b ON b.id=i.branch_id AND b.tenant_id=i.tenant_id
+                INNER JOIN tenants t ON t.id=i.tenant_id
+                WHERE i.id=:id AND i.tenant_id=:t
+                LIMIT 1";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute(array(':id' => $invoiceId, ':t' => $tenantId));
+        $invoice = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$invoice) throw new RuntimeException('Invoice not found.');
+
+        $branchCurrencyId = !empty($invoice['branch_currency_id']) ? (int) $invoice['branch_currency_id'] : 0;
+        $tenantCurrencyId = !empty($invoice['tenant_currency_id']) ? (int) $invoice['tenant_currency_id'] : 0;
+        $currencyId = $branchCurrencyId > 0 ? $branchCurrencyId : $tenantCurrencyId;
+        if ($currencyId > 0) {
+            $cs = $pdo->prepare("SELECT id,currency_code,currency_name,symbol,symbol_position,decimal_places,decimal_separator,thousand_separator FROM currencies WHERE id=:id LIMIT 1");
+            $cs->execute(array(':id' => $currencyId));
+            $cr = $cs->fetch(PDO::FETCH_ASSOC);
+            if ($cr) $currency = $cr;
+        }
+
+        if (ivTable($pdo, 'invoice_line_items')) {
+            $li = $pdo->prepare("SELECT * FROM invoice_line_items WHERE invoice_id=:i ORDER BY sort_order,id");
+            $li->execute(array(':i' => $invoiceId));
+            $items = $li->fetchAll(PDO::FETCH_ASSOC);
+        }
+
+        if (ivTable($pdo, 'payments')) {
+            $ps = $pdo->prepare("SELECT id,payment_no,payment_method,payment_channel,status,amount,provider,provider_payment_id,received_at,notes,created_at FROM payments WHERE tenant_id=:t AND invoice_id=:i ORDER BY COALESCE(received_at,created_at) DESC,id DESC");
+            $ps->execute(array(':t' => $tenantId, ':i' => $invoiceId));
+            $payments = $ps->fetchAll(PDO::FETCH_ASSOC);
+        }
+    } catch (Throwable $e) {
+        error_log('FieldPlx invoice direct load: ' . $e->getMessage());
+        $pageError = $e->getMessage() !== '' ? $e->getMessage() : 'Unable to load invoice.';
+    }
+} else {
+    $pageError = 'Invoice or completed job is required.';
+}
+
+$invoice = is_array($invoice) ? $invoice : array();
+$status = isset($invoice['status']) ? (string) $invoice['status'] : 'draft';
+$invoiceLogo = '';
+if (!empty($invoice['branch_invoice_logo_path'])) $invoiceLogo = (string) $invoice['branch_invoice_logo_path'];
+elseif (!empty($invoice['tenant_invoice_logo_path'])) $invoiceLogo = (string) $invoice['tenant_invoice_logo_path'];
+elseif (!empty($invoice['branch_logo_path'])) $invoiceLogo = (string) $invoice['branch_logo_path'];
+elseif (!empty($invoice['tenant_logo_path'])) $invoiceLogo = (string) $invoice['tenant_logo_path'];
+$companyName = !empty($invoice['branch_name']) ? (string) $invoice['branch_name'] : (!empty($invoice['tenant_name']) ? (string) $invoice['tenant_name'] : 'FieldPlx');
+$companyAddress = !empty($invoice['branch_name'])
+    ? ivAddress(array($invoice['branch_address_line1'], $invoice['branch_address_line2'], $invoice['branch_city'], $invoice['branch_state'], $invoice['branch_postal_code']))
+    : ivAddress(array(isset($invoice['tenant_address_line1']) ? $invoice['tenant_address_line1'] : '', isset($invoice['tenant_address_line2']) ? $invoice['tenant_address_line2'] : '', isset($invoice['tenant_city']) ? $invoice['tenant_city'] : '', isset($invoice['tenant_state']) ? $invoice['tenant_state'] : '', isset($invoice['tenant_postal_code']) ? $invoice['tenant_postal_code'] : ''));
+$companyContactParts = array();
+$companyEmail = !empty($invoice['branch_email']) ? $invoice['branch_email'] : (isset($invoice['tenant_email']) ? $invoice['tenant_email'] : '');
+$companyPhone = !empty($invoice['branch_phone']) ? $invoice['branch_phone'] : (isset($invoice['tenant_phone']) ? $invoice['tenant_phone'] : '');
+if ($companyEmail) $companyContactParts[] = $companyEmail;
+if ($companyPhone) $companyContactParts[] = $companyPhone;
+$companyContact = $companyContactParts ? implode(' • ', $companyContactParts) : '-';
+$clientContactParts = array();
+if (!empty($invoice['client_email'])) $clientContactParts[] = $invoice['client_email'];
+if (!empty($invoice['client_phone'])) $clientContactParts[] = $invoice['client_phone'];
+$clientContact = $clientContactParts ? implode(' • ', $clientContactParts) : '-';
+$clientAddress = ivAddress(array(isset($invoice['location_name']) ? $invoice['location_name'] : '', isset($invoice['address_line1']) ? $invoice['address_line1'] : '', isset($invoice['address_line2']) ? $invoice['address_line2'] : '', isset($invoice['city']) ? $invoice['city'] : '', isset($invoice['state']) ? $invoice['state'] : '', isset($invoice['postal_code']) ? $invoice['postal_code'] : ''));
+$balanceDue = isset($invoice['balance_due']) ? (float) $invoice['balance_due'] : 0.0;
+$canCollect = $invoiceId > 0 && $balanceDue > 0.005 && !in_array($status, array('cancelled','archived','written_off'), true);
+?><!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="utf-8">
@@ -1121,6 +1484,8 @@ $openCollect=isset($_GET['collect'])&&$_GET['collect']==='1';
         @media(max-width:767.98px){.iv-page{padding:17px 13px 28px}.iv-head{flex-direction:column}.iv-actions{width:100%}.iv-actions .iv-btn{flex:1}.iv-info-grid{grid-template-columns:1fr 1fr}.iv-company{flex-direction:column}.iv-number{text-align:left}.iv-form-grid{grid-template-columns:1fr}.iv-field.full{grid-column:auto}}
         @media(max-width:520px){.iv-info-grid{grid-template-columns:1fr}}
         @media print{.fieldplx-topbar,.fieldplx-sidebar,.fieldplx-footer,.iv-actions,.iv-summary,.iv-modal-backdrop,.iv-toast{display:none!important}.fieldplx-main-content{margin-left:0!important}.iv-page{max-width:none;padding:0}.iv-grid{display:block}.iv-card{box-shadow:none;break-inside:avoid}}
+    
+        .iv-alert{margin-bottom:14px;padding:11px 13px;border:1px solid #cfe7b3;border-radius:9px;background:#f4faec;color:#4d7c18;font-size:10px;font-weight:700}.iv-alert.error{border-color:#f0c5c9;background:#fff3f4;color:#b9444d}
     </style>
 </head>
 <body>
@@ -1130,28 +1495,32 @@ $openCollect=isset($_GET['collect'])&&$_GET['collect']==='1';
     <main class="fieldplx-main-content">
         <div class="fieldplx-content-wrapper">
             <div class="iv-page">
+                <?php if ($flashSuccess !== ''): ?><div class="iv-alert"><?php echo ivh($flashSuccess); ?></div><?php endif; ?>
+                <?php if ($flashError !== ''): ?><div class="iv-alert error"><?php echo ivh($flashError); ?></div><?php endif; ?>
+                <?php if ($pageError !== ''): ?><div class="iv-alert error"><?php echo ivh($pageError); ?></div><?php endif; ?>
+
                 <section class="iv-head">
                     <div>
                         <div class="iv-title-row">
-                            <h1 class="iv-title" id="pageTitle">Invoice</h1>
-                            <span class="iv-badge draft" id="statusBadge">Loading</span>
+                            <h1 class="iv-title">Invoice <?php echo ivh(isset($invoice['invoice_no']) ? $invoice['invoice_no'] : ''); ?></h1>
+                            <span class="iv-badge <?php echo ivh($status); ?>"><?php echo ivh(ivTitle($status)); ?></span>
                         </div>
-                        <p class="iv-sub" id="pageSubtitle">Completed job invoice, payment collection and payment history.</p>
+                        <p class="iv-sub"><?php echo !empty($invoice['job_no']) ? 'Generated from Job Card ' . ivh($invoice['job_no']) . '. ' : ''; ?>Collect and track customer payments against this invoice.</p>
                     </div>
                     <div class="iv-actions">
                         <a class="iv-btn" href="invoices"><i class="bi bi-arrow-left"></i> Invoices</a>
-                        <a class="iv-btn" target="_blank" href="invoice-print?invoice_id=<?php echo $invoiceId; ?>">
-    <i class="bi bi-printer"></i> Print
-</a>
-                        <button type="button" class="iv-btn primary" id="collectButton" disabled><i class="bi bi-cash-stack"></i> Collect Payment</button>
+                        <?php if ($invoiceId > 0): ?>
+                        <a class="iv-btn" target="_blank" href="invoice-print?invoice_id=<?php echo (int) $invoiceId; ?>"><i class="bi bi-printer"></i> Print</a>
+                        <?php endif; ?>
+                        <button type="button" class="iv-btn primary" id="collectButton" <?php echo $canCollect ? '' : 'disabled'; ?>><i class="bi bi-cash-stack"></i> Collect Payment</button>
                     </div>
                 </section>
 
                 <section class="row g-3 iv-summary">
-                    <div class="col-xl-3 col-6"><article class="iv-stat"><div class="iv-stat-row"><span class="iv-stat-icon"><i class="bi bi-receipt"></i></span><div><span class="iv-stat-label">Invoice Total</span><strong class="iv-stat-value" id="statTotal">-</strong></div></div></article></div>
-                    <div class="col-xl-3 col-6"><article class="iv-stat"><div class="iv-stat-row"><span class="iv-stat-icon green"><i class="bi bi-check2-circle"></i></span><div><span class="iv-stat-label">Collected</span><strong class="iv-stat-value" id="statPaid">-</strong></div></div></article></div>
-                    <div class="col-xl-3 col-6"><article class="iv-stat"><div class="iv-stat-row"><span class="iv-stat-icon orange"><i class="bi bi-hourglass-split"></i></span><div><span class="iv-stat-label">Balance Due</span><strong class="iv-stat-value" id="statBalance">-</strong></div></div></article></div>
-                    <div class="col-xl-3 col-6"><article class="iv-stat"><div class="iv-stat-row"><span class="iv-stat-icon"><i class="bi bi-briefcase"></i></span><div><span class="iv-stat-label">Job Card</span><strong class="iv-stat-value" id="statJob" style="font-size:18px">-</strong></div></div></article></div>
+                    <div class="col-xl-3 col-6"><article class="iv-stat"><div class="iv-stat-row"><span class="iv-stat-icon"><i class="bi bi-receipt"></i></span><div><span class="iv-stat-label">Invoice Total</span><strong class="iv-stat-value"><?php echo ivh(ivMoney(isset($invoice['total']) ? $invoice['total'] : 0, $currency)); ?></strong></div></div></article></div>
+                    <div class="col-xl-3 col-6"><article class="iv-stat"><div class="iv-stat-row"><span class="iv-stat-icon green"><i class="bi bi-check2-circle"></i></span><div><span class="iv-stat-label">Collected</span><strong class="iv-stat-value"><?php echo ivh(ivMoney(isset($invoice['amount_paid']) ? $invoice['amount_paid'] : 0, $currency)); ?></strong></div></div></article></div>
+                    <div class="col-xl-3 col-6"><article class="iv-stat"><div class="iv-stat-row"><span class="iv-stat-icon orange"><i class="bi bi-hourglass-split"></i></span><div><span class="iv-stat-label">Balance Due</span><strong class="iv-stat-value"><?php echo ivh(ivMoney($balanceDue, $currency)); ?></strong></div></div></article></div>
+                    <div class="col-xl-3 col-6"><article class="iv-stat"><div class="iv-stat-row"><span class="iv-stat-icon"><i class="bi bi-briefcase"></i></span><div><span class="iv-stat-label">Job Card</span><strong class="iv-stat-value" style="font-size:18px"><?php echo ivh(!empty($invoice['job_no']) ? $invoice['job_no'] : '-'); ?></strong></div></div></article></div>
                 </section>
 
                 <div class="iv-grid">
@@ -1160,59 +1529,86 @@ $openCollect=isset($_GET['collect'])&&$_GET['collect']==='1';
                             <div class="iv-card-body">
                                 <div class="iv-company">
                                     <div class="iv-company-left">
-                                        <div class="iv-logo" id="companyLogo">F</div>
+                                        <div class="iv-logo"><?php if ($invoiceLogo !== ''): ?><img src="<?php echo ivh($invoiceLogo); ?>" alt="Logo"><?php else: ?><?php echo ivh(strtoupper(substr($companyName, 0, 1))); ?><?php endif; ?></div>
                                         <div>
-                                            <h3 id="companyName">FieldPlx</h3>
-                                            <p id="companyAddress">-</p>
-                                            <p id="companyContact">-</p>
-                                            <p id="companyTax" style="display:none"></p>
+                                            <h3><?php echo ivh($companyName); ?></h3>
+                                            <p><?php echo ivh($companyAddress); ?></p>
+                                            <p><?php echo ivh($companyContact); ?></p>
+                                            <?php if (!empty($invoice['tenant_tax_number'])): ?><p>Tax No: <?php echo ivh($invoice['tenant_tax_number']); ?></p><?php endif; ?>
                                         </div>
                                     </div>
-                                    <div class="iv-number">
-                                        <small>Invoice Number</small>
-                                        <strong id="invoiceNo">-</strong>
-                                    </div>
+                                    <div class="iv-number"><small>Invoice Number</small><strong><?php echo ivh(isset($invoice['invoice_no']) ? $invoice['invoice_no'] : '-'); ?></strong></div>
                                 </div>
 
                                 <div class="iv-info-grid">
-                                    <div class="iv-info"><span>Issue Date</span><strong id="issueDate">-</strong></div>
-                                    <div class="iv-info"><span>Due Date</span><strong id="dueDate">-</strong></div>
-                                    <div class="iv-info"><span>Payment Terms</span><strong id="paymentTerms">-</strong></div>
-                                    <div class="iv-info"><span>Job Card</span><strong id="jobNo">-</strong></div>
-                                    <div class="iv-info"><span>Quotation</span><strong id="quoteNo">-</strong></div>
-                                    <div class="iv-info"><span>Branch</span><strong id="branchName">-</strong></div>
+                                    <div class="iv-info"><span>Issue Date</span><strong><?php echo ivh(ivDate(isset($invoice['issue_date']) ? $invoice['issue_date'] : null)); ?></strong></div>
+                                    <div class="iv-info"><span>Due Date</span><strong><?php echo ivh(ivDate(isset($invoice['due_date']) ? $invoice['due_date'] : null)); ?></strong></div>
+                                    <div class="iv-info"><span>Payment Terms</span><strong><?php echo ivh(!empty($invoice['payment_terms']) ? $invoice['payment_terms'] : '-'); ?></strong></div>
+                                    <div class="iv-info"><span>Job Card</span><strong><?php echo ivh(!empty($invoice['job_no']) ? $invoice['job_no'] : '-'); ?></strong></div>
+                                    <div class="iv-info"><span>Quotation</span><strong><?php echo ivh(!empty($invoice['quote_no']) ? $invoice['quote_no'] : '-'); ?></strong></div>
+                                    <div class="iv-info"><span>Branch</span><strong><?php echo ivh(!empty($invoice['branch_name']) ? $invoice['branch_name'] : 'Head Office'); ?></strong></div>
                                 </div>
                             </div>
                         </section>
 
                         <section class="iv-card">
-                            <div class="iv-card-head"><div><h2>Invoice Items</h2><small>Services, products and charges copied from the completed job quotation.</small></div></div>
+                            <div class="iv-card-head"><div><h2>Invoice Items</h2></div></div>
                             <div class="iv-table-wrap">
                                 <table class="iv-table">
                                     <thead><tr><th>S.No</th><th>Item</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Discount</th><th class="num">Tax %</th><th class="num">Tax</th><th class="num">Total</th></tr></thead>
-                                    <tbody id="itemRows"><tr><td colspan="8" class="iv-empty">Loading invoice items...</td></tr></tbody>
+                                    <tbody>
+                                    <?php if (!$items): ?>
+                                        <tr><td colspan="8" class="iv-empty">No invoice items found.</td></tr>
+                                    <?php else: ?>
+                                        <?php foreach ($items as $index => $item): ?>
+                                            <tr>
+                                                <td><?php echo (int) $index + 1; ?></td>
+                                                <td><div class="iv-item"><strong><?php echo ivh(isset($item['item_name']) ? $item['item_name'] : '-'); ?></strong><?php if (!empty($item['description'])): ?><small><?php echo ivh($item['description']); ?></small><?php endif; ?></div></td>
+                                                <td class="num"><?php echo ivh(rtrim(rtrim(number_format((float) $item['quantity'], 3, '.', ''), '0'), '.')); ?></td>
+                                                <td class="num"><?php echo ivh(ivMoney($item['unit_price'], $currency)); ?></td>
+                                                <td class="num"><?php echo ivh(ivMoney($item['discount_amount'], $currency)); ?></td>
+                                                <td class="num"><?php echo ivh(rtrim(rtrim(number_format((float) $item['tax_percent'], 2, '.', ''), '0'), '.')); ?>%</td>
+                                                <td class="num"><?php echo ivh(ivMoney($item['tax_amount'], $currency)); ?></td>
+                                                <td class="num"><strong><?php echo ivh(ivMoney($item['line_total'], $currency)); ?></strong></td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    <?php endif; ?>
+                                    </tbody>
                                 </table>
                             </div>
                             <div class="iv-totals">
-                                <div class="iv-total-row"><span>Subtotal</span><strong id="subtotal">-</strong></div>
-                                <div class="iv-total-row"><span>Discount</span><strong id="discountTotal">-</strong></div>
-                                <div class="iv-total-row"><span>Tax</span><strong id="taxTotal">-</strong></div>
-                                <div class="iv-total-row grand"><span>Invoice Total</span><strong id="grandTotal">-</strong></div>
-                                <div class="iv-total-row"><span>Amount Paid</span><strong id="amountPaid">-</strong></div>
-                                <div class="iv-total-row balance"><span>Balance Due</span><strong id="balanceDue">-</strong></div>
+                                <div class="iv-total-row"><span>Subtotal</span><strong><?php echo ivh(ivMoney(isset($invoice['subtotal']) ? $invoice['subtotal'] : 0, $currency)); ?></strong></div>
+                                <div class="iv-total-row"><span>Discount</span><strong><?php echo ivh(ivMoney(isset($invoice['discount_total']) ? $invoice['discount_total'] : 0, $currency)); ?></strong></div>
+                                <div class="iv-total-row"><span>Tax</span><strong><?php echo ivh(ivMoney(isset($invoice['tax_total']) ? $invoice['tax_total'] : 0, $currency)); ?></strong></div>
+                                <div class="iv-total-row grand"><span>Invoice Total</span><strong><?php echo ivh(ivMoney(isset($invoice['total']) ? $invoice['total'] : 0, $currency)); ?></strong></div>
+                                <div class="iv-total-row"><span>Amount Paid</span><strong><?php echo ivh(ivMoney(isset($invoice['amount_paid']) ? $invoice['amount_paid'] : 0, $currency)); ?></strong></div>
+                                <div class="iv-total-row balance"><span>Balance Due</span><strong><?php echo ivh(ivMoney($balanceDue, $currency)); ?></strong></div>
                             </div>
                         </section>
                     </div>
 
                     <aside>
                         <section class="iv-card">
-                            <div class="iv-card-head"><div><h2>Bill To</h2><small>Customer details linked to this completed job.</small></div></div>
-                            <div class="iv-card-body"><div class="iv-customer"><strong id="clientName">-</strong><span id="clientCompany"></span><span id="clientContact">-</span><span id="clientAddress">-</span></div></div>
+                            <div class="iv-card-head"><div><h2>Bill To</h2></div></div>
+                            <div class="iv-card-body"><div class="iv-customer"><strong><?php echo ivh(!empty($invoice['client_name']) ? $invoice['client_name'] : '-'); ?></strong><span><?php echo ivh(!empty($invoice['client_company']) ? $invoice['client_company'] : ''); ?></span><span><?php echo ivh($clientContact); ?></span><span><?php echo ivh($clientAddress); ?></span></div></div>
                         </section>
 
                         <section class="iv-card">
-                            <div class="iv-card-head"><div><h2>Payment History</h2><small>Successful and attempted payments recorded for this invoice.</small></div><span class="iv-badge" id="paymentCount">0</span></div>
-                            <div class="iv-card-body"><div class="iv-pay-list" id="paymentList"><div class="iv-empty">No payments collected yet.</div></div></div>
+                            <div class="iv-card-head"><div><h2>Payment History</h2></div><span class="iv-badge"><?php echo count($payments); ?></span></div>
+                            <div class="iv-card-body"><div class="iv-pay-list">
+                                <?php if (!$payments): ?>
+                                    <div class="iv-empty">No payments collected yet.</div>
+                                <?php else: ?>
+                                    <?php foreach ($payments as $payment): ?>
+                                        <div class="iv-payment">
+                                            <div class="iv-payment-top"><strong><?php echo ivh($payment['payment_no']); ?></strong><strong class="iv-payment-amount"><?php echo ivh(ivMoney($payment['amount'], $currency)); ?></strong></div>
+                                            <small><?php echo ivh(ivTitle($payment['payment_method'])); ?> • <?php echo ivh(ivTitle($payment['status'])); ?> • <?php echo ivh(ivDateTime(!empty($payment['received_at']) ? $payment['received_at'] : $payment['created_at'])); ?></small>
+                                            <?php if (!empty($payment['provider_payment_id'])): ?><small>Reference: <?php echo ivh($payment['provider_payment_id']); ?></small><?php endif; ?>
+                                            <?php if (!empty($payment['notes'])): ?><small><?php echo ivh($payment['notes']); ?></small><?php endif; ?>
+                                        </div>
+                                    <?php endforeach; ?>
+                                <?php endif; ?>
+                            </div></div>
                         </section>
                     </aside>
                 </div>
@@ -1223,15 +1619,18 @@ $openCollect=isset($_GET['collect'])&&$_GET['collect']==='1';
 
 <div class="iv-modal-backdrop" id="paymentModal">
     <section class="iv-modal">
-        <div class="iv-modal-head"><div><h3>Collect Payment</h3><div class="iv-help" id="paymentInvoiceText">Record a payment against this invoice.</div></div><button type="button" class="iv-close" id="closePayment"><i class="bi bi-x-lg"></i></button></div>
-        <form id="paymentForm">
+        <div class="iv-modal-head"><div><h3>Collect Payment</h3><div class="iv-help">Invoice <?php echo ivh(isset($invoice['invoice_no']) ? $invoice['invoice_no'] : ''); ?> • Balance <?php echo ivh(ivMoney($balanceDue, $currency)); ?></div></div><button type="button" class="iv-close" id="closePayment"><i class="bi bi-x-lg"></i></button></div>
+        <form method="post" id="paymentForm" autocomplete="off">
+            <input type="hidden" name="action" value="collect_payment">
+            <input type="hidden" name="csrf_token" value="<?php echo ivh($invoiceCsrfToken); ?>">
+            <input type="hidden" name="invoice_id" value="<?php echo (int) $invoiceId; ?>">
             <div class="iv-modal-body">
                 <div class="iv-form-grid">
-                    <div class="iv-field"><label>Amount *</label><input type="number" id="paymentAmount" min="0.01" step="0.01" required></div>
-                    <div class="iv-field"><label>Payment Method *</label><select id="paymentMethod" required><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank Transfer</option><option value="cheque">Cheque</option><option value="wallet">Wallet</option><option value="other">Other</option></select></div>
-                    <div class="iv-field full"><label>Transaction / Reference No.</label><input type="text" id="paymentReference" maxlength="190" placeholder="UPI ref, bank ref, cheque no., etc."></div>
-                    <div class="iv-field full"><label>Received Date & Time *</label><input type="datetime-local" id="paymentReceivedAt" required></div>
-                    <div class="iv-field full"><label>Notes</label><textarea id="paymentNotes" maxlength="3000" placeholder="Optional payment remarks"></textarea></div>
+                    <div class="iv-field"><label>Amount *</label><input type="number" name="amount" id="paymentAmount" min="0.01" max="<?php echo ivh(number_format($balanceDue, 2, '.', '')); ?>" step="0.01" required></div>
+                    <div class="iv-field"><label>Payment Method *</label><select name="payment_method" id="paymentMethod" required><option value="cash">Cash</option><option value="upi">UPI</option><option value="card">Card</option><option value="bank">Bank Transfer</option><option value="cheque">Cheque</option><option value="wallet">Wallet</option><option value="other">Other</option></select></div>
+                    <div class="iv-field full"><label>Transaction / Reference No.</label><input type="text" name="reference" id="paymentReference" maxlength="190" placeholder="UPI ref, bank ref, cheque no., etc."></div>
+                    <div class="iv-field full"><label>Received Date & Time *</label><input type="datetime-local" name="received_at" id="paymentReceivedAt" required></div>
+                    <div class="iv-field full"><label>Notes</label><textarea name="payment_notes" id="paymentNotes" maxlength="3000" placeholder="Optional payment remarks"></textarea></div>
                 </div>
             </div>
             <div class="iv-modal-foot"><button type="button" class="iv-btn" id="cancelPayment">Cancel</button><button type="submit" class="iv-btn primary" id="savePayment"><i class="bi bi-check2-circle"></i> Save Payment</button></div>
@@ -1239,71 +1638,26 @@ $openCollect=isset($_GET['collect'])&&$_GET['collect']==='1';
     </section>
 </div>
 
-<div class="iv-toast" id="toast">Notification</div>
-
 <?php require_once __DIR__ . '/includes/footer.php'; ?>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 (function(){
     'use strict';
-
-    var csrfToken=<?= json_encode($invoiceCsrfToken) ?>;
-    var invoiceId=<?= (int)$invoiceId ?>;
-    var jobId=<?= (int)$jobId ?>;
-    var openCollect=<?= $openCollect ? 'true' : 'false' ?>;
-    var state={invoice:null,currency:{},payments:[]};
-    var toastTimer=null;
-
-    function el(id){return document.getElementById(id)}
-    function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;')}
-    function title(v){return String(v||'-').replace(/_/g,' ').replace(/\b\w/g,function(x){return x.toUpperCase()})}
-    function notify(type,message){var t=el('toast');if(toastTimer)clearTimeout(toastTimer);t.className='iv-toast '+(type||'')+' show';t.textContent=message||'Notification';toastTimer=setTimeout(function(){t.classList.remove('show')},3500)}
-    function parse(response){return response.text().then(function(raw){var d,text=String(raw||'').trim();try{d=text?JSON.parse(text):{}}catch(e){throw new Error(text.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim()||'Invalid server response.')}if(!response.ok||!d.success)throw new Error(d.message||'Request failed.');return d})}
-    function request(fd){fd.append('csrf_token',csrfToken);return fetch('api/invoices.php',{method:'POST',body:fd,credentials:'same-origin',cache:'no-store',headers:{'X-Requested-With':'XMLHttpRequest','Accept':'application/json'}}).then(parse)}
-    function money(v){var c=state.currency||{},places=parseInt(c.decimal_places,10);if(isNaN(places))places=2;var n=Number(v||0).toFixed(places),sym=c.symbol||'';return c.symbol_position==='after'?n+(sym?' '+sym:''):(sym||'')+n}
-    function fmtDate(v){if(!v)return '-';var d=new Date(String(v).substring(0,10)+'T00:00:00');return isNaN(d.getTime())?String(v):d.toLocaleDateString(undefined,{day:'2-digit',month:'short',year:'numeric'})}
-    function fmtDateTime(v){if(!v)return '-';var d=new Date(String(v).replace(' ','T'));return isNaN(d.getTime())?String(v):d.toLocaleString(undefined,{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'})}
-    function joinAddress(parts){return (parts||[]).filter(function(v){return v!=null&&String(v).trim()!==''}).join(', ')}
+    var canCollect=<?php echo $canCollect ? 'true' : 'false'; ?>;
+    var openCollect=<?php echo $openCollect ? 'true' : 'false'; ?>;
+    var modal=document.getElementById('paymentModal');
+    var collect=document.getElementById('collectButton');
+    var amount=document.getElementById('paymentAmount');
+    var received=document.getElementById('paymentReceivedAt');
     function localDateTime(){var d=new Date(),off=d.getTimezoneOffset();d=new Date(d.getTime()-off*60000);return d.toISOString().slice(0,16)}
-
-    function renderItems(items){var body=el('itemRows');if(!items||!items.length){body.innerHTML='<tr><td colspan="8" class="iv-empty">No invoice items found.</td></tr>';return}var html='';items.forEach(function(item,index){html+='<tr><td>'+(index+1)+'</td><td><div class="iv-item"><strong>'+esc(item.item_name||'-')+'</strong>'+(item.description?'<small>'+esc(item.description)+'</small>':'')+'</div></td><td class="num">'+esc(Number(item.quantity||0).toFixed(3).replace(/\.?0+$/,''))+'</td><td class="num">'+esc(money(item.unit_price))+'</td><td class="num">'+esc(money(item.discount_amount))+'</td><td class="num">'+esc(Number(item.tax_percent||0).toFixed(2).replace(/\.?0+$/,''))+'%</td><td class="num">'+esc(money(item.tax_amount))+'</td><td class="num"><strong>'+esc(money(item.line_total))+'</strong></td></tr>'});body.innerHTML=html}
-
-    function renderPayments(payments){state.payments=payments||[];el('paymentCount').textContent=state.payments.length;var box=el('paymentList');if(!state.payments.length){box.innerHTML='<div class="iv-empty">No payments collected yet.</div>';return}var html='';state.payments.forEach(function(p){html+='<div class="iv-payment"><div class="iv-payment-top"><strong>'+esc(p.payment_no||'-')+'</strong><strong class="iv-payment-amount">'+esc(money(p.amount))+'</strong></div><small>'+esc(title(p.payment_method))+' • '+esc(title(p.status))+' • '+esc(fmtDateTime(p.received_at||p.created_at))+'</small>'+(p.provider_payment_id?'<small>Reference: '+esc(p.provider_payment_id)+'</small>':'')+(p.notes?'<small>'+esc(p.notes)+'</small>':'')+'</div>'});box.innerHTML=html}
-
-    function render(data){
-        var i=data.invoice||{};state.invoice=i;state.currency=data.currency||{};
-        invoiceId=Number(i.id||invoiceId||0);
-        el('pageTitle').textContent='Invoice '+(i.invoice_no||'');
-        el('pageSubtitle').textContent=(i.job_no?'Generated from completed job '+i.job_no+'. ':'')+'Collect and track customer payments against this invoice.';
-        var badge=el('statusBadge');badge.textContent=title(i.status);badge.className='iv-badge '+String(i.status||'draft');
-        el('statTotal').textContent=money(i.total);el('statPaid').textContent=money(i.amount_paid);el('statBalance').textContent=money(i.balance_due);el('statJob').textContent=i.job_no||'-';
-        el('invoiceNo').textContent=i.invoice_no||'-';el('issueDate').textContent=fmtDate(i.issue_date);el('dueDate').textContent=fmtDate(i.due_date);el('paymentTerms').textContent=i.payment_terms||'-';el('jobNo').textContent=i.job_no||'-';el('quoteNo').textContent=i.quote_no||'-';el('branchName').textContent=i.branch_name||'Head Office';
-        el('subtotal').textContent=money(i.subtotal);el('discountTotal').textContent=money(i.discount_total);el('taxTotal').textContent=money(i.tax_total);el('grandTotal').textContent=money(i.total);el('amountPaid').textContent=money(i.amount_paid);el('balanceDue').textContent=money(i.balance_due);
-        el('companyName').textContent=i.branch_name||i.tenant_name||i.tenant_legal_name||'FieldPlx';
-        el('companyAddress').textContent=joinAddress(i.branch_name?[i.branch_address_line1,i.branch_address_line2,i.branch_city,i.branch_state,i.branch_postal_code]:[i.tenant_address_line1,i.tenant_address_line2,i.tenant_city,i.tenant_state,i.tenant_postal_code])||'-';
-        el('companyContact').textContent=[i.branch_email||i.tenant_email,i.branch_phone||i.tenant_phone].filter(Boolean).join(' • ')||'-';
-        if(i.tenant_tax_number){el('companyTax').style.display='block';el('companyTax').textContent='Tax No: '+i.tenant_tax_number}
-        if(i.invoice_logo){el('companyLogo').innerHTML='<img src="'+esc(i.invoice_logo)+'" alt="Logo">'}else{el('companyLogo').textContent=(i.tenant_name||'F').charAt(0).toUpperCase()}
-        el('clientName').textContent=i.client_name||'-';el('clientCompany').textContent=i.client_company||'';el('clientContact').textContent=[i.client_email,i.client_phone].filter(Boolean).join(' • ')||'-';el('clientAddress').textContent=joinAddress([i.location_name,i.address_line1,i.address_line2,i.city,i.state,i.postal_code])||'-';
-        renderItems(data.items||[]);renderPayments(data.payments||[]);
-        var canCollect=Number(i.balance_due||0)>0.005&&['cancelled','archived','written_off'].indexOf(String(i.status||''))===-1;el('collectButton').disabled=!canCollect;
-        if(openCollect&&canCollect){
-            openCollect=false;
-            setTimeout(openPayment,80);
-        }
-    }
-
-    function load(){var fd=new FormData();fd.append('action','load');if(invoiceId>0)fd.append('invoice_id',invoiceId);if(jobId>0)fd.append('job_id',jobId);request(fd).then(render).catch(function(e){notify('error',e.message);el('itemRows').innerHTML='<tr><td colspan="8" class="iv-empty">'+esc(e.message)+'</td></tr>'})}
-    function openPayment(){if(!state.invoice||Number(state.invoice.balance_due||0)<=0)return;el('paymentAmount').value=Number(state.invoice.balance_due||0).toFixed(2);el('paymentAmount').max=Number(state.invoice.balance_due||0).toFixed(2);el('paymentMethod').value='cash';el('paymentReference').value='';el('paymentNotes').value='';el('paymentReceivedAt').value=localDateTime();el('paymentInvoiceText').textContent='Invoice '+(state.invoice.invoice_no||'')+' • Balance '+money(state.invoice.balance_due);el('paymentModal').classList.add('show')}
-    function closePayment(){el('paymentModal').classList.remove('show')}
-
-    el('collectButton').addEventListener('click',openPayment);
-    el('closePayment').addEventListener('click',closePayment);
-    el('cancelPayment').addEventListener('click',closePayment);
-    el('paymentModal').addEventListener('click',function(e){if(e.target===this)closePayment()});
-    el('paymentForm').addEventListener('submit',function(e){e.preventDefault();var btn=el('savePayment'),amount=Number(el('paymentAmount').value||0);if(!state.invoice)return;if(amount<=0){notify('error','Enter a valid payment amount.');return}if(amount>Number(state.invoice.balance_due||0)+0.005){notify('error','Payment cannot exceed the balance due.');return}btn.disabled=true;var fd=new FormData();fd.append('action','collect_payment');fd.append('invoice_id',invoiceId);fd.append('amount',amount.toFixed(2));fd.append('payment_method',el('paymentMethod').value);fd.append('reference',el('paymentReference').value.trim());fd.append('received_at',el('paymentReceivedAt').value);fd.append('notes',el('paymentNotes').value.trim());request(fd).then(function(d){closePayment();notify('success',d.message||'Payment collected successfully.');load()}).catch(function(err){notify('error',err.message)}).finally(function(){btn.disabled=false})});
-
-    if(invoiceId<=0&&jobId<=0){notify('error','Invoice or completed job is required.')}else{load()}
+    function openPayment(){if(!canCollect)return;if(amount)amount.value=<?php echo json_encode(number_format($balanceDue, 2, '.', '')); ?>;if(received)received.value=localDateTime();if(modal)modal.classList.add('show')}
+    function closePayment(){if(modal)modal.classList.remove('show')}
+    if(collect)collect.addEventListener('click',openPayment);
+    var close=document.getElementById('closePayment'),cancel=document.getElementById('cancelPayment');
+    if(close)close.addEventListener('click',closePayment);if(cancel)cancel.addEventListener('click',closePayment);
+    if(modal)modal.addEventListener('click',function(e){if(e.target===modal)closePayment()});
+    document.addEventListener('keydown',function(e){if(e.key==='Escape')closePayment()});
+    if(openCollect&&canCollect)setTimeout(openPayment,80);
 })();
 </script>
 </body>

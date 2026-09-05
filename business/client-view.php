@@ -14,6 +14,286 @@ if (empty($_SESSION['clients_csrf_token'])) {
 }
 
 $clientsCsrfToken = (string)$_SESSION['clients_csrf_token'];
+
+
+/*
+|--------------------------------------------------------------------------
+| Dynamic customer-view data
+|--------------------------------------------------------------------------
+| Keep the existing FieldPlx nav / sidebar / footer unchanged. The queries
+| below only prepare tenant-scoped data for the redesigned main content.
+*/
+
+if (!isset($pdo) || !($pdo instanceof PDO)) {
+    require_once __DIR__ . '/includes/db.php';
+}
+
+if (!function_exists('cvEscape')) {
+    function cvEscape($value)
+    {
+        return htmlspecialchars(
+            (string) ($value === null ? '' : $value),
+            ENT_QUOTES,
+            'UTF-8'
+        );
+    }
+}
+
+if (!function_exists('cvLabel')) {
+    function cvLabel($value)
+    {
+        $value = trim((string) $value);
+        if ($value === '') {
+            return '—';
+        }
+        return ucwords(str_replace(array('_', '-'), ' ', $value));
+    }
+}
+
+if (!function_exists('cvDate')) {
+    function cvDate($value, $withTime = false)
+    {
+        if (empty($value)) {
+            return '—';
+        }
+        $ts = strtotime((string) $value);
+        if ($ts === false) {
+            return '—';
+        }
+        return $withTime
+            ? date('d M Y, h:i A', $ts)
+            : date('d M Y', $ts);
+    }
+}
+
+if (!function_exists('cvMoney')) {
+    function cvMoney($amount, $symbol, $symbolPosition, $decimals)
+    {
+        $number = number_format((float) $amount, (int) $decimals, '.', ',');
+        if ($symbol === '') {
+            return $number;
+        }
+        return $symbolPosition === 'after'
+            ? $number . ' ' . $symbol
+            : $symbol . $number;
+    }
+}
+
+$clientId = isset($_GET['client_id']) && !is_array($_GET['client_id'])
+    ? (int) $_GET['client_id']
+    : 0;
+
+$tenantId = !empty($_SESSION['tenant_id'])
+    ? (int) $_SESSION['tenant_id']
+    : 0;
+
+/* Save customer internal notes directly on this view page. */
+if (
+    $_SERVER['REQUEST_METHOD'] === 'POST' &&
+    isset($_POST['cv_action']) &&
+    $_POST['cv_action'] === 'save_notes'
+) {
+    $postedToken = isset($_POST['csrf_token']) && !is_array($_POST['csrf_token'])
+        ? (string) $_POST['csrf_token']
+        : '';
+
+    if (!hash_equals($clientsCsrfToken, $postedToken)) {
+        http_response_code(419);
+        exit('Invalid CSRF token.');
+    }
+
+    if ($clientId <= 0 || $tenantId <= 0) {
+        http_response_code(400);
+        exit('Invalid customer or tenant session.');
+    }
+
+    $notesValue = isset($_POST['notes']) && !is_array($_POST['notes'])
+        ? trim((string) $_POST['notes'])
+        : '';
+
+    if (mb_strlen($notesValue, 'UTF-8') > 5000) {
+        http_response_code(422);
+        exit('Notes cannot exceed 5000 characters.');
+    }
+
+    try {
+        $notesStmt = $pdo->prepare("
+            UPDATE clients
+            SET notes = :notes, updated_at = NOW()
+            WHERE id = :client_id
+              AND tenant_id = :tenant_id
+              AND deleted_at IS NULL
+            LIMIT 1
+        ");
+        $notesStmt->execute(array(
+            ':notes' => $notesValue !== '' ? $notesValue : null,
+            ':client_id' => $clientId,
+            ':tenant_id' => $tenantId
+        ));
+
+        header('Location: ' . basename($_SERVER['PHP_SELF']) . '?client_id=' . $clientId . '&notes_saved=1');
+        exit;
+    } catch (Throwable $e) {
+        error_log('FieldPlx customer notes save error: ' . $e->getMessage());
+        http_response_code(500);
+        exit('Unable to save customer notes.');
+    }
+}
+
+$cvLoadError = '';
+$client = null;
+$locations = array();
+$contacts = array();
+$workItems = array();
+$billingItems = array();
+$scheduleItems = array();
+$recentPricing = array();
+$communications = array();
+$summaryCounts = array(
+    'requests' => 0,
+    'quotes' => 0,
+    'jobs' => 0,
+    'invoices' => 0
+);
+$lifetimeValue = 0.00;
+$currentBalance = 0.00;
+$latestPaymentTerms = '';
+$currencySymbol = '';
+$currencySymbolPosition = 'before';
+$currencyDecimals = 2;
+
+if ($clientId <= 0 || $tenantId <= 0) {
+    $cvLoadError = 'Invalid customer or tenant session.';
+} else {
+    try {
+        $currencyStmt = $pdo->prepare("\n            SELECT\n                COALESCE(cur.symbol, '') AS symbol,\n                COALESCE(cur.symbol_position, 'before') AS symbol_position,\n                COALESCE(cur.decimal_places, 2) AS decimal_places\n            FROM tenants t\n            LEFT JOIN currencies cur ON cur.id = t.currency_id\n            WHERE t.id = :tenant_id\n            LIMIT 1\n        ");
+        $currencyStmt->execute(array(':tenant_id' => $tenantId));
+        $currencyRow = $currencyStmt->fetch(PDO::FETCH_ASSOC);
+        if ($currencyRow) {
+            $currencySymbol = (string) $currencyRow['symbol'];
+            $currencySymbolPosition = (string) $currencyRow['symbol_position'];
+            $currencyDecimals = (int) $currencyRow['decimal_places'];
+        }
+
+        $clientStmt = $pdo->prepare("\n            SELECT c.*\n            FROM clients c\n            WHERE c.id = :client_id\n              AND c.tenant_id = :tenant_id\n              AND c.deleted_at IS NULL\n            LIMIT 1\n        ");
+        $clientStmt->execute(array(
+            ':client_id' => $clientId,
+            ':tenant_id' => $tenantId
+        ));
+        $client = $clientStmt->fetch(PDO::FETCH_ASSOC);
+
+        if (!$client) {
+            throw new RuntimeException('Customer not found or does not belong to this tenant.');
+        }
+
+        $locationStmt = $pdo->prepare("\n            SELECT\n                cl.*,\n                co.name AS country_name\n            FROM client_locations cl\n            LEFT JOIN countries co ON co.id = cl.country_id\n            WHERE cl.tenant_id = :tenant_id\n              AND cl.client_id = :client_id\n              AND cl.deleted_at IS NULL\n              AND cl.status <> 'archived'\n            ORDER BY cl.is_primary DESC, cl.id ASC\n        ");
+        $locationStmt->execute(array(
+            ':tenant_id' => $tenantId,
+            ':client_id' => $clientId
+        ));
+        $locations = $locationStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $contactStmt = $pdo->prepare("\n            SELECT *\n            FROM client_contacts\n            WHERE tenant_id = :tenant_id\n              AND client_id = :client_id\n            ORDER BY is_primary DESC, id DESC\n        ");
+        $contactStmt->execute(array(
+            ':tenant_id' => $tenantId,
+            ':client_id' => $clientId
+        ));
+        $contacts = $contactStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $countSqlMap = array(
+            'requests' => 'SELECT COUNT(*) FROM service_requests WHERE tenant_id = :tenant_id AND client_id = :client_id',
+            'quotes' => 'SELECT COUNT(*) FROM quotes WHERE tenant_id = :tenant_id AND client_id = :client_id',
+            'jobs' => 'SELECT COUNT(*) FROM jobs WHERE tenant_id = :tenant_id AND client_id = :client_id AND deleted_at IS NULL',
+            'invoices' => 'SELECT COUNT(*) FROM invoices WHERE tenant_id = :tenant_id AND client_id = :client_id'
+        );
+        foreach ($countSqlMap as $key => $sql) {
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute(array(
+                ':tenant_id' => $tenantId,
+                ':client_id' => $clientId
+            ));
+            $summaryCounts[$key] = (int) $stmt->fetchColumn();
+        }
+
+        $invoiceSummaryStmt = $pdo->prepare("\n            SELECT\n                COALESCE(SUM(CASE WHEN status NOT IN ('cancelled','archived','written_off') THEN total ELSE 0 END), 0) AS lifetime_value,\n                COALESCE(SUM(CASE WHEN status NOT IN ('cancelled','archived','written_off') THEN balance_due ELSE 0 END), 0) AS current_balance\n            FROM invoices\n            WHERE tenant_id = :tenant_id\n              AND client_id = :client_id\n        ");
+        $invoiceSummaryStmt->execute(array(
+            ':tenant_id' => $tenantId,
+            ':client_id' => $clientId
+        ));
+        $invoiceSummary = $invoiceSummaryStmt->fetch(PDO::FETCH_ASSOC);
+        if ($invoiceSummary) {
+            $lifetimeValue = (float) $invoiceSummary['lifetime_value'];
+            $currentBalance = (float) $invoiceSummary['current_balance'];
+        }
+
+        $paymentTermsStmt = $pdo->prepare("\n            SELECT payment_terms\n            FROM invoices\n            WHERE tenant_id = :tenant_id\n              AND client_id = :client_id\n              AND payment_terms IS NOT NULL\n              AND payment_terms <> ''\n            ORDER BY id DESC\n            LIMIT 1\n        ");
+        $paymentTermsStmt->execute(array(
+            ':tenant_id' => $tenantId,
+            ':client_id' => $clientId
+        ));
+        $latestPaymentTerms = (string) $paymentTermsStmt->fetchColumn();
+
+        $workStmt = $pdo->prepare("\n            SELECT * FROM (\n                SELECT\n                    'request' AS item_type,\n                    sr.id AS item_id,\n                    sr.request_no AS item_no,\n                    sr.title AS title,\n                    sr.status AS status,\n                    COALESCE(sr.preferred_date, DATE(sr.created_at)) AS activity_date,\n                    0.00 AS amount,\n                    sr.created_at AS sort_at\n                FROM service_requests sr\n                WHERE sr.tenant_id = :tenant_id_r\n                  AND sr.client_id = :client_id_r\n\n                UNION ALL\n\n                SELECT\n                    'quote' AS item_type,\n                    q.id AS item_id,\n                    q.quote_no AS item_no,\n                    COALESCE(q.title, q.quote_no) AS title,\n                    q.status AS status,\n                    DATE(q.created_at) AS activity_date,\n                    q.total AS amount,\n                    q.created_at AS sort_at\n                FROM quotes q\n                WHERE q.tenant_id = :tenant_id_q\n                  AND q.client_id = :client_id_q\n\n                UNION ALL\n\n                SELECT\n                    'job' AS item_type,\n                    j.id AS item_id,\n                    j.job_no AS item_no,\n                    j.title AS title,\n                    j.status AS status,\n                    COALESCE(j.start_date, DATE(j.created_at)) AS activity_date,\n                    j.total AS amount,\n                    j.created_at AS sort_at\n                FROM jobs j\n                WHERE j.tenant_id = :tenant_id_j\n                  AND j.client_id = :client_id_j\n                  AND j.deleted_at IS NULL\n\n                UNION ALL\n\n                SELECT\n                    'invoice' AS item_type,\n                    i.id AS item_id,\n                    i.invoice_no AS item_no,\n                    i.invoice_no AS title,\n                    i.status AS status,\n                    COALESCE(i.issue_date, DATE(i.created_at)) AS activity_date,\n                    i.total AS amount,\n                    i.created_at AS sort_at\n                FROM invoices i\n                WHERE i.tenant_id = :tenant_id_i\n                  AND i.client_id = :client_id_i\n            ) work_union\n            ORDER BY sort_at DESC\n            LIMIT 12\n        ");
+        $workStmt->execute(array(
+            ':tenant_id_r' => $tenantId,
+            ':client_id_r' => $clientId,
+            ':tenant_id_q' => $tenantId,
+            ':client_id_q' => $clientId,
+            ':tenant_id_j' => $tenantId,
+            ':client_id_j' => $clientId,
+            ':tenant_id_i' => $tenantId,
+            ':client_id_i' => $clientId
+        ));
+        $workItems = $workStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $billingStmt = $pdo->prepare("\n            SELECT * FROM (\n                SELECT\n                    'payment' AS item_type,\n                    p.id AS item_id,\n                    p.payment_no AS item_no,\n                    COALESCE(i.invoice_no, q.quote_no, '—') AS applied_to,\n                    p.status AS status,\n                    COALESCE(p.received_at, p.created_at) AS activity_at,\n                    -1 * p.amount AS amount\n                FROM payments p\n                LEFT JOIN invoices i\n                    ON i.id = p.invoice_id\n                   AND i.tenant_id = p.tenant_id\n                LEFT JOIN quotes q\n                    ON q.id = p.quote_id\n                   AND q.tenant_id = p.tenant_id\n                WHERE p.tenant_id = :tenant_id_p\n                  AND p.client_id = :client_id_p\n\n                UNION ALL\n\n                SELECT\n                    'invoice' AS item_type,\n                    i.id AS item_id,\n                    i.invoice_no AS item_no,\n                    '—' AS applied_to,\n                    i.status AS status,\n                    COALESCE(i.issue_date, DATE(i.created_at)) AS activity_at,\n                    i.total AS amount\n                FROM invoices i\n                WHERE i.tenant_id = :tenant_id_i\n                  AND i.client_id = :client_id_i\n            ) billing_union\n            ORDER BY activity_at DESC\n            LIMIT 12\n        ");
+        $billingStmt->execute(array(
+            ':tenant_id_p' => $tenantId,
+            ':client_id_p' => $clientId,
+            ':tenant_id_i' => $tenantId,
+            ':client_id_i' => $clientId
+        ));
+        $billingItems = $billingStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $scheduleStmt = $pdo->prepare("\n            SELECT\n                js.id AS schedule_id,\n                js.start_date,\n                js.start_time,\n                js.end_date,\n                js.end_time,\n                j.id AS job_id,\n                j.job_no,\n                j.title,\n                j.status,\n                GROUP_CONCAT(\n                    DISTINCT TRIM(CONCAT(COALESCE(u.first_name, ''), ' ', COALESCE(u.last_name, '')))\n                    ORDER BY jsa.is_primary DESC, u.first_name ASC\n                    SEPARATOR ', '\n                ) AS assignees\n            FROM job_schedules js\n            INNER JOIN jobs j\n                ON j.id = js.job_id\n               AND j.tenant_id = js.tenant_id\n               AND j.deleted_at IS NULL\n            LEFT JOIN job_schedule_assignees jsa\n                ON jsa.job_schedule_id = js.id\n               AND jsa.tenant_id = js.tenant_id\n            LEFT JOIN users u\n                ON u.id = jsa.user_id\n               AND u.tenant_id = js.tenant_id\n               AND u.deleted_at IS NULL\n            WHERE js.tenant_id = :tenant_id\n              AND j.client_id = :client_id\n            GROUP BY\n                js.id, js.start_date, js.start_time, js.end_date, js.end_time,\n                j.id, j.job_no, j.title, j.status\n            ORDER BY js.start_date DESC, js.start_time DESC\n            LIMIT 12\n        ");
+        $scheduleStmt->execute(array(
+            ':tenant_id' => $tenantId,
+            ':client_id' => $clientId
+        ));
+        $scheduleItems = $scheduleStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $pricingStmt = $pdo->prepare("\n            SELECT\n                qli.item_name,\n                qli.line_total AS quoted_amount,\n                q.quote_no,\n                q.created_at,\n                j.job_no,\n                j.total AS job_amount\n            FROM quote_line_items qli\n            INNER JOIN quotes q\n                ON q.id = qli.quote_id\n               AND q.tenant_id = :tenant_id\n            LEFT JOIN jobs j\n                ON j.quote_id = q.id\n               AND j.tenant_id = q.tenant_id\n               AND j.deleted_at IS NULL\n            WHERE q.client_id = :client_id\n            ORDER BY q.created_at DESC, qli.sort_order ASC, qli.id DESC\n            LIMIT 10\n        ");
+        $pricingStmt->execute(array(
+            ':tenant_id' => $tenantId,
+            ':client_id' => $clientId
+        ));
+        $recentPricing = $pricingStmt->fetchAll(PDO::FETCH_ASSOC);
+
+        $communicationStmt = $pdo->prepare("\n            SELECT\n                mt.channel,\n                mt.status AS thread_status,\n                mt.last_message_at,\n                m.direction,\n                m.sender_label,\n                m.body,\n                m.status AS message_status,\n                m.created_at\n            FROM message_threads mt\n            INNER JOIN message_thread_messages m\n                ON m.thread_id = mt.id\n               AND m.tenant_id = mt.tenant_id\n            WHERE mt.tenant_id = :tenant_id\n              AND mt.client_id = :client_id\n            ORDER BY m.created_at DESC\n            LIMIT 20\n        ");
+        $communicationStmt->execute(array(
+            ':tenant_id' => $tenantId,
+            ':client_id' => $clientId
+        ));
+        $communications = $communicationStmt->fetchAll(PDO::FETCH_ASSOC);
+    } catch (Throwable $e) {
+        error_log('FieldPlx client view dynamic load error: ' . $e->getMessage());
+        $cvLoadError = $e->getMessage();
+    }
+}
+
+$clientDisplayName = $client && !empty($client['display_name'])
+    ? (string) $client['display_name']
+    : 'Customer';
+
+$clientTags = array();
+if ($client) {
+    if (!empty($client['client_type'])) {
+        $clientTags[] = cvLabel($client['client_type']);
+    }
+    if (!empty($client['source'])) {
+        $clientTags[] = cvLabel($client['source']);
+    }
+}
 ?>
 
 <!DOCTYPE html>
@@ -3290,360 +3570,610 @@ body.fieldplx-sidebar-collapsed .fieldplx-footer {
   }
 }
 
-/* Client View page */
-a,
-a:link,
-a:visited,
-a:hover,
-a:focus,
-a:active{
-  text-decoration:none!important;
+/* Client View page - redesigned main content only */
+.fd-customer-view{
+  width:100%;
+  display:grid;
+  grid-template-columns:minmax(0,1fr) 270px;
+  gap:20px;
+  align-items:start;
 }
-
-.fd-cv-head{
+.fd-customer-main{
+  min-width:0;
+  position:relative;
+  z-index:1;
+}
+.fd-customer-aside{
+  position:sticky;
+  top:88px;
+  display:grid;
+  gap:14px;
+}
+.fd-customer-hero{
+  position:relative;
+  z-index:1;
+  margin-bottom:15px;
+  padding:18px 18px 0;
+  border:1px solid #dfe6ed;
+  border-radius:10px;
+  background:#fff;
+  box-shadow:0 3px 12px rgba(0,17,49,.035);
+}
+.fd-customer-hero-top{
   display:flex;
   align-items:flex-start;
   justify-content:space-between;
-  gap:16px;
-  margin-bottom:16px;
+  gap:18px;
 }
-
-.fd-cv-title{
-  margin:0 0 6px;
-  color:var(--fd-text);
-  font-size:21px;
-  line-height:1.2;
+.fd-customer-actions,
+.fd-customer-edit-row{
+  position:relative;
+  z-index:2;
+}
+/* Keep the shared top navigation above normal customer action buttons. */
+.fieldplx-topbar{z-index:1030!important}
+.fd-customer-ident-row{
+  display:flex;
+  align-items:center;
+  gap:9px;
+  margin-bottom:12px;
+}
+.fd-customer-avatar-mini{
+  width:27px;
+  height:27px;
+  display:grid;
+  place-items:center;
+  border:1px solid var(--fd-border);
+  border-radius:50%;
+  color:#45627d;
+  background:#fff;
+  font-size:13px;
+}
+.fd-customer-status{
+  min-height:23px;
+  padding:4px 9px;
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  border-radius:999px;
+  color:#4f7f18;
+  background:#eef7e5;
+  font-size:9px;
   font-weight:700;
+  text-transform:capitalize;
 }
-
-.fd-cv-sub{
+.fd-customer-status::before{
+  width:7px;
+  height:7px;
+  border-radius:50%;
+  background:#5da11c;
+  content:"";
+}
+.fd-customer-name{
   margin:0;
-  color:var(--fd-muted);
+  color:#061c35;
+  font-size:24px;
+  line-height:1.15;
+  font-weight:800;
+  letter-spacing:-.3px;
+}
+.fd-customer-sub{
+  margin:6px 0 0;
+  color:#728197;
   font-size:10px;
   line-height:1.5;
 }
-
-.fd-cv-actions{
+.fd-customer-actions{
   display:flex;
   align-items:center;
+  justify-content:flex-end;
   gap:8px;
   flex-wrap:wrap;
 }
-
-.fd-cv-btn{
-  min-height:39px;
-  padding:0 13px;
+.fd-customer-btn,
+.fd-customer-icon-btn{
+  min-height:35px;
+  border:1px solid #dde5ed;
+  border-radius:8px;
+  color:#27425d!important;
+  background:#fff;
+  box-shadow:0 3px 10px rgba(0,17,49,.035);
+  text-decoration:none!important;
+}
+.fd-customer-btn{
+  padding:0 12px;
   display:inline-flex;
   align-items:center;
   justify-content:center;
-  gap:7px;
-  border:1px solid var(--fd-border);
-  border-radius:8px;
-  color:#43546c!important;
-  background:#fff;
-  box-shadow:0 4px 12px rgba(31,43,88,.04);
-  font-size:10px;
+  gap:6px;
+  font-size:9.5px;
   font-weight:700;
-  text-decoration:none!important;
 }
-
-.fd-cv-btn:hover{
-  border-color:#cfe3ae;
+.fd-customer-icon-btn{
+  width:35px;
+  padding:0;
+  display:grid;
+  place-items:center;
+  font-size:13px;
+}
+.fd-customer-btn:hover,
+.fd-customer-icon-btn:hover{
+  border-color:#cde1ab;
   color:var(--fd-green-dark)!important;
   background:#f9fcf4;
 }
-
-.fd-cv-btn.primary{
-  border-color:var(--fd-green);
+.fd-customer-btn.primary{
+  border-color:#73b92a;
   color:#fff!important;
   background:linear-gradient(90deg,#7fc92d,#68aa1d);
-  box-shadow:0 7px 16px rgba(104,170,29,.18);
+  box-shadow:0 6px 15px rgba(104,170,29,.18);
 }
-
-/* Client View More actions - Version 1.1.0 */
-.fd-cv-more{
-  position:relative;
-  z-index:1250;
-}
-
-.fd-cv-more .fd-cv-btn{
-  cursor:pointer;
-}
-
-.fd-cv-more .fd-cv-btn .bi-chevron-down{
-  font-size:9px;
-  transition:transform .16s ease;
-}
-
-.fd-cv-more.open .fd-cv-btn .bi-chevron-down{
-  transform:rotate(180deg);
-}
-
-.fd-cv-more-menu{
+.fd-customer-more{position:relative;z-index:auto}
+.fd-customer-more.open{z-index:1000}
+.fd-customer-more-menu{
   width:205px;
   padding:6px;
   position:absolute;
   top:calc(100% + 7px);
   right:0;
-  z-index:1260;
+  z-index:1001;
   display:none;
-  border:1px solid #dfe6ef;
-  border-radius:10px;
+  border:1px solid #e0e6ed;
+  border-radius:9px;
   background:#fff;
-  box-shadow:0 18px 42px rgba(0,17,49,.17);
+  box-shadow:0 15px 35px rgba(0,17,49,.13);
 }
-
-.fd-cv-more.open .fd-cv-more-menu{
-  display:block;
-}
-
-.fd-cv-more-item{
-  width:100%;
-  min-height:36px;
+.fd-customer-more.open .fd-customer-more-menu{display:block}
+.fd-customer-more-item{
+  min-height:34px;
   padding:8px 10px;
   display:flex;
   align-items:center;
   gap:9px;
-  border:0;
   border-radius:7px;
-  color:#33445f!important;
-  background:transparent;
-  font-size:10px;
+  color:#42546d!important;
+  font-size:9.5px;
   font-weight:600;
-  text-decoration:none!important;
 }
-
-.fd-cv-more-item:hover{
+.fd-customer-more-item:hover{
   color:var(--fd-green-dark)!important;
-  background:var(--fd-green-soft);
+  background:#f6faef;
 }
-
-.fd-cv-more-item i{
-  width:17px;
-  color:#66758a;
-  font-size:13px;
-  text-align:center;
-}
-
-.fd-cv-more-item:hover i{
-  color:var(--fd-green-dark);
-}
-
-.fd-cv-more-item + .fd-cv-more-item{
-  margin-top:2px;
-}
-
-@media(max-width:575.98px){
-  .fd-cv-more{
-    flex:1 1 100%;
-  }
-
-  .fd-cv-more > .fd-cv-btn{
-    width:100%;
-  }
-
-  .fd-cv-more-menu{
-    left:0;
-    right:0;
-    width:100%;
-  }
-}
-
-.fd-cv-grid{
-  display:grid;
-  grid-template-columns:1.15fr .85fr;
-  gap:14px;
-  margin-bottom:14px;
-}
-
-.fd-cv-card{
-  padding:16px;
-  border:1px solid var(--fd-border);
-  border-radius:10px;
-  background:#fff;
-  box-shadow:0 4px 14px rgba(31,43,88,.04);
-}
-
-.fd-cv-card-head{
+.fd-customer-edit-row{
+  margin-top:7px;
   display:flex;
-  align-items:flex-start;
-  justify-content:space-between;
-  gap:10px;
-  margin-bottom:13px;
+  justify-content:flex-end;
 }
-
-.fd-cv-card h3{
-  margin:0;
-  color:var(--fd-text);
-  font-size:12px;
-  font-weight:700;
-}
-
-.fd-cv-card small{
-  color:#7b8799;
-  font-size:8.5px;
-}
-
-.fd-cv-details{
+.fd-customer-summary{
   display:grid;
-  grid-template-columns:repeat(2,minmax(0,1fr));
-  gap:12px;
+  grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:0 16px;
+  margin-top:18px;
 }
-
-.fd-cv-detail{
+.fd-customer-summary-item{
   min-width:0;
+  padding:8px 0 12px;
+  border-bottom:1px solid #dfe6ed;
 }
-
-.fd-cv-detail label{
+.fd-customer-summary-item label{
   display:block;
-  margin-bottom:4px;
-  color:#7b8799;
-  font-size:8px;
-  font-weight:700;
-  text-transform:uppercase;
-  letter-spacing:.02em;
+  margin-bottom:6px;
+  color:#6f7f93;
+  font-size:9px;
+  font-weight:400;
 }
-
-.fd-cv-detail strong{
-  display:block;
-  color:#293a53;
+.fd-customer-summary-item strong,
+.fd-customer-summary-item a{
+  color:#35536f!important;
   font-size:10px;
   font-weight:600;
-  line-height:1.45;
+  line-height:1.4;
   word-break:break-word;
 }
-
-.fd-cv-notes{
-  color:#53637a;
-  font-size:9.5px;
-  line-height:1.65;
-  white-space:pre-wrap;
+.fd-customer-summary-item a:hover{
+  color:var(--fd-green-dark)!important;
+  text-decoration:underline!important;
 }
-
-.fd-cv-locations{
-  display:grid;
-  gap:9px;
-}
-
-.fd-cv-location{
-  padding:11px 12px;
+.fd-customer-tabs{
+  margin-top:18px;
   display:flex;
-  gap:10px;
-  border:1px solid #e5eaf1;
-  border-radius:9px;
-  background:#fbfcfd;
+  gap:24px;
+  border-bottom:1px solid #dfe6ed;
 }
-
-.fd-cv-loc-icon{
-  width:34px;
-  height:34px;
-  flex:0 0 34px;
+.fd-customer-tab{
+  padding:12px 5px 11px;
+  position:relative;
+  border:0;
+  color:#586b82;
+  background:transparent;
+  font-size:10.5px;
+  font-weight:700;
+  cursor:pointer;
+}
+.fd-customer-tab.active{color:#102e4a}
+.fd-customer-tab.active::after{
+  height:3px;
+  position:absolute;
+  right:0;
+  bottom:-1px;
+  left:0;
+  border-radius:99px;
+  background:var(--fd-green);
+  content:"";
+}
+.fd-customer-pane{display:none}
+.fd-customer-pane.active{display:block}
+.fd-customer-stack{
+  margin-top:13px;
   display:grid;
-  place-items:center;
+  gap:14px;
+}
+.fd-customer-card{
+  overflow:hidden;
+  border:1px solid #dfe6ed;
   border-radius:9px;
-  color:var(--fd-green-dark);
-  background:var(--fd-green-soft);
+  background:#fff;
+  box-shadow:0 3px 12px rgba(0,17,49,.035);
 }
-
-.fd-cv-loc-copy{
-  min-width:0;
-  flex:1;
+.fd-customer-card-head{
+  min-height:50px;
+  padding:12px 14px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  border-bottom:1px solid #e1e7ed;
 }
-
-.fd-cv-loc-copy strong{
-  display:block;
-  color:#263750;
-  font-size:10px;
+.fd-customer-card-head h3{
+  margin:0;
+  color:#102f4b;
+  font-size:12.5px;
   font-weight:700;
 }
-
-.fd-cv-loc-copy small{
+.fd-customer-add{
+  width:31px;
+  height:31px;
+  display:grid;
+  place-items:center;
+  border:1px solid #dfe6ed;
+  border-radius:8px;
+  color:var(--fd-green-dark)!important;
+  background:#fff;
+  font-size:18px;
+  line-height:1;
+}
+.fd-customer-add:hover{background:#f7fbef}
+.fd-customer-property{
+  padding:12px 14px;
+  display:grid;
+  grid-template-columns:minmax(0,1fr) 30px 30px;
+  gap:10px;
+  align-items:center;
+  border-top:1px solid #e8edf2;
+}
+.fd-customer-property:first-child{border-top:0}
+.fd-customer-property strong{
+  display:block;
+  color:#12314d;
+  font-size:9.5px;
+  line-height:1.45;
+}
+.fd-customer-property small{
   display:block;
   margin-top:3px;
-  color:#7c889a;
+  color:#79879a;
   font-size:8.5px;
   line-height:1.45;
 }
-
-.fd-cv-tags{
-  margin-top:6px;
+.fd-customer-mini-action{
+  width:30px;
+  height:30px;
+  display:grid;
+  place-items:center;
+  border:0;
+  border-radius:7px;
+  color:#35546f!important;
+  background:#fff;
+  font-size:12px;
+}
+.fd-customer-mini-action:hover{background:#f5f9ee;color:var(--fd-green-dark)!important}
+.fd-customer-contact-row{
+  min-height:48px;
+  padding:11px 14px;
   display:flex;
-  gap:5px;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+}
+.fd-customer-contact-title{
+  color:#12314d;
+  font-size:10px;
+  font-weight:700;
+}
+.fd-customer-contact-sub{
+  margin-left:5px;
+  color:#6f7f93;
+  font-size:8.5px;
+  font-weight:400;
+}
+.fd-customer-contact-list{
+  border-top:1px solid #e6ebf0;
+}
+.fd-customer-contact-person{
+  padding:10px 14px;
+  display:grid;
+  grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;
+  gap:12px;
+  align-items:center;
+  border-top:1px solid #edf1f4;
+}
+.fd-customer-contact-person:first-child{border-top:0}
+.fd-customer-contact-person strong{color:#15344f;font-size:9px}
+.fd-customer-contact-person span{color:#77869a;font-size:8.5px}
+.fd-customer-link{
+  color:var(--fd-green-dark)!important;
+  font-size:9px;
+  font-weight:700;
+}
+.fd-customer-chip-row{
+  padding:11px 14px 7px;
+  display:flex;
+  gap:7px;
   flex-wrap:wrap;
 }
-
-.fd-cv-badge{
+.fd-customer-chip{
+  min-height:29px;
+  padding:5px 9px;
   display:inline-flex;
   align-items:center;
+  gap:6px;
+  border:1px solid #dfe6ed;
+  border-radius:999px;
+  color:#31506b!important;
+  background:#fff;
+  font-size:8.5px;
+  font-weight:700;
+}
+.fd-customer-chip.active{background:#eef2eb}
+.fd-customer-chip i{font-size:11px}
+.fd-customer-table-wrap{width:100%;overflow-x:auto}
+.fd-customer-table{
+  width:100%;
+  min-width:680px;
+  border-collapse:collapse;
+}
+.fd-customer-table th{
+  padding:10px 12px;
+  border-bottom:1px solid #dfe6ed;
+  color:#26455f;
+  background:#fff;
+  font-size:8.5px;
+  font-weight:700;
+  text-align:left;
+  white-space:nowrap;
+}
+.fd-customer-table td{
+  padding:10px 12px;
+  border-bottom:1px solid #edf1f4;
+  color:#4e6076;
+  font-size:9px;
+  vertical-align:middle;
+}
+.fd-customer-table tr:last-child td{border-bottom:0}
+.fd-customer-table tbody tr:hover{background:#fbfcfd}
+.fd-customer-table strong{
+  display:block;
+  color:#12314d;
+  font-size:9.5px;
+  line-height:1.4;
+}
+.fd-customer-table small{
+  display:block;
+  margin-top:2px;
+  color:#7c899b;
+  font-size:8px;
+  line-height:1.4;
+}
+.fd-customer-badge{
   padding:4px 7px;
-  border-radius:5px;
-  color:#123d70;
-  background:#edf2f7;
+  display:inline-flex;
+  align-items:center;
+  border-radius:999px;
+  color:#4e7c18;
+  background:#eef7e5;
   font-size:8px;
   font-weight:700;
   text-transform:capitalize;
 }
-
-.fd-cv-badge.active,
-.fd-cv-badge.primary{
-  color:#5d971b;
-  background:#f0f8e5;
-}
-
-.fd-cv-badge.inactive{
-  color:#6f7b90;
-  background:#eef2f6;
-}
-
-.fd-cv-badge.archived{
-  color:#8a5e10;
-  background:#fff7df;
-}
-
-.fd-cv-empty{
-  padding:22px 10px;
-  color:#8c97a7;
+.fd-customer-badge.blue{color:#245787;background:#eaf2fb}
+.fd-customer-badge.orange{color:#a76409;background:#fff2dd}
+.fd-customer-badge.gray{color:#627286;background:#eef2f5}
+.fd-customer-empty{
+  padding:22px 14px;
+  color:#8b97a7;
   font-size:9px;
   text-align:center;
 }
-
-.fd-cv-toast{
-  width:min(290px,calc(100vw - 24px));
+.fd-customer-side-card{
+  padding:14px;
+  border:1px solid #dfe6ed;
+  border-radius:9px;
+  background:#fff;
+  box-shadow:0 3px 12px rgba(0,17,49,.035);
+}
+.fd-customer-side-title{
+  margin:0 0 10px;
+  color:#102f4b;
+  font-size:12px;
+  font-weight:700;
+}
+.fd-customer-side-stat{margin-top:10px}
+.fd-customer-side-stat:first-of-type{margin-top:0}
+.fd-customer-side-stat strong{
+  display:block;
+  color:#06243f;
+  font-size:16px;
+  line-height:1.15;
+  font-weight:800;
+}
+.fd-customer-side-stat span{
+  display:block;
+  margin-top:2px;
+  color:#6f7f93;
+  font-size:8.5px;
+}
+.fd-customer-side-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:9px;
+}
+.fd-customer-tag-list{display:flex;gap:6px;flex-wrap:wrap}
+.fd-customer-tag{
+  padding:5px 7px;
+  display:inline-flex;
+  border-radius:999px;
+  color:#35546e;
+  background:#eef3f7;
+  font-size:8px;
+  font-weight:700;
+}
+.fd-customer-last-comm{
+  color:#334f69;
+  font-size:9px;
+  line-height:1.5;
+}
+.fd-customer-last-comm small{
+  display:block;
+  margin-bottom:6px;
+  color:#7f8b9b;
+  font-size:8px;
+}
+.fd-customer-notes-form{
+  margin:0;
+}
+.fd-customer-notes-textarea{
+  width:100%;
+  min-height:168px;
+  padding:12px 13px;
+  resize:vertical;
+  border:1px solid #cfd8e2;
+  border-radius:8px;
+  outline:0;
+  color:#334b63;
+  background:#fff;
+  font-family:Arial,Helvetica,sans-serif;
+  font-size:9.5px;
+  line-height:1.55;
+}
+.fd-customer-notes-textarea:focus{
+  border-color:#9fc96c;
+  box-shadow:0 0 0 3px rgba(116,184,36,.11);
+}
+.fd-customer-notes-actions{
+  margin-top:9px;
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+}
+.fd-customer-notes-save{
+  min-height:32px;
+  padding:0 11px;
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  border:1px solid var(--fd-green);
+  border-radius:7px;
+  color:#fff;
+  background:linear-gradient(90deg,#7fc92d,#68aa1d);
+  font-size:9px;
+  font-weight:700;
+  cursor:pointer;
+}
+.fd-customer-notes-save:hover{
+  background:linear-gradient(90deg,#74b824,#5d971b);
+}
+.fd-customer-communication{
+  padding:12px 14px;
+  display:grid;
+  grid-template-columns:26px minmax(0,1fr) auto;
+  gap:9px;
+  align-items:start;
+  border-top:1px solid #e8edf2;
+}
+.fd-customer-communication:first-child{border-top:0}
+.fd-customer-comm-icon{
+  width:26px;
+  height:26px;
+  display:grid;
+  place-items:center;
+  border:1px solid #dfe6ed;
+  border-radius:7px;
+  color:#45627d;
+  font-size:11px;
+}
+.fd-customer-communication strong{
+  display:block;
+  color:#173751;
+  font-size:9px;
+  line-height:1.4;
+}
+.fd-customer-communication p{
+  margin:4px 0 0;
+  color:#68798c;
+  font-size:8.5px;
+  line-height:1.5;
+  white-space:pre-wrap;
+}
+.fd-customer-comm-date{
+  color:#8793a3;
+  font-size:8px;
+  white-space:nowrap;
+}
+.fd-customer-toast{
+  width:min(300px,calc(100vw - 24px));
   position:fixed;
   top:82px;
   right:16px;
   z-index:25000;
-  padding:8px 9px;
+  padding:9px 10px;
   display:flex;
   align-items:center;
   gap:7px;
   border-radius:7px;
   color:#fff;
+  background:#123d70;
   box-shadow:0 10px 26px rgba(0,17,49,.18);
   opacity:0;
   transform:translateY(-8px);
   pointer-events:none;
   transition:.18s ease;
 }
-
-.fd-cv-toast.show{opacity:1;transform:translateY(0)}
-.fd-cv-toast.success{background:#5d971b}
-.fd-cv-toast.error{background:#e45b66}
-.fd-cv-toast.warning{background:#96a52f}
-.fd-cv-toast.info{background:#123d70}
-.fd-cv-toast-message{min-width:0;flex:1;font-size:8.5px;font-weight:600}
-.fd-cv-toast-close{width:19px;height:19px;padding:0;border:0;color:#fff;background:transparent;cursor:pointer}
-
-@media(max-width:900px){
-  .fd-cv-grid{grid-template-columns:1fr}
+.fd-customer-toast.show{opacity:1;transform:translateY(0);pointer-events:auto}
+.fd-customer-toast.error{background:#e45b66}
+.fd-customer-toast.success{background:#5d971b}
+.fd-customer-toast-message{min-width:0;flex:1;font-size:8.5px;font-weight:600}
+.fd-customer-toast-close{width:20px;height:20px;padding:0;border:0;color:#fff;background:transparent}
+@media(max-width:1199.98px){
+  .fd-customer-view{grid-template-columns:1fr}
+  .fd-customer-aside{position:static;grid-template-columns:repeat(2,minmax(0,1fr))}
 }
-
+@media(max-width:900px){
+  .fd-customer-summary{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(max-width:767.98px){
+  .fd-customer-hero-top{flex-direction:column}
+  .fd-customer-actions{justify-content:flex-start}
+  .fd-customer-summary{grid-template-columns:1fr}
+  .fd-customer-aside{grid-template-columns:1fr}
+  .fd-customer-contact-person{grid-template-columns:1fr}
+  .fd-customer-communication{grid-template-columns:26px minmax(0,1fr)}
+  .fd-customer-comm-date{grid-column:2}
+}
 @media(max-width:575.98px){
-  .fd-cv-head{flex-direction:column}
-  .fd-cv-details{grid-template-columns:1fr}
-  .fd-cv-actions{width:100%}
-  .fd-cv-actions .fd-cv-btn{flex:1}
-  .fd-cv-toast{top:72px;left:12px;right:12px;width:auto}
+  .fd-customer-actions{width:100%}
+  .fd-customer-btn.primary{flex:1}
+  .fd-customer-toast{top:72px;right:12px;left:12px;width:auto}
 }
 </style>
 </head>
@@ -3656,344 +4186,518 @@ a:active{
             <div class="fieldplx-content-wrapper">
                 <div class="fd-dashboard">
 
-                    <section class="fd-cv-head">
-                        <div>
-                            <h1 class="fd-cv-title" id="viewClientName">Client View</h1>
-                            <p class="fd-cv-sub" id="viewClientSub">Loading client details...</p>
-                        </div>
+                    <div class="fd-customer-view">
+                        <section class="fd-customer-main">
+                            <div class="fd-customer-hero">
+                                <div class="fd-customer-hero-top">
+                                    <div>
+                                        <div class="fd-customer-ident-row">
+                                            <span class="fd-customer-avatar-mini"><i class="bi bi-person-circle"></i></span>
+                                            <span class="fd-customer-status"><?= cvEscape($client ? $client['status'] : 'inactive'); ?></span>
+                                        </div>
 
-                        <div class="fd-cv-actions">
-                            <a class="fd-cv-btn" href="clients.php">
-                                <i class="bi bi-arrow-left"></i>
-                                Back
-                            </a>
+                                        <h1 class="fd-customer-name"><?= cvEscape($clientDisplayName); ?></h1>
 
-                            <a class="fd-cv-btn" id="manageLocationsButton" href="#">
-                                <i class="bi bi-geo-alt"></i>
-                                View Locations
-                            </a>
+                                        <p class="fd-customer-sub">
+                                            <?php if ($client): ?>
+                                                <?= cvEscape(implode(' · ', array_filter(array(
+                                                    !empty($client['company_name']) ? $client['company_name'] : null,
+                                                    !empty($client['email']) ? $client['email'] : null,
+                                                    !empty($client['phone']) ? $client['phone'] : null
+                                                )))); ?>
+                                            <?php else: ?>
+                                                <?= cvEscape($cvLoadError !== '' ? $cvLoadError : 'Customer details'); ?>
+                                            <?php endif; ?>
+                                        </p>
+                                    </div>
 
-                            <a class="fd-cv-btn primary" id="addLocationButton" href="#">
-                                <i class="bi bi-plus-lg"></i>
-                                Add Location
-                            </a>
+                                    <div>
+                                        <div class="fd-customer-actions">
+                                            <?php if ($client && !empty($client['email'])): ?>
+                                                <a class="fd-customer-icon-btn" href="mailto:<?= cvEscape($client['email']); ?>" title="Email customer">
+                                                    <i class="bi bi-envelope"></i>
+                                                </a>
+                                            <?php else: ?>
+                                                <span class="fd-customer-icon-btn" title="No email available"><i class="bi bi-envelope"></i></span>
+                                            <?php endif; ?>
 
-                            <div class="fd-cv-more" id="clientViewMore">
-                                <button type="button" class="fd-cv-btn" id="clientViewMoreButton" aria-expanded="false" aria-haspopup="true">
-                                    <i class="bi bi-three-dots"></i>
-                                    More
-                                    <i class="bi bi-chevron-down"></i>
-                                </button>
-                                <div class="fd-cv-more-menu" id="clientViewMoreMenu" role="menu" aria-hidden="true">
-                                    <a class="fd-cv-more-item" id="clientViewAddRequest" href="#" role="menuitem">
-                                        <i class="bi bi-inbox"></i>
-                                        Add Request
-                                    </a>
-                                    <a class="fd-cv-more-item" id="clientViewAddQuotation" href="#" role="menuitem">
-                                        <i class="bi bi-file-earmark-text"></i>
-                                        Add Quotation
-                                    </a>
-                                    <a class="fd-cv-more-item" id="clientViewCreateJob" href="#" role="menuitem">
-                                        <i class="bi bi-hammer"></i>
-                                        Create Job
-                                    </a>
-                                    <a class="fd-cv-more-item" id="clientViewAddInvoice" href="#" role="menuitem">
-                                        <i class="bi bi-receipt"></i>
-                                        Add Invoice
-                                    </a>
-                                    <a class="fd-cv-more-item" id="clientViewPayment" href="#" role="menuitem">
-                                        <i class="bi bi-cash-coin"></i>
-                                        Payment
-                                    </a>
+                                            <div class="fd-customer-more" id="customerMoreMenu">
+                                                <button type="button" class="fd-customer-icon-btn" id="customerMoreButton" aria-expanded="false" title="More actions">
+                                                    <i class="bi bi-three-dots"></i>
+                                                </button>
+                                                <div class="fd-customer-more-menu" id="customerMoreMenuPanel">
+                                                    <a class="fd-customer-more-item" href="clients.php">
+                                                        <i class="bi bi-arrow-left"></i> Back to Customers
+                                                    </a>
+                                                    <a class="fd-customer-more-item" href="client-locations.php?client_id=<?= (int) $clientId; ?>">
+                                                        <i class="bi bi-geo-alt"></i> View Locations
+                                                    </a>
+                                                    <a class="fd-customer-more-item" href="client-locations.php?client_id=<?= (int) $clientId; ?>&add=1">
+                                                        <i class="bi bi-plus-square"></i> Add Location
+                                                    </a>
+                                                </div>
+                                            </div>
+
+                                            <div class="fd-customer-more" id="customerCreateMenu">
+                                                <button type="button" class="fd-customer-btn primary" id="customerCreateButton" aria-expanded="false">
+                                                    <i class="bi bi-plus-lg"></i> Create
+                                                </button>
+                                                <div class="fd-customer-more-menu" id="customerCreateMenuPanel">
+                                                    <a class="fd-customer-more-item" href="add-request.php?client_id=<?= (int) $clientId; ?>"><i class="bi bi-inbox"></i> Request</a>
+                                                    <a class="fd-customer-more-item" href="add-quotation.php?client_id=<?= (int) $clientId; ?>"><i class="bi bi-file-earmark-text"></i> Quotation</a>
+                                                    <a class="fd-customer-more-item" href="job-form.php?client_id=<?= (int) $clientId; ?>"><i class="bi bi-hammer"></i> Job</a>
+                                                    <a class="fd-customer-more-item" href="add-invoice.php?client_id=<?= (int) $clientId; ?>"><i class="bi bi-receipt"></i> Invoice</a>
+                                                    <a class="fd-customer-more-item" href="payment.php?client_id=<?= (int) $clientId; ?>"><i class="bi bi-cash-coin"></i> Payment</a>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="fd-customer-edit-row">
+                                            <a class="fd-customer-icon-btn" href="client-form.php?client_id=<?= (int) $clientId; ?>" title="Edit customer">
+                                                <i class="bi bi-pencil"></i>
+                                            </a>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="fd-customer-summary">
+                                    <div class="fd-customer-summary-item">
+                                        <label>Mobile phone</label>
+                                        <?php if ($client && !empty($client['phone'])): ?>
+                                            <a href="tel:<?= cvEscape($client['phone']); ?>"><?= cvEscape($client['phone']); ?></a>
+                                        <?php else: ?>
+                                            <strong>—</strong>
+                                        <?php endif; ?>
+                                    </div>
+
+                                    <div class="fd-customer-summary-item">
+                                        <label>Work email</label>
+                                        <?php if ($client && !empty($client['email'])): ?>
+                                            <a href="mailto:<?= cvEscape($client['email']); ?>"><?= cvEscape($client['email']); ?></a>
+                                        <?php else: ?>
+                                            <strong>—</strong>
+                                        <?php endif; ?>
+                                    </div>
+
+                                    <div class="fd-customer-summary-item">
+                                        <label>Payment terms</label>
+                                        <strong><?= cvEscape($latestPaymentTerms !== '' ? $latestPaymentTerms : '—'); ?></strong>
+                                    </div>
+
+                                    <div class="fd-customer-summary-item">
+                                        <label>Lead source</label>
+                                        <strong><?= cvEscape($client && !empty($client['source']) ? cvLabel($client['source']) : '—'); ?></strong>
+                                    </div>
+                                </div>
+
+                                <div class="fd-customer-tabs">
+                                    <button type="button" class="fd-customer-tab active" data-customer-tab="information">Client information</button>
+                                    <button type="button" class="fd-customer-tab" data-customer-tab="communication">Communication</button>
                                 </div>
                             </div>
-                        </div>
-                    </section>
 
-                    <div class="fd-cv-grid">
-                        <section class="fd-cv-card">
-                            <div class="fd-cv-card-head">
-                                <h3>Client Information</h3>
+                            <div class="fd-customer-pane active" id="customerInformationPane">
+                                <div class="fd-customer-stack">
+                                    <section class="fd-customer-card">
+                                        <div class="fd-customer-card-head">
+                                            <h3>Properties</h3>
+                                            <a class="fd-customer-add" href="client-locations.php?client_id=<?= (int) $clientId; ?>&add=1" title="Add Location">+</a>
+                                        </div>
+
+                                        <?php if (empty($locations)): ?>
+                                            <div class="fd-customer-empty">No properties found for this customer.</div>
+                                        <?php else: ?>
+                                            <?php foreach ($locations as $location): ?>
+                                                <?php
+                                                $address = implode(', ', array_filter(array(
+                                                    $location['address_line1'],
+                                                    $location['address_line2'],
+                                                    $location['city'],
+                                                    $location['state'],
+                                                    $location['postal_code'],
+                                                    $location['country_name']
+                                                )));
+                                                $mapQuery = urlencode($address !== '' ? $address : $location['name']);
+                                                ?>
+                                                <div class="fd-customer-property">
+                                                    <div>
+                                                        <strong><?= cvEscape($location['name']); ?></strong>
+                                                        <small><?= cvEscape($address !== '' ? $address : 'No address available'); ?></small>
+                                                    </div>
+                                                    <a class="fd-customer-mini-action" href="https://www.google.com/maps/search/?api=1&query=<?= cvEscape($mapQuery); ?>" target="_blank" title="View Map">
+                                                        <i class="bi bi-geo-alt"></i>
+                                                    </a>
+                                                    <a class="fd-customer-mini-action" href="client-locations.php?client_id=<?= (int) $clientId; ?>&location_id=<?= (int) $location['id']; ?>&edit=1" title="Edit Location">
+                                                        <i class="bi bi-pencil"></i>
+                                                    </a>
+                                                </div>
+                                            <?php endforeach; ?>
+                                        <?php endif; ?>
+                                    </section>
+
+                                    <section class="fd-customer-card">
+                                        <div class="fd-customer-contact-row">
+                                            <div>
+                                                <span class="fd-customer-contact-title">Contacts</span>
+                                                <span class="fd-customer-contact-sub">Keep track of people you communicate with</span>
+                                            </div>
+                                            <a class="fd-customer-link" href="client-form.php?client_id=<?= (int) $clientId; ?>">Manage Customer</a>
+                                        </div>
+
+                                        <?php if (!empty($contacts)): ?>
+                                            <div class="fd-customer-contact-list">
+                                                <?php foreach ($contacts as $contact): ?>
+                                                    <div class="fd-customer-contact-person">
+                                                        <strong>
+                                                            <?= cvEscape(trim($contact['first_name'] . ' ' . (string) $contact['last_name'])); ?>
+                                                            <?= (int) $contact['is_primary'] === 1 ? '<span class="fd-customer-badge" style="margin-left:5px;">Primary</span>' : ''; ?>
+                                                        </strong>
+                                                        <span><?= cvEscape(!empty($contact['email']) ? $contact['email'] : '—'); ?></span>
+                                                        <span><?= cvEscape(!empty($contact['phone']) ? $contact['phone'] : '—'); ?></span>
+                                                    </div>
+                                                <?php endforeach; ?>
+                                            </div>
+                                        <?php endif; ?>
+                                    </section>
+
+                                    <section class="fd-customer-card">
+                                        <div class="fd-customer-card-head">
+                                            <h3>Work overview</h3>
+                                            <a class="fd-customer-add" href="add-request.php?client_id=<?= (int) $clientId; ?>" title="Create Request">+</a>
+                                        </div>
+
+                                        <div class="fd-customer-chip-row">
+                                            <span class="fd-customer-chip active">Status&nbsp; | &nbsp;<?= cvEscape($client ? cvLabel($client['status']) : '—'); ?></span>
+                                            <a class="fd-customer-chip" href="requests.php?client_id=<?= (int) $clientId; ?>"><i class="bi bi-inbox"></i> Requests <?= (int) $summaryCounts['requests']; ?></a>
+                                            <a class="fd-customer-chip" href="quotations.php?client_id=<?= (int) $clientId; ?>"><i class="bi bi-file-earmark-text"></i> Quotes <?= (int) $summaryCounts['quotes']; ?></a>
+                                            <a class="fd-customer-chip" href="jobs.php?client_id=<?= (int) $clientId; ?>"><i class="bi bi-hammer"></i> Jobs <?= (int) $summaryCounts['jobs']; ?></a>
+                                            <a class="fd-customer-chip" href="invoices.php?client_id=<?= (int) $clientId; ?>"><i class="bi bi-receipt"></i> Invoices <?= (int) $summaryCounts['invoices']; ?></a>
+                                        </div>
+
+                                        <div class="fd-customer-table-wrap">
+                                            <table class="fd-customer-table">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Item</th>
+                                                        <th>Date</th>
+                                                        <th>Status</th>
+                                                        <th style="text-align:right;">Amount</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    <?php if (empty($workItems)): ?>
+                                                        <tr><td colspan="4" class="fd-customer-empty">No requests, quotes, jobs or invoices found.</td></tr>
+                                                    <?php else: ?>
+                                                        <?php foreach ($workItems as $item): ?>
+                                                            <tr>
+                                                                <td>
+                                                                    <strong><?= cvEscape(strtoupper($item['item_type']) . ' ' . $item['item_no']); ?></strong>
+                                                                    <small><?= cvEscape($item['title']); ?></small>
+                                                                </td>
+                                                                <td><?= cvEscape(cvDate($item['activity_date'])); ?></td>
+                                                                <td><span class="fd-customer-badge"><?= cvEscape(cvLabel($item['status'])); ?></span></td>
+                                                                <td style="text-align:right;">
+                                                                    <?= $item['item_type'] === 'request'
+                                                                        ? '—'
+                                                                        : cvEscape(cvMoney($item['amount'], $currencySymbol, $currencySymbolPosition, $currencyDecimals)); ?>
+                                                                </td>
+                                                            </tr>
+                                                        <?php endforeach; ?>
+                                                    <?php endif; ?>
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </section>
+
+                                    <section class="fd-customer-card">
+                                        <div class="fd-customer-card-head">
+                                            <h3>Billing</h3>
+                                            <a class="fd-customer-add" href="add-invoice.php?client_id=<?= (int) $clientId; ?>" title="Create Invoice">+</a>
+                                        </div>
+                                        <div class="fd-customer-table-wrap">
+                                            <table class="fd-customer-table">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Item</th>
+                                                        <th>Applied to</th>
+                                                        <th>Date</th>
+                                                        <th style="text-align:right;">Amount</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    <?php if (empty($billingItems)): ?>
+                                                        <tr><td colspan="4" class="fd-customer-empty">No billing activity found.</td></tr>
+                                                    <?php else: ?>
+                                                        <?php foreach ($billingItems as $item): ?>
+                                                            <tr>
+                                                                <td><strong><?= cvEscape(cvLabel($item['item_type']) . ' ' . $item['item_no']); ?></strong><small><?= cvEscape(cvLabel($item['status'])); ?></small></td>
+                                                                <td><?= cvEscape($item['applied_to']); ?></td>
+                                                                <td><?= cvEscape(cvDate($item['activity_at'])); ?></td>
+                                                                <td style="text-align:right;"><?= cvEscape(cvMoney($item['amount'], $currencySymbol, $currencySymbolPosition, $currencyDecimals)); ?></td>
+                                                            </tr>
+                                                        <?php endforeach; ?>
+                                                    <?php endif; ?>
+                                                </tbody>
+                                                <tfoot>
+                                                    <tr>
+                                                        <th colspan="3">Current balance</th>
+                                                        <th style="text-align:right;"><?= cvEscape(cvMoney($currentBalance, $currencySymbol, $currencySymbolPosition, $currencyDecimals)); ?></th>
+                                                    </tr>
+                                                </tfoot>
+                                            </table>
+                                        </div>
+                                    </section>
+
+                                    <section class="fd-customer-card">
+                                        <div class="fd-customer-card-head">
+                                            <h3>Client schedule</h3>
+                                            <a class="fd-customer-add" href="job-form.php?client_id=<?= (int) $clientId; ?>" title="Create Job">+</a>
+                                        </div>
+                                        <div class="fd-customer-chip-row">
+                                            <span class="fd-customer-chip active">Type&nbsp; | &nbsp;All</span>
+                                            <span class="fd-customer-chip active">Status&nbsp; | &nbsp;All</span>
+                                        </div>
+                                        <div class="fd-customer-table-wrap">
+                                            <table class="fd-customer-table">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Schedule</th>
+                                                        <th>Title</th>
+                                                        <th>Assigned</th>
+                                                        <th>Status</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    <?php if (empty($scheduleItems)): ?>
+                                                        <tr><td colspan="4" class="fd-customer-empty">No scheduled jobs found.</td></tr>
+                                                    <?php else: ?>
+                                                        <?php foreach ($scheduleItems as $schedule): ?>
+                                                            <tr>
+                                                                <td><strong><?= cvEscape(cvDate($schedule['start_date'])); ?></strong><small><?= cvEscape(substr((string) $schedule['start_time'], 0, 5)); ?> - <?= cvEscape(substr((string) $schedule['end_time'], 0, 5)); ?></small></td>
+                                                                <td><strong><?= cvEscape($schedule['job_no']); ?></strong><small><?= cvEscape($schedule['title']); ?></small></td>
+                                                                <td><?= cvEscape(!empty($schedule['assignees']) ? $schedule['assignees'] : '—'); ?></td>
+                                                                <td><span class="fd-customer-badge blue"><?= cvEscape(cvLabel($schedule['status'])); ?></span></td>
+                                                            </tr>
+                                                        <?php endforeach; ?>
+                                                    <?php endif; ?>
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </section>
+
+                                    <section class="fd-customer-card">
+                                        <div class="fd-customer-card-head">
+                                            <h3>Recent pricing</h3>
+                                        </div>
+                                        <div class="fd-customer-table-wrap">
+                                            <table class="fd-customer-table">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Line item</th>
+                                                        <th>Quoted</th>
+                                                        <th style="text-align:right;">Job</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    <?php if (empty($recentPricing)): ?>
+                                                        <tr><td colspan="3" class="fd-customer-empty">No recent pricing found.</td></tr>
+                                                    <?php else: ?>
+                                                        <?php foreach ($recentPricing as $pricing): ?>
+                                                            <tr>
+                                                                <td><strong><?= cvEscape($pricing['item_name']); ?></strong><small><?= cvEscape($pricing['quote_no']); ?> · <?= cvEscape(cvDate($pricing['created_at'])); ?></small></td>
+                                                                <td><?= cvEscape(cvMoney($pricing['quoted_amount'], $currencySymbol, $currencySymbolPosition, $currencyDecimals)); ?></td>
+                                                                <td style="text-align:right;">
+                                                                    <?php if (!empty($pricing['job_no'])): ?>
+                                                                        <strong><?= cvEscape($pricing['job_no']); ?></strong>
+                                                                        <small><?= cvEscape(cvMoney($pricing['job_amount'], $currencySymbol, $currencySymbolPosition, $currencyDecimals)); ?></small>
+                                                                    <?php else: ?>
+                                                                        —
+                                                                    <?php endif; ?>
+                                                                </td>
+                                                            </tr>
+                                                        <?php endforeach; ?>
+                                                    <?php endif; ?>
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    </section>
+                                </div>
                             </div>
 
-                            <div class="fd-cv-details">
-                                <div class="fd-cv-detail"><label>Client Type</label><strong id="dType">-</strong></div>
-                                <div class="fd-cv-detail"><label>Status</label><strong id="dStatus">-</strong></div>
-                                <div class="fd-cv-detail"><label>Company</label><strong id="dCompany">-</strong></div>
-                                <div class="fd-cv-detail"><label>Contact Person</label><strong id="dPerson">-</strong></div>
-                                <div class="fd-cv-detail"><label>Email</label><strong id="dEmail">-</strong></div>
-                                <div class="fd-cv-detail"><label>Phone</label><strong id="dPhone">-</strong></div>
-                                <div class="fd-cv-detail"><label>Alternate Phone</label><strong id="dAltPhone">-</strong></div>
-                                <div class="fd-cv-detail"><label>Source</label><strong id="dSource">-</strong></div>
-                                <div class="fd-cv-detail"><label>Preferred Contact</label><strong id="dPreferred">-</strong></div>
-                                <div class="fd-cv-detail"><label>Tax Number</label><strong id="dTax">-</strong></div>
-                                <div class="fd-cv-detail"><label>Email Allowed</label><strong id="dEmailAllowed">-</strong></div>
-                                <div class="fd-cv-detail"><label>SMS Allowed</label><strong id="dSmsAllowed">-</strong></div>
+                            <div class="fd-customer-pane" id="customerCommunicationPane">
+                                <div class="fd-customer-stack">
+                                    <section class="fd-customer-card">
+                                        <div class="fd-customer-card-head">
+                                            <h3>Communication history</h3>
+                                        </div>
+
+                                        <?php if (empty($communications)): ?>
+                                            <div class="fd-customer-empty">No communication history found for this customer.</div>
+                                        <?php else: ?>
+                                            <?php foreach ($communications as $communication): ?>
+                                                <div class="fd-customer-communication">
+                                                    <span class="fd-customer-comm-icon">
+                                                        <i class="bi <?= $communication['channel'] === 'sms' ? 'bi-chat-left-text' : 'bi-envelope-open'; ?>"></i>
+                                                    </span>
+                                                    <div>
+                                                        <strong>
+                                                            <?= cvEscape(cvLabel($communication['direction']) . ' ' . cvLabel($communication['channel'])); ?>
+                                                            · <?= cvEscape(cvLabel($communication['message_status'])); ?>
+                                                        </strong>
+                                                        <p><?= cvEscape($communication['body']); ?></p>
+                                                    </div>
+                                                    <span class="fd-customer-comm-date"><?= cvEscape(cvDate($communication['created_at'], true)); ?></span>
+                                                </div>
+                                            <?php endforeach; ?>
+                                        <?php endif; ?>
+                                    </section>
+                                </div>
                             </div>
                         </section>
 
-                        <section class="fd-cv-card">
-                            <div class="fd-cv-card-head">
-                                <h3>Internal Notes</h3>
-                            </div>
-                            <div class="fd-cv-notes" id="dNotes">No notes.</div>
-                        </section>
+                        <aside class="fd-customer-aside">
+                            <section class="fd-customer-side-card">
+                                <h3 class="fd-customer-side-title">Overview</h3>
+                                <div class="fd-customer-side-stat">
+                                    <strong><?= cvEscape(cvMoney($lifetimeValue, $currencySymbol, $currencySymbolPosition, $currencyDecimals)); ?></strong>
+                                    <span>Lifetime value</span>
+                                </div>
+                                <div class="fd-customer-side-stat">
+                                    <strong><?= cvEscape(cvMoney($currentBalance, $currencySymbol, $currencySymbolPosition, $currencyDecimals)); ?></strong>
+                                    <span>Current balance</span>
+                                </div>
+                            </section>
+
+                            <section class="fd-customer-side-card">
+                                <div class="fd-customer-side-head">
+                                    <h3 class="fd-customer-side-title" style="margin:0;">Tags</h3>
+                                </div>
+                                <div class="fd-customer-tag-list" style="margin-top:10px;">
+                                    <?php if (empty($clientTags)): ?>
+                                        <span style="color:#7d8a9b;font-size:8.5px;">This customer has no tags</span>
+                                    <?php else: ?>
+                                        <?php foreach ($clientTags as $tag): ?>
+                                            <span class="fd-customer-tag"><?= cvEscape($tag); ?></span>
+                                        <?php endforeach; ?>
+                                    <?php endif; ?>
+                                </div>
+                            </section>
+
+                            <section class="fd-customer-side-card">
+                                <h3 class="fd-customer-side-title">Last communication</h3>
+                                <?php if (!empty($communications)): ?>
+                                    <div class="fd-customer-last-comm">
+                                        <small><?= cvEscape(cvDate($communications[0]['created_at'], true)); ?></small>
+                                        <?= cvEscape(mb_strimwidth($communications[0]['body'], 0, 100, '...', 'UTF-8')); ?>
+                                    </div>
+                                    <button type="button" class="fd-customer-link" id="openCommunicationTab" style="padding:0;border:0;background:transparent;margin-top:5px;">Read more...</button>
+                                <?php else: ?>
+                                    <div class="fd-customer-last-comm">No communication history.</div>
+                                <?php endif; ?>
+                            </section>
+
+                            <section class="fd-customer-side-card">
+                                <h3 class="fd-customer-side-title">Notes</h3>
+                                <form class="fd-customer-notes-form" method="post" action="">
+                                    <input type="hidden" name="cv_action" value="save_notes">
+                                    <input type="hidden" name="csrf_token" value="<?= cvEscape($clientsCsrfToken); ?>">
+                                    <textarea
+                                        class="fd-customer-notes-textarea"
+                                        name="notes"
+                                        maxlength="5000"
+                                        placeholder="Leave an internal note for yourself or a team member..."
+                                    ><?= cvEscape($client && isset($client['notes']) ? $client['notes'] : ''); ?></textarea>
+                                    <div class="fd-customer-notes-actions">
+                                        <button type="submit" class="fd-customer-notes-save">
+                                            <i class="bi bi-check2"></i> Save Note
+                                        </button>
+                                    </div>
+                                </form>
+                            </section>
+                        </aside>
                     </div>
 
-                    <section class="fd-cv-card">
-                        <div class="fd-cv-card-head">
-                            <div>
-                                <h3>Service Locations</h3>
-                                <small>A single client can have multiple service locations.</small>
-                            </div>
+                    <?php $notesSaved = isset($_GET['notes_saved']) && $_GET['notes_saved'] === '1'; ?>
+                    <div class="fd-customer-toast <?= $cvLoadError !== '' ? 'error show' : ($notesSaved ? 'success show' : ''); ?>" id="clientsToast">
+                        <span class="fd-customer-toast-message" id="clientsToastMessage"><?= cvEscape($cvLoadError !== '' ? $cvLoadError : ($notesSaved ? 'Customer note saved successfully.' : 'Notification')); ?></span>
+                        <button type="button" class="fd-customer-toast-close" id="clientsToastClose"><i class="bi bi-x"></i></button>
+                    </div>
 
-                            <a class="fd-cv-btn primary" id="addLocationButton2" href="#">
-                                <i class="bi bi-plus-lg"></i>
-                                Add Location
-                            </a>
-                        </div>
+                    <script>
+                    (function(){
+                        'use strict';
 
-                        <div class="fd-cv-locations" id="viewLocations">
-                            <div class="fd-cv-empty">Loading locations...</div>
-                        </div>
-                    </section>
+                        var tabs = document.querySelectorAll('[data-customer-tab]');
+                        var informationPane = document.getElementById('customerInformationPane');
+                        var communicationPane = document.getElementById('customerCommunicationPane');
 
-                </div>
-
-                <div class="fd-cv-toast info" id="clientsToast">
-                    <span class="fd-cv-toast-message" id="clientsToastMessage">Notification</span>
-                    <button type="button" class="fd-cv-toast-close" id="clientsToastClose"><i class="bi bi-x"></i></button>
-                </div>
-
-                <script>
-                (function(){
-                'use strict';
-
-                var clientId = Number(
-                    new URLSearchParams(window.location.search).get('client_id') || 0
-                );
-
-                var csrfToken = <?= json_encode($clientsCsrfToken) ?>;
-                var toast = document.getElementById('clientsToast');
-                var toastMessage = document.getElementById('clientsToastMessage');
-                var timer = null;
-
-                function esc(v){
-                    return String(v == null ? '' : v)
-                        .replace(/&/g,'&amp;')
-                        .replace(/</g,'&lt;')
-                        .replace(/>/g,'&gt;')
-                        .replace(/"/g,'&quot;')
-                        .replace(/'/g,'&#039;');
-                }
-
-                function notify(type,message){
-                    if(timer) clearTimeout(timer);
-
-                    toast.className =
-                        'fd-cv-toast ' +
-                        (type || 'info') +
-                        ' show';
-
-                    toastMessage.textContent =
-                        message || 'Notification';
-
-                    timer = setTimeout(function(){
-                        toast.classList.remove('show');
-                    },3000);
-                }
-
-                function parseResponse(response){
-                    return response.text().then(function(raw){
-                        var text = (raw || '').trim();
-                        var data;
-
-                        try{
-                            data = text ? JSON.parse(text) : {};
-                        }catch(e){
-                            var clean = text
-                                .replace(/<br\s*\/?>/gi,' ')
-                                .replace(/<[^>]*>/g,' ')
-                                .replace(/\s+/g,' ')
-                                .trim();
-
-                            throw new Error(
-                                clean || 'Server returned an invalid response.'
-                            );
+                        function activateTab(name){
+                            tabs.forEach(function(tab){
+                                tab.classList.toggle('active', tab.getAttribute('data-customer-tab') === name);
+                            });
+                            informationPane.classList.toggle('active', name === 'information');
+                            communicationPane.classList.toggle('active', name === 'communication');
                         }
 
-                        if(!response.ok || !data.success){
-                            throw new Error(
-                                data.message || 'Request failed.'
-                            );
-                        }
-
-                        return data;
-                    });
-                }
-
-                function request(url,fd){
-                    fd.append('csrf_token',csrfToken);
-
-                    return fetch(url,{
-                        method:'POST',
-                        body:fd,
-                        credentials:'same-origin',
-                        headers:{
-                            'X-Requested-With':'XMLHttpRequest',
-                            'Accept':'application/json'
-                        }
-                    }).then(parseResponse);
-                }
-
-                if(clientId <= 0){
-                    notify('error','Invalid client.');
-                    return;
-                }
-
-                var locationUrl =
-                    'client-locations.php?client_id=' +
-                    clientId;
-
-                document.getElementById('manageLocationsButton').href = locationUrl;
-                document.getElementById('addLocationButton').href = locationUrl + '&add=1';
-                document.getElementById('addLocationButton2').href = locationUrl + '&add=1';
-
-                /* More workflow actions for the customer currently being viewed. */
-                document.getElementById('clientViewAddRequest').href = 'add-request.php?client_id=' + clientId;
-                document.getElementById('clientViewAddQuotation').href = 'add-quotation.php?client_id=' + clientId;
-                document.getElementById('clientViewCreateJob').href = 'job-form.php?client_id=' + clientId;
-                document.getElementById('clientViewAddInvoice').href = 'add-invoice.php?client_id=' + clientId;
-                document.getElementById('clientViewPayment').href = 'payment.php?client_id=' + clientId;
-
-                var clientViewMore = document.getElementById('clientViewMore');
-                var clientViewMoreButton = document.getElementById('clientViewMoreButton');
-                var clientViewMoreMenu = document.getElementById('clientViewMoreMenu');
-
-                function setClientViewMore(open){
-                    if(!clientViewMore || !clientViewMoreButton || !clientViewMoreMenu) return;
-                    clientViewMore.classList.toggle('open', !!open);
-                    clientViewMoreButton.setAttribute('aria-expanded', open ? 'true' : 'false');
-                    clientViewMoreMenu.setAttribute('aria-hidden', open ? 'false' : 'true');
-                }
-
-                clientViewMoreButton.addEventListener('click', function(event){
-                    event.preventDefault();
-                    event.stopPropagation();
-                    setClientViewMore(!clientViewMore.classList.contains('open'));
-                });
-
-                clientViewMoreMenu.addEventListener('click', function(event){
-                    event.stopPropagation();
-                });
-
-                document.addEventListener('click', function(event){
-                    if(clientViewMore && !clientViewMore.contains(event.target)){
-                        setClientViewMore(false);
-                    }
-                });
-
-                document.addEventListener('keydown', function(event){
-                    if(event.key === 'Escape'){
-                        setClientViewMore(false);
-                        clientViewMoreButton.focus();
-                    }
-                });
-
-                document.getElementById('clientsToastClose').onclick = function(){
-                    toast.classList.remove('show');
-                };
-
-                var clientFd = new FormData();
-                clientFd.append('action','get');
-                clientFd.append('client_id',clientId);
-
-                request('api/clients.php',clientFd)
-                    .then(function(data){
-                        var c = data.client || {};
-
-                        document.getElementById('viewClientName').textContent =
-                            c.display_name || 'Client';
-
-                        document.getElementById('viewClientSub').textContent =
-                            [c.email,c.phone].filter(Boolean).join(' · ') ||
-                            'Client details';
-
-                        document.getElementById('dType').textContent = c.client_type || '-';
-                        document.getElementById('dStatus').textContent = c.status || '-';
-                        document.getElementById('dCompany').textContent = c.company_name || '-';
-                        document.getElementById('dPerson').textContent = [c.first_name,c.last_name].filter(Boolean).join(' ') || '-';
-                        document.getElementById('dEmail').textContent = c.email || '-';
-                        document.getElementById('dPhone').textContent = c.phone || '-';
-                        document.getElementById('dAltPhone').textContent = c.alternate_phone || '-';
-                        document.getElementById('dSource').textContent = c.source || '-';
-                        document.getElementById('dPreferred').textContent = c.preferred_contact_method || '-';
-                        document.getElementById('dTax').textContent = c.tax_number || '-';
-                        document.getElementById('dEmailAllowed').textContent = Number(c.allow_email) === 1 ? 'Yes' : 'No';
-                        document.getElementById('dSmsAllowed').textContent = Number(c.allow_sms) === 1 ? 'Yes' : 'No';
-                        document.getElementById('dNotes').textContent = c.notes || 'No notes.';
-                    })
-                    .catch(function(error){
-                        notify('error',error.message);
-                    });
-
-                var locationFd = new FormData();
-                locationFd.append('action','list');
-                locationFd.append('client_id',clientId);
-
-                request('api/client-locations.php',locationFd)
-                    .then(function(data){
-                        var rows = data.locations || [];
-                        var box = document.getElementById('viewLocations');
-
-                        if(!rows.length){
-                            box.innerHTML =
-                                '<div class="fd-cv-empty">'+
-                                'No locations yet. Click Add Location to create the first service location.'+
-                                '</div>';
-                            return;
-                        }
-
-                        var html = '';
-
-                        rows.forEach(function(x){
-                            var address = [
-                                x.address_line1,
-                                x.address_line2,
-                                x.city,
-                                x.state,
-                                x.postal_code,
-                                x.country_name
-                            ].filter(Boolean).join(', ');
-
-                            html +=
-                                '<div class="fd-cv-location">'+
-                                    '<span class="fd-cv-loc-icon"><i class="bi bi-geo-alt"></i></span>'+
-                                    '<div class="fd-cv-loc-copy">'+
-                                        '<strong>'+esc(x.name)+'</strong>'+
-                                        '<small>'+esc(address || '-')+'</small>'+
-                                        '<div class="fd-cv-tags">'+
-                                            '<span class="fd-cv-badge '+esc(x.status)+'">'+esc(x.status)+'</span>'+
-                                            '<span class="fd-cv-badge">'+esc(x.location_type)+'</span>'+
-                                            (Number(x.is_primary) === 1 ? '<span class="fd-cv-badge primary">Primary</span>' : '')+
-                                        '</div>'+
-                                    '</div>'+
-                                '</div>';
+                        tabs.forEach(function(tab){
+                            tab.addEventListener('click', function(){
+                                activateTab(tab.getAttribute('data-customer-tab'));
+                            });
                         });
 
-                        box.innerHTML = html;
-                    })
-                    .catch(function(error){
-                        document.getElementById('viewLocations').innerHTML =
-                            '<div class="fd-cv-empty">'+
-                            esc(error.message)+
-                            '</div>';
+                        var readMore = document.getElementById('openCommunicationTab');
+                        if(readMore){
+                            readMore.addEventListener('click', function(){
+                                activateTab('communication');
+                                window.scrollTo({top: 0, behavior: 'smooth'});
+                            });
+                        }
 
-                        notify('error',error.message);
-                    });
+                        function setupMenu(wrapId, buttonId){
+                            var wrap = document.getElementById(wrapId);
+                            var button = document.getElementById(buttonId);
+                            if(!wrap || !button) return;
 
-                })();
-                </script>
+                            button.addEventListener('click', function(event){
+                                event.preventDefault();
+                                event.stopPropagation();
+
+                                document.querySelectorAll('.fd-customer-more.open').forEach(function(other){
+                                    if(other !== wrap){
+                                        other.classList.remove('open');
+                                        var otherButton = other.querySelector('[aria-expanded]');
+                                        if(otherButton) otherButton.setAttribute('aria-expanded','false');
+                                    }
+                                });
+
+                                var next = !wrap.classList.contains('open');
+                                wrap.classList.toggle('open', next);
+                                button.setAttribute('aria-expanded', next ? 'true' : 'false');
+                            });
+                        }
+
+                        setupMenu('customerMoreMenu','customerMoreButton');
+                        setupMenu('customerCreateMenu','customerCreateButton');
+
+                        document.addEventListener('click', function(event){
+                            document.querySelectorAll('.fd-customer-more.open').forEach(function(menu){
+                                if(!menu.contains(event.target)){
+                                    menu.classList.remove('open');
+                                    var button = menu.querySelector('[aria-expanded]');
+                                    if(button) button.setAttribute('aria-expanded','false');
+                                }
+                            });
+                        });
+
+                        var toast = document.getElementById('clientsToast');
+                        var toastClose = document.getElementById('clientsToastClose');
+                        if(toastClose){
+                            toastClose.addEventListener('click', function(){
+                                toast.classList.remove('show');
+                            });
+                        }
+                    })();
+                    </script>
 
             </div>
         </main>
