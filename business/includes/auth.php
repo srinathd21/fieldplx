@@ -14,7 +14,7 @@
 |
 */
 
-require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/database.php';
 require_once __DIR__ . '/audit.php';
 
 if (session_status() === PHP_SESSION_NONE) {
@@ -29,6 +29,51 @@ function tenantAuthIsAjax()
             (string)$_SERVER['HTTP_X_REQUESTED_WITH']
         ) === 'xmlhttprequest'
     );
+}
+
+
+/*
+|--------------------------------------------------------------------------
+| Resolve application root URLs
+|--------------------------------------------------------------------------
+|
+| Example local installation:
+| /git/fieldplx/business/index.php
+|
+| Root login:
+| /git/fieldplx/login.php
+|
+| This avoids relative "login.php" redirects resolving to:
+| /git/fieldplx/business/login.php
+|
+*/
+function tenantAuthAppBasePath()
+{
+    $scriptName =
+        isset($_SERVER['SCRIPT_NAME'])
+            ? (string)$_SERVER['SCRIPT_NAME']
+            : '';
+
+    $businessPos =
+        strpos(
+            $scriptName,
+            '/business/'
+        );
+
+    if ($businessPos !== false) {
+        return substr(
+            $scriptName,
+            0,
+            $businessPos
+        );
+    }
+
+    return '';
+}
+
+function tenantAuthLoginUrl()
+{
+    return tenantAuthAppBasePath() . '/login.php';
 }
 
 function tenantAuthFail(
@@ -99,7 +144,7 @@ function tenantAuthFail(
         echo json_encode(array(
             'success' => false,
             'message' => $message,
-            'redirect' => 'login.php'
+            'redirect' => tenantAuthLoginUrl()
         ));
 
         exit;
@@ -110,11 +155,13 @@ function tenantAuthFail(
             ? (string)$_SERVER['REQUEST_URI']
             : '';
 
-    $returnTo = 'index.php';
-
     /*
-     * Keep return target local to /business/.
+     * login.php is in the FieldPlx application root, while protected pages
+     * live inside /business/. Therefore return_to must also be relative to
+     * the application root.
      */
+    $returnTo = 'business/index.php';
+
     if ($requestUri !== '') {
 
         $path =
@@ -139,11 +186,18 @@ function tenantAuthFail(
 
             if ($businessPos !== false) {
 
+                /*
+                 * Example:
+                 * /git/fieldplx/business/jobs.php
+                 * becomes business/jobs.php
+                 */
                 $relative =
-                    substr(
-                        $path,
-                        $businessPos +
-                        strlen('/business/')
+                    ltrim(
+                        substr(
+                            $path,
+                            $businessPos + 1
+                        ),
+                        '/'
                     );
 
                 if ($relative !== '') {
@@ -162,7 +216,9 @@ function tenantAuthFail(
     }
 
     header(
-        'Location: login.php?return_to=' .
+        'Location: ' .
+        tenantAuthLoginUrl() .
+        '?return_to=' .
         rawurlencode($returnTo)
     );
 
@@ -267,13 +323,15 @@ if (
             'success' => false,
             'message' =>
                 'Your session expired due to inactivity.',
-            'redirect' => 'login.php'
+            'redirect' => tenantAuthLoginUrl()
         ));
         exit;
     }
 
     header(
-        'Location: login.php?reason=timeout'
+        'Location: ' .
+        tenantAuthLoginUrl() .
+        '?reason=timeout'
     );
     exit;
 }

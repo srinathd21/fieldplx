@@ -5,7 +5,7 @@
 |--------------------------------------------------------------------------
 |
 | File:
-| business/includes/db.php
+| business/includes/database.php
 |
 | Used by:
 | - business/login.php

@@ -2,8 +2,8 @@
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
-require_once __DIR__ . '/db.php';
-require_once __DIR__ . '/theme-loader.php';
+require_once 'database.php';
+require_once 'theme-loader.php';
 
 $pageTitle = $pageTitle ?? 'FieldPlx';
 $pageDescription = $pageDescription ?? 'FieldPlx application';

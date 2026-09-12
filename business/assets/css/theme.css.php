@@ -1,7 +1,7 @@
 <?php
 session_start();
-require_once __DIR__ . '/../../includes/db.php';
-require_once __DIR__ . '/../../includes/theme-loader.php';
+require_once '../../includes/database.php';
+require_once '../../includes/theme-loader.php';
 
 header('Content-Type: text/css; charset=UTF-8');
 header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
