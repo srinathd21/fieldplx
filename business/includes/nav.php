@@ -55,7 +55,7 @@ $currentUserInitial = strtoupper(substr(trim($currentUserName), 0, 1)) ?: 'U';
             </div>
 
             <div class="account-dropdown-menu">
-                <a href="theme-settings.php" class="account-dropdown-item">
+                <a href="settings.php" class="account-dropdown-item">
                     <span>Settings</span>
                 </a>
 

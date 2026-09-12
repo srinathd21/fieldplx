@@ -16,7 +16,7 @@ if (
     !empty($_SESSION['tenant_user_id']) &&
     !empty($_SESSION['tenant_id'])
 ) {
-    header('Location: /index.php');
+    header('Location: index.php');
     exit;
 }
 
@@ -110,7 +110,7 @@ function tl_safe_return_path($value)
     $value = trim((string)$value);
 
     if ($value === '') {
-        return 'business/index.php';
+        return 'index.php';
     }
 
     /*
@@ -123,7 +123,7 @@ function tl_safe_return_path($value)
         strpos($value, '..') !== false ||
         substr($value, 0, 1) === '/'
     ) {
-        return 'business/index.php';
+        return 'index.php';
     }
 
     return $value;
@@ -227,7 +227,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     $returnTo =
         tl_safe_return_path(
-            $_POST['return_to'] ?? 'business/index.php'
+            $_POST['return_to'] ?? 'index.php'
         );
 
     if (
@@ -1366,7 +1366,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 $returnTo =
     tl_safe_return_path(
-        $_GET['return_to'] ?? 'business/index.php'
+        $_GET['return_to'] ?? 'index.php'
     );
 ?>
 <!DOCTYPE html>
