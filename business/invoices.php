@@ -1,5 +1,5 @@
 <?php
-/* FieldPlx Invoices Manage Page - Version 2.0.0 - 2026-09-02 */
+/* FieldPlx Invoices Manage Page - Version 3.1.0 - 2026-09-07 */
 require_once __DIR__ . '/includes/auth.php';
 
 $pageTitle='Invoices';
@@ -7,6 +7,82 @@ $activePage='invoices';
 
 if(session_status()===PHP_SESSION_NONE){
     session_start();
+}
+
+/*
+ * Invoice permission resolver.
+ * Mirrors FieldPlx effective access: plan -> tenant override -> role -> user override.
+ * A user-specific allow/deny wins over the role value; missing grants are denied.
+ */
+function jiTableExists(PDO $pdo,$table){
+    static $cache=array();
+    if(array_key_exists($table,$cache)) return $cache[$table];
+    try{
+        $q=$pdo->prepare("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=:t");
+        $q->execute(array(':t'=>$table));
+        return $cache[$table]=((int)$q->fetchColumn()>0);
+    }catch(Throwable $e){return $cache[$table]=false;}
+}
+function jiInvoicePermission(PDO $pdo,$action){
+    $action=strtolower(trim((string)$action));
+    if(!in_array($action,array('view','create','update','delete','approve','export'),true)) return false;
+    if((function_exists('isPlatformSuperAdmin') && isPlatformSuperAdmin()) || !empty($_SESSION['is_super_admin'])) return true;
+
+    $tenantId=isset($_SESSION['tenant_id'])?(int)$_SESSION['tenant_id']:0;
+    $userId=isset($_SESSION['tenant_user_id'])?(int)$_SESSION['tenant_user_id']:(isset($_SESSION['user_id'])?(int)$_SESSION['user_id']:0);
+    $roleId=isset($_SESSION['role_id'])?(int)$_SESSION['role_id']:0;
+    $planId=isset($_SESSION['plan_id'])?(int)$_SESSION['plan_id']:0;
+    if($tenantId<=0 || $userId<=0 || $roleId<=0) return false;
+    if(!jiTableExists($pdo,'modules') || !jiTableExists($pdo,'permissions') || !jiTableExists($pdo,'role_permissions')) return false;
+
+    try{
+        $m=$pdo->prepare("SELECT id FROM modules WHERE module_code='invoices' AND is_active=1 LIMIT 1");
+        $m->execute();
+        $moduleId=(int)$m->fetchColumn();
+        if($moduleId<=0) return false;
+
+        if(jiTableExists($pdo,'plan_modules')){
+            if($planId<=0) return false;
+            $pm=$pdo->prepare("SELECT COUNT(*) FROM plan_modules WHERE plan_id=:p AND module_id=:m AND is_enabled=1");
+            $pm->execute(array(':p'=>$planId,':m'=>$moduleId));
+            if((int)$pm->fetchColumn()<=0) return false;
+        }
+        if(jiTableExists($pdo,'tenant_modules')){
+            $tm=$pdo->prepare("SELECT access_type FROM tenant_modules WHERE tenant_id=:t AND module_id=:m LIMIT 1");
+            $tm->execute(array(':t'=>$tenantId,':m'=>$moduleId));
+            if(strtolower(trim((string)$tm->fetchColumn()))==='disabled') return false;
+        }
+
+        $ps=$pdo->prepare("SELECT id FROM permissions WHERE module_id=:m AND (action_code=:a OR permission_code=:c) ORDER BY CASE WHEN permission_code=:c2 THEN 0 ELSE 1 END,id LIMIT 1");
+        $ps->execute(array(':m'=>$moduleId,':a'=>$action,':c'=>'invoices.'.$action,':c2'=>'invoices.'.$action));
+        $permissionId=(int)$ps->fetchColumn();
+        if($permissionId<=0) return false;
+
+        $rp=$pdo->prepare("SELECT access_type FROM role_permissions WHERE tenant_id=:t AND role_id=:r AND permission_id=:p LIMIT 1");
+        $rp->execute(array(':t'=>$tenantId,':r'=>$roleId,':p'=>$permissionId));
+        $roleAccess=strtolower(trim((string)$rp->fetchColumn()));
+        $effective=$roleAccess;
+
+        if(jiTableExists($pdo,'user_permissions')){
+            $up=$pdo->prepare("SELECT access_type FROM user_permissions WHERE tenant_id=:t AND user_id=:u AND permission_id=:p LIMIT 1");
+            $up->execute(array(':t'=>$tenantId,':u'=>$userId,':p'=>$permissionId));
+            $userAccess=strtolower(trim((string)$up->fetchColumn()));
+            if($userAccess!=='') $effective=$userAccess;
+        }
+        return $effective==='allow';
+    }catch(Throwable $e){
+        error_log('FieldPlx invoice page permission check: '.$e->getMessage());
+        return false;
+    }
+}
+
+$jiCanView=jiInvoicePermission($pdo,'view');
+$jiCanCreate=jiInvoicePermission($pdo,'create');
+$jiCanUpdate=jiInvoicePermission($pdo,'update');
+$jiCanDelete=jiInvoicePermission($pdo,'delete');
+if(!$jiCanView){
+    http_response_code(403);
+    exit('Access denied. Your role does not have permission to view invoices.');
 }
 
 if(empty($_SESSION['invoices_csrf_token'])){
@@ -1044,161 +1120,149 @@ $invoiceCsrfToken=(string)$_SESSION['invoices_csrf_token'];
             }
         }
 
-        :root{
-            --fieldplx-sidebar-width:250px;
-            --fieldplx-sidebar-collapsed-width:78px;
-            --fd-navy:#001131;
-            --fd-navy-light:#071f49;
-            --fd-blue:#123d70;
-            --fd-green:#74b824;
-            --fd-green-dark:#5d971b;
-            --fd-green-soft:#f0f8e5;
-            --fd-red:#e45b66;
-            --fd-orange:#a97814;
-            --fd-bg:#f6f8fb;
-            --fd-text:#0b1933;
-            --fd-muted:#6f7b90;
-            --fd-border:#e5eaf1;
-        }
-        *{box-sizing:border-box}
-        body{margin:0;min-height:100vh;overflow-x:hidden;background:var(--fd-bg)!important;color:var(--fd-text);font-family:Arial,Helvetica,sans-serif!important;font-size:14px}
-        a,a:link,a:visited,a:hover,a:focus,a:active{text-decoration:none!important}
-.fd-inv-page{width:100%;max-width:1600px;margin:auto;padding:25px 27px 36px}
-
-        .fd-inv-head{margin-bottom:17px;display:flex;align-items:flex-start;justify-content:space-between;gap:16px}
-        .fd-inv-title{margin:0;color:var(--fd-text);font-size:21px;line-height:1.2;font-weight:700}
-        .fd-inv-sub{max-width:760px;margin:7px 0 0;color:var(--fd-muted);font-size:10.5px;line-height:1.55}
-        .fd-inv-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-        .fd-inv-btn{min-height:40px;padding:0 13px;display:inline-flex;align-items:center;justify-content:center;gap:7px;border:1px solid var(--fd-border);border-radius:8px;color:#43546c;background:#fff;font-size:10px;font-weight:700;cursor:pointer}
-        .fd-inv-btn:hover{border-color:#cbd5e1;color:var(--fd-navy)}
-        .fd-inv-btn.primary{border-color:var(--fd-green);color:#fff;background:linear-gradient(90deg,#7fc92d,#68aa1d);box-shadow:0 7px 16px rgba(104,170,29,.16)}
-        .fd-inv-btn:disabled{opacity:.55;cursor:not-allowed}
-
-        .fd-inv-stat{min-height:112px;padding:18px 20px;border:1px solid #dfe6ef;border-radius:12px;background:#fff;box-shadow:0 3px 12px rgba(24,45,76,.035)}
-        .fd-inv-stat-row{min-height:72px;display:flex;align-items:center;gap:18px}
-        .fd-inv-stat-icon{width:58px;height:58px;flex:0 0 58px;display:grid;place-items:center;border-radius:16px;color:#fff;background:#123f73;font-size:24px}
-        .fd-inv-stat-icon.green{background:#6aa91f}
-        .fd-inv-stat-icon.orange{background:#a97814}
-        .fd-inv-stat-icon.red{background:#b94c54}
-        .fd-inv-stat-label{display:block;margin-bottom:8px;color:#506784;font-size:12px}
-        .fd-inv-stat-value{display:block;color:#020b16;font-size:24px;line-height:1;font-weight:700}
-
-        .fd-inv-card{margin-top:16px;border:1px solid #dfe6ef;border-radius:12px;background:#fff;box-shadow:0 3px 12px rgba(24,45,76,.035);overflow:hidden}
-        .fd-inv-toolbar{padding:14px 15px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;border-bottom:1px solid var(--fd-border)}
-        .fd-inv-search{width:270px;min-width:210px;position:relative}
-        .fd-inv-search i{position:absolute;top:50%;left:12px;transform:translateY(-50%);color:#94a1b2;font-size:13px}
-        .fd-inv-search input,.fd-inv-filter{height:39px;border:1px solid #dfe5ec;border-radius:8px;outline:0;background:#fff;color:#31445e;font-size:9.5px}
-        .fd-inv-search input{width:100%;padding:0 11px 0 34px}
-        .fd-inv-filter{min-width:128px;padding:0 9px}
-        .fd-inv-filter.date{min-width:132px}
-        .fd-inv-search input:focus,.fd-inv-filter:focus{border-color:#b8d88d;box-shadow:0 0 0 3px rgba(116,184,36,.1)}
-        .fd-inv-spacer{flex:1}
-        .fd-inv-clear{height:39px;padding:0 11px;border:1px solid #dfe5ec;border-radius:8px;background:#fff;color:#66758b;font-size:9px;font-weight:700;cursor:pointer}
-        .fd-inv-clear:hover{color:var(--fd-navy);background:#f8fafc}
-
-        .fd-inv-table-wrap{overflow:auto}
-        .fd-inv-table{width:100%;min-width:1370px;border-collapse:collapse}
-        .fd-inv-table th{padding:11px 10px;text-align:left;color:#718096;background:#f8fafc;border-bottom:1px solid var(--fd-border);font-size:8.3px;font-weight:700;text-transform:uppercase;letter-spacing:.15px;white-space:nowrap}
-        .fd-inv-table td{padding:12px 10px;border-bottom:1px solid #edf1f4;color:#344760;font-size:9.4px;vertical-align:middle}
-        .fd-inv-table tbody tr:hover{background:#fbfcfd}
-        .fd-inv-table .num{text-align:right}
-        .fd-inv-table .center{text-align:center}
-        .fd-inv-main{display:block;color:var(--fd-text);font-size:10.3px;font-weight:700}
-        .fd-inv-subtext{display:block;margin-top:3px;color:#8793a5;font-size:8.4px;line-height:1.4}
-        .fd-inv-link{color:#174b82!important;font-weight:700}
-        .fd-inv-link:hover{color:var(--fd-green-dark)!important}
-        .fd-inv-money{color:var(--fd-text);font-weight:700;white-space:nowrap}
-        .fd-inv-money.paid{color:var(--fd-green-dark)}
-        .fd-inv-money.balance{color:#a06b0c}
-
-        .fd-inv-badge{display:inline-flex;align-items:center;justify-content:center;min-height:23px;padding:4px 8px;border-radius:999px;color:#52647b;background:#edf2f7;font-size:8px;font-weight:700;text-transform:capitalize;white-space:nowrap}
-        .fd-inv-badge.draft{color:#355a85;background:#edf4fb}
-        .fd-inv-badge.sent,.fd-inv-badge.viewed{color:#355a85;background:#eaf2fb}
-        .fd-inv-badge.partially_paid,.fd-inv-badge.partial{color:#96670d;background:#fff4d8}
-        .fd-inv-badge.paid{color:#4f8618;background:#eaf6da}
-        .fd-inv-badge.overdue{color:#b9444d;background:#fff0f1}
-        .fd-inv-badge.cancelled,.fd-inv-badge.archived,.fd-inv-badge.written_off{color:#6b7280;background:#f1f3f5}
-        .fd-inv-badge.unpaid,.fd-inv-badge.outstanding{color:#865c0c;background:#fff5dd}
-
-        .fd-inv-actions-cell{display:flex;align-items:center;justify-content:center;gap:6px}
-        .fd-inv-icon{width:30px;height:30px;display:inline-flex;align-items:center;justify-content:center;border:1px solid #dfe5ec;border-radius:8px;color:#456078;background:#fff;font-size:12px}
-        .fd-inv-icon:hover{border-color:#b8d88d;color:var(--fd-green-dark);background:var(--fd-green-soft)}
-        .fd-inv-icon.collect{color:#fff;border-color:var(--fd-green);background:linear-gradient(90deg,#7fc92d,#68aa1d)}
-        .fd-inv-icon.collect:hover{color:#fff;border-color:var(--fd-green-dark)}
-
-        .fd-inv-empty{padding:42px 20px!important;text-align:center!important;color:var(--fd-muted)!important;font-size:10px!important}
-        .fd-inv-empty i{display:block;margin-bottom:8px;font-size:25px;color:#b4bfcc}
-
-        .fd-inv-footer{min-height:58px;padding:11px 15px;display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid var(--fd-border)}
-        .fd-inv-count{color:#7a889b;font-size:9px}
-        .fd-inv-pagination{display:flex;align-items:center;gap:6px}
-        .fd-inv-page-btn{height:32px;min-width:32px;padding:0 9px;border:1px solid #dfe5ec;border-radius:7px;background:#fff;color:#52647a;font-size:9px;font-weight:700;cursor:pointer}
-        .fd-inv-page-btn:disabled{opacity:.45;cursor:not-allowed}
-        .fd-inv-page-label{padding:0 5px;color:#64748b;font-size:9px}
-
-        .fd-inv-toast{position:fixed;top:82px;right:18px;z-index:14000;width:min(380px,calc(100vw - 36px));padding:12px 14px;border-radius:9px;color:#fff;background:#123d70;box-shadow:0 12px 30px rgba(0,17,49,.18);opacity:0;transform:translateY(-8px);pointer-events:none;transition:.18s;font-size:10px;font-weight:700}
-        .fd-inv-toast.show{opacity:1;transform:translateY(0)}
-        .fd-inv-toast.error{background:#e45b66}
-        .fd-inv-toast.success{background:#5d971b}
-
-        @media(max-width:1199.98px){.fd-inv-search{width:100%;flex:1 1 100%}.fd-inv-spacer{display:none}}
-        
-        @media(max-width:767.98px){.fd-inv-page{padding:17px 13px 28px}.fd-inv-head{flex-direction:column}.fd-inv-actions{width:100%}.fd-inv-actions .fd-inv-btn{flex:1}.fd-inv-filter{flex:1 1 calc(50% - 8px);min-width:0}.fd-inv-footer{align-items:flex-start;flex-direction:column}}
 
         /* ==========================================================
-           Invoices manage-page UI v2.0
-           Matches approved Customers / Requests / Quotations / Jobs.
+           FieldPlx Invoices - Jobber-style list UI v3.1.0
+           Uses the same visual language as Add Invoice v2.2.0.
            ========================================================== */
-        .fd-inv-head{margin-bottom:18px}
-        .fd-inv-sub{font-size:11px}
-        .fd-inv-manage-summary{margin-bottom:17px}
-        .fd-inv-manage-summary .fd-inv-stat{
-            min-height:122px;padding:17px 20px;position:relative;
-            border:1px solid #dfe6ef;border-radius:12px;background:#fff;
-            box-shadow:0 3px 12px rgba(24,45,76,.035)
+        :root{
+            --ji-navy:#001131;
+            --ji-text:#0b2b37;
+            --ji-muted:#5f7380;
+            --ji-green:#2f8d25;
+            --ji-green-dark:#24751d;
+            --ji-green-soft:#f2f8ee;
+            --ji-border:#dce4e8;
+            --ji-soft:#f8fafb;
+            --ji-danger:#d94841;
+            --ji-yellow:#e7c832;
+            --ji-blue:#446979;
         }
-        .fd-inv-stat-heading{color:#13213a;font-size:14px;line-height:1.2;font-weight:700}
-        .fd-inv-stat-sub{display:block;margin-top:3px;color:#7e8ba0;font-size:10px;line-height:1.25}
-        .fd-inv-stat-corner{position:absolute;top:15px;right:16px;color:#8190a5;font-size:14px}
-        .fd-inv-metric-line{min-height:58px;display:flex;align-items:flex-end;gap:9px;padding-top:13px}
-        .fd-inv-manage-summary .fd-inv-stat-value{
-            display:block;color:#07111f;font-size:29px;line-height:1;font-weight:700;letter-spacing:-.4px
-        }
-        .fd-inv-manage-summary .fd-inv-stat-value.money{font-size:25px;overflow-wrap:anywhere}
-        .fd-inv-overview-card{padding-top:15px!important}
-        .fd-inv-overview-list{margin:9px 0 0;padding:0;list-style:none;display:grid;gap:6px}
-        .fd-inv-overview-list li{
-            display:grid;grid-template-columns:8px minmax(0,1fr) auto;align-items:center;gap:7px;
-            color:#50627a;font-size:9px;line-height:1.15
-        }
-        .fd-inv-overview-list strong{max-width:135px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#19263c;font-size:9.5px;font-weight:700;text-align:right}
-        .fd-inv-overview-dot{width:6px;height:6px;border-radius:50%;background:#8796aa}
-        .fd-inv-overview-dot.navy{background:#8796aa}
-        .fd-inv-overview-dot.blue{background:#3f78ad}
-        .fd-inv-overview-dot.green{background:#5d971b}
-        .fd-inv-overview-dot.red{background:#e45b66}
-        .fd-inv-card{margin-top:0}
-        .fd-inv-toolbar{padding:13px 14px;background:#fff}
-        .fd-inv-search input,.fd-inv-filter{height:40px;font-size:10px}
-        .fd-inv-table th{padding:12px;background:#f7f9fb;color:#627188;font-size:9px}
-        .fd-inv-table td{padding:13px 10px;font-size:9.5px}
-        .fd-inv-table tbody tr[data-invoice-id]{cursor:pointer;transition:background .14s ease}
-        .fd-inv-table tbody tr[data-invoice-id]:hover{background:#f9fbf6}
-        .fd-inv-table tbody tr[data-invoice-id]:focus{outline:2px solid rgba(116,184,36,.28);outline-offset:-2px}
-        .fd-inv-icon{border:0;background:transparent}
-        .fd-inv-icon.collect{border:1px solid var(--fd-green)}
-        .fd-inv-footer{min-height:56px}
-        @media(max-width:1199.98px){.fd-inv-manage-summary .fd-inv-stat{min-height:122px}}
-        @media(max-width:767.98px){
-            .fd-inv-search{width:100%;flex:1 1 100%}
-            .fd-inv-spacer{display:none}
-        }
-        @media(max-width:575.98px){
-            .fd-inv-manage-summary .fd-inv-stat{min-height:118px;padding:15px 17px}
-            .fd-inv-stat-heading{font-size:13px}
-            .fd-inv-manage-summary .fd-inv-stat-value{font-size:27px}
-            .fd-inv-manage-summary .fd-inv-stat-value.money{font-size:23px}
-        }
+        body{background:#fff!important;color:var(--ji-text);font-family:Arial,Helvetica,sans-serif!important;font-size:14px}
+        .ji-page{width:100%;max-width:none;margin:0;padding:24px 22px 42px;background:#fff;min-height:calc(100vh - 70px)}
+        .ji-head{display:flex;align-items:center;justify-content:space-between;gap:18px;margin-bottom:25px}
+        .ji-title{margin:0;color:#0b2b37;font-size:31px;line-height:1.1;font-weight:700;letter-spacing:-.7px}
+        .ji-head-actions{position:relative;display:flex;align-items:center;gap:9px}
+        .ji-btn{height:38px;padding:0 14px;display:inline-flex;align-items:center;justify-content:center;gap:8px;border:1px solid var(--ji-border);border-radius:7px;background:#fff;color:#31505d;font:700 14px Arial,Helvetica,sans-serif;cursor:pointer;white-space:nowrap}
+        .ji-btn:hover{border-color:#b9c6cc;background:#fbfcfc;color:#173846}
+        .ji-btn.primary{border-color:var(--ji-green);background:var(--ji-green);color:#fff}
+        .ji-btn.primary:hover{background:var(--ji-green-dark);border-color:var(--ji-green-dark);color:#fff}
+        .ji-btn.danger{border-color:var(--ji-danger);background:var(--ji-danger);color:#fff}
+        .ji-btn.danger:hover{background:#c43e38;border-color:#c43e38;color:#fff}
+        .ji-btn:disabled{opacity:.55;cursor:not-allowed}
+        .ji-more-menu{display:none;position:absolute;right:0;top:45px;z-index:1220;width:182px;padding:7px 0;border:1px solid var(--ji-border);border-radius:8px;background:#fff;box-shadow:0 10px 25px rgba(0,17,49,.14)}
+        .ji-more-menu.show{display:block}
+        .ji-more-menu button,.ji-more-menu a{width:100%;min-height:44px;padding:9px 14px;display:flex;align-items:center;gap:10px;border:0;background:#fff;color:#294755;text-align:left;font:700 13px Arial,Helvetica,sans-serif;cursor:pointer}
+        .ji-more-menu button:hover,.ji-more-menu a:hover{background:#f6f8f8;color:var(--ji-green-dark)}
+        .ji-more-menu i{font-size:18px;color:#315967}
+
+        .ji-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:26px}
+        .ji-card{min-width:0;min-height:141px;padding:15px 15px 14px;border:1px solid var(--ji-border);border-radius:7px;background:#fff}
+        .ji-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:9px}
+        .ji-card-title{margin:0;color:#123845;font-size:15px;line-height:1.25;font-weight:700}
+        .ji-card-sub{margin-top:2px;color:#607782;font-size:12px;line-height:1.3}
+        .ji-card-corner{color:#355866;font-size:12px}
+        .ji-overview-list{margin:9px 0 0;padding:0;list-style:none;display:grid;gap:4px}
+        .ji-overview-item{display:grid;grid-template-columns:8px minmax(0,1fr) auto;gap:6px;align-items:center;color:#405d6a;font-size:12px;line-height:1.25}
+        .ji-overview-item strong{color:#405d6a;font-size:12px;font-weight:400;text-align:right;white-space:nowrap}
+        .ji-dot{width:7px;height:7px;border-radius:50%;background:#708793}
+        .ji-dot.red{background:#df5147}.ji-dot.yellow{background:#e3bf24}.ji-dot.blue{background:#4a6c79}
+        .ji-metric-main{margin-top:24px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+        .ji-metric-value{color:#0b2b37;font-size:34px;line-height:.95;font-weight:700;letter-spacing:-1px}
+        .ji-metric-value.money{font-size:31px}
+        .ji-trend{display:inline-flex;align-items:center;min-height:25px;padding:3px 8px;border-radius:999px;background:#eff6e8;color:#4e7a2d;font-size:12px;line-height:1;font-weight:700}
+        .ji-trend.flat{background:#eef3f5;color:#617784}
+        .ji-trend.down{background:#fff0ef;color:#a94b43}
+        .ji-metric-foot{margin-top:5px;color:#627984;font-size:12px}
+        .ji-trend-wrap{position:relative;display:inline-flex;align-items:center;outline:0}
+        .ji-trend-wrap:focus-visible{border-radius:999px;box-shadow:0 0 0 3px rgba(47,141,37,.12)}
+        .ji-stat-pop{position:absolute;left:50%;bottom:calc(100% + 12px);z-index:1300;width:max-content;min-width:185px;max-width:260px;padding:12px 14px;border:1px solid #d7e0e4;border-radius:8px;background:#fff;box-shadow:0 7px 22px rgba(0,17,49,.16);opacity:0;visibility:hidden;transform:translate(-50%,6px);transition:opacity .14s ease,transform .14s ease,visibility .14s ease;pointer-events:none;color:#304f5d}
+        .ji-stat-pop:after{content:'';position:absolute;left:50%;bottom:-7px;width:13px;height:13px;background:#fff;border-right:1px solid #d7e0e4;border-bottom:1px solid #d7e0e4;transform:translateX(-50%) rotate(45deg)}
+        .ji-trend-wrap:hover .ji-stat-pop,.ji-trend-wrap:focus .ji-stat-pop,.ji-trend-wrap:focus-within .ji-stat-pop{opacity:1;visibility:visible;transform:translate(-50%,0)}
+        .ji-stat-pop-title{margin-bottom:6px;color:#71848e;font-size:12px;font-weight:400;line-height:1.25}
+        .ji-stat-pop-row{display:grid;grid-template-columns:minmax(105px,1fr) auto;align-items:center;gap:10px;margin-top:3px;font-size:12px;font-weight:700;line-height:1.3;white-space:nowrap}
+        .ji-stat-pop-row span:first-child{color:#294b59}.ji-stat-pop-row strong{color:#294b59;font-weight:700;text-align:right}
+        
+        .ji-list-heading{display:flex;align-items:baseline;gap:8px;margin:0 0 18px}
+        .ji-list-heading h2{margin:0;color:#123845;font-size:19px;font-weight:700}
+        .ji-result-count{color:#607782;font-size:13px;font-weight:400}
+        .ji-toolbar{position:relative;display:flex;align-items:center;gap:8px;margin-bottom:10px;min-height:47px}
+        .ji-filter-pill{height:38px;padding:0 13px;display:inline-flex;align-items:center;gap:7px;border:0;border-radius:999px;background:#e9e8e4;color:#173846;font:700 13px Arial,Helvetica,sans-serif;cursor:pointer}
+        .ji-filter-pill:hover{background:#deddd8}.ji-filter-pill i{font-size:17px}
+        .ji-filter-divider{color:#6e7e85;font-weight:400}
+        .ji-search{width:202px;margin-left:auto;position:relative}
+        .ji-search i{position:absolute;left:14px;top:50%;transform:translateY(-50%);font-size:17px;color:#587381;pointer-events:none}
+        .ji-search input{width:100%;height:45px;padding:0 13px 0 45px;border:1px solid var(--ji-border);border-radius:7px;background:#fff;color:#173846;outline:0;font-family:inherit;font-size:13px}
+        .ji-search input:focus{border-color:#91bd7e;box-shadow:0 0 0 2px rgba(47,141,37,.08)}
+        .ji-filter-pop{display:none;position:absolute;top:45px;z-index:1220;width:290px;padding:14px;border:1px solid var(--ji-border);border-radius:8px;background:#fff;box-shadow:0 12px 28px rgba(0,17,49,.14)}
+        .ji-filter-pop.show{display:block}.ji-filter-pop.status{left:0}.ji-filter-pop.date{left:108px;width:320px}
+        .ji-filter-label{display:block;margin:0 0 5px;color:#526b78;font-size:12px;font-weight:700}
+        .ji-filter-pop select,.ji-filter-pop input{width:100%;height:39px;margin:0 0 10px;padding:7px 10px;border:1px solid var(--ji-border);border-radius:7px;background:#fff;color:#173846;font:14px Arial,Helvetica,sans-serif;outline:0}
+        .ji-filter-pop select:focus,.ji-filter-pop input:focus{border-color:#91bd7e;box-shadow:0 0 0 2px rgba(47,141,37,.08)}
+        .ji-filter-pop-actions{display:flex;justify-content:flex-end;gap:7px;margin-top:3px}
+        .ji-filter-pop-actions .ji-btn{height:34px;font-size:12px;padding:0 11px}
+
+        .ji-table-wrap{width:100%;overflow:visible}
+        .ji-table{width:100%;min-width:0;border-collapse:collapse;table-layout:fixed}
+        .ji-table th{height:40px;padding:0 6px;border-bottom:1px solid #cfd9de;color:#46616e;background:#fff;font-size:11.5px;font-weight:400;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .ji-table td{height:46px;padding:0 6px;border-bottom:1px solid #dde5e9;color:#314f5d;background:#fff;font-size:12px;vertical-align:middle;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+        .ji-table tbody tr{cursor:pointer;transition:background .12s ease}
+        .ji-table tbody tr:hover td,.ji-table tbody tr.row-active td{background:#f3f1ed}
+        .ji-table tbody tr:focus{outline:2px solid rgba(47,141,37,.25);outline-offset:-2px}
+        .ji-table th:nth-child(1){width:16%}.ji-table th:nth-child(2){width:13%}.ji-table th:nth-child(3){width:12%}.ji-table th:nth-child(4){width:20%}.ji-table th:nth-child(5){width:15%}.ji-table th:nth-child(6){width:9%;text-align:right}.ji-table th:nth-child(7){width:9%;text-align:right}.ji-table th:nth-child(8){width:6%}
+        .ji-table td:nth-child(6),.ji-table td:nth-child(7){text-align:right}
+        .ji-client{color:#123845;font-weight:700}.ji-number{color:#294b59}.ji-money{color:#153442;font-weight:700}
+        .ji-sort{margin-left:4px;padding:0;border:0;background:transparent;color:#90a0a8;font-size:11px;cursor:pointer}.ji-sort.active{color:#3d5965}
+        .ji-badge{display:inline-flex;align-items:center;gap:6px;min-height:23px;padding:3px 9px;border-radius:999px;font-size:12px;font-weight:400;white-space:nowrap}
+        .ji-badge:before{content:'';width:7px;height:7px;border-radius:50%;background:currentColor}
+        .ji-badge.awaiting_payment,.ji-badge.sent,.ji-badge.viewed,.ji-badge.partially_paid{color:#8b7410;background:#f8f0c8}
+        .ji-badge.paid{color:#3b8a33;background:#e7f2e4}
+        .ji-badge.overdue{color:#bc4941;background:#fae8e6}
+        .ji-badge.draft{color:#52717f;background:#edf1f2}
+        .ji-badge.written_off,.ji-badge.cancelled,.ji-badge.archived{color:#687b84;background:#eef1f2}
+        .ji-row-actions-cell{overflow:visible!important;position:relative;text-align:right!important}
+        .ji-row-actions{position:relative;display:inline-flex;align-items:center;gap:0;opacity:0;pointer-events:none;transition:opacity .12s ease}
+        .ji-table tbody tr:hover .ji-row-actions,.ji-table tbody tr.row-active .ji-row-actions{opacity:1;pointer-events:auto}
+        .ji-row-action{width:31px;height:31px;padding:0;display:grid;place-items:center;border:1px solid #d7e0e4;background:#fff;color:#214555;cursor:pointer;font-size:16px}
+        .ji-row-action:first-child{border-radius:7px 0 0 7px}.ji-row-action:last-of-type{border-radius:0 7px 7px 0;border-left:0}
+        .ji-row-action:hover{background:#f8fbf6;color:var(--ji-green-dark)}
+        .ji-row-menu{display:none;position:absolute;right:-2px;top:34px;z-index:1250;width:145px;padding:4px;border:1px solid var(--ji-border);border-radius:7px;background:#fff;box-shadow:0 8px 18px rgba(0,17,49,.14);text-align:left}
+        .ji-row-menu.show{display:block}
+        .ji-row-menu button,.ji-row-menu a{width:100%;min-height:38px;padding:7px 8px;display:flex;align-items:center;justify-content:space-between;border:0;border-radius:5px;background:#fff;color:#244653;font:13px Arial,Helvetica,sans-serif;cursor:pointer;text-align:left}
+        .ji-row-menu button:hover,.ji-row-menu a:hover{background:#f3f1ed}.ji-row-menu .danger{color:#d94b43}
+        .ji-empty{height:150px!important;text-align:center!important;color:#71858f!important;font-size:13px!important}
+        .ji-footer{min-height:48px;padding:11px 0 0;display:flex;align-items:center;justify-content:space-between;gap:12px;color:#6d818c;font-size:12px}
+        .ji-pagination{display:flex;align-items:center;gap:6px}.ji-page-btn{height:32px;min-width:32px;padding:0 8px;border:1px solid var(--ji-border);border-radius:6px;background:#fff;color:#31505d;cursor:pointer}.ji-page-btn:disabled{opacity:.45;cursor:not-allowed}
+
+        .ji-modal-backdrop{display:none;position:fixed;inset:0;z-index:13000;align-items:center;justify-content:center;padding:18px;background:rgba(0,17,49,.33)}
+        .ji-modal-backdrop.show{display:flex}
+        .ji-modal{width:min(860px,calc(100vw - 30px));max-height:calc(100vh - 36px);overflow:auto;border:1px solid #d8e0e4;border-radius:10px;background:#fff;box-shadow:0 22px 60px rgba(0,17,49,.23)}
+        .ji-modal.small{width:min(540px,calc(100vw - 30px))}
+        .ji-modal-head{padding:20px 22px 12px;display:flex;align-items:center;justify-content:space-between;gap:15px}
+        .ji-modal-head h3{margin:0;color:#123845;font-size:22px;font-weight:700}
+        .ji-modal-close{width:34px;height:34px;padding:0;border:0;border-radius:7px;background:transparent;color:#274c5b;font-size:20px;cursor:pointer}.ji-modal-close:hover{background:#f2f5f5}
+        .ji-modal-body{padding:10px 22px 12px}.ji-modal-foot{padding:12px 22px 20px;display:flex;align-items:center;justify-content:flex-end;gap:8px}
+        .ji-email-grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(245px,.65fr);gap:22px}
+        .ji-email-to{min-height:92px;padding:10px 12px;display:flex;align-content:flex-start;align-items:center;gap:6px;flex-wrap:wrap;border:1px solid var(--ji-border);border-radius:7px;position:relative}
+        .ji-email-to-label{color:#506976;font-size:13px;margin-right:2px}.ji-email-chips{display:flex;gap:5px;flex-wrap:wrap}
+        .ji-email-chip{height:36px;padding:0 10px 0 12px;display:inline-flex;align-items:center;gap:7px;border:1px solid #dce4e8;border-radius:999px;background:#fff;color:#31505d;font-size:12px}
+        .ji-email-chip button{width:22px;height:22px;padding:0;border:0;background:transparent;color:#4f6874;cursor:pointer}
+        .ji-email-recipient-input{min-width:110px;flex:1;height:34px;border:0!important;outline:0!important;padding:0 4px;font:13px Arial,Helvetica,sans-serif;color:#173846}
+        .ji-email-field{position:relative;margin-top:12px}.ji-email-field label{position:absolute;left:13px;top:6px;color:#687e89;font-size:11px;pointer-events:none}
+        .ji-email-field input,.ji-email-field textarea{width:100%;border:1px solid var(--ji-border);border-radius:7px;background:#fff;color:#173846;outline:0;font-family:inherit;font-size:13px}.ji-email-field input{height:46px;padding:18px 12px 6px}.ji-email-field textarea{min-height:135px;padding:22px 12px 10px;line-height:1.55;resize:vertical}
+        .ji-email-field input:focus,.ji-email-field textarea:focus{border-color:#91bd7e;box-shadow:0 0 0 2px rgba(47,141,37,.08)}
+        .ji-email-pdf{min-height:52px;margin-top:12px;padding:7px 10px;display:flex;align-items:center;gap:10px;border:1px solid var(--ji-border);border-radius:7px;background:#fff}
+        .ji-email-pdf-icon{width:46px;height:46px;display:grid;place-items:center;background:#f2f0ed;color:#df3d34;font-size:20px}.ji-email-pdf strong{display:block;color:#405b67;font-size:12px}.ji-email-pdf small{display:block;margin-top:2px;color:#7c8e96;font-size:11px}
+        .ji-attachments h4{margin:0 0 16px;color:#123845;font-size:14px}.ji-drop{min-height:108px;padding:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;border:1px dashed #d0dade;border-radius:7px;background:#fff;color:#617783;font-size:11px;text-align:center}.ji-drop.dragover{border-color:#79ad64;background:#f8fcf6}.ji-drop .ji-btn{height:31px;padding:0 12px;color:var(--ji-green-dark);font-size:12px}
+        .ji-email-file-list{margin-top:9px;display:grid;gap:6px}.ji-email-file{min-height:38px;padding:7px 9px;display:flex;align-items:center;gap:8px;border:1px solid #e1e7ea;border-radius:6px;background:#fbfcfc;color:#405d6a;font-size:11px}.ji-email-file span{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ji-email-file button{width:25px;height:25px;border:0;background:transparent;color:#7a8d96;cursor:pointer}
+        .ji-limit{margin-top:11px;color:#607782;font-size:11px}.ji-progress{height:7px;margin-top:6px;overflow:hidden;border-radius:999px;background:#dedbd6}.ji-progress span{display:block;width:0;height:100%;background:#85b95f;transition:width .15s ease}
+        .ji-check{display:flex;align-items:center;gap:8px;color:#405d6a;font-size:13px}.ji-check input{width:18px;height:18px;accent-color:var(--ji-green)}
+        .ji-delete-copy{color:#405d6a;font-size:13px;line-height:1.55}.ji-delete-copy strong{display:block;margin-bottom:13px;color:#324e5b}.ji-delete-copy ul{margin:0;padding-left:19px}.ji-delete-copy li{margin:4px 0}
+        .ji-toast{position:fixed;top:82px;right:18px;z-index:14000;width:min(390px,calc(100vw - 36px));padding:12px 14px;border-radius:8px;color:#fff;background:#1f5f7a;box-shadow:0 12px 30px rgba(0,17,49,.18);opacity:0;transform:translateY(-8px);pointer-events:none;transition:.18s;font-size:14px;font-weight:700}.ji-toast.show{opacity:1;transform:translateY(0)}.ji-toast.error{background:#c94f55}.ji-toast.success{background:#2f8d25}.ji-toast.warning{background:#9a741a}
+
+        @media(max-width:1199.98px){.ji-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
+        @media(max-width:991.98px){.ji-page{padding:20px 16px 36px}.ji-head{align-items:flex-start}.ji-email-grid{grid-template-columns:1fr}.ji-row-actions{opacity:1;pointer-events:auto}}
+        @media(max-width:767.98px){.ji-page{padding:17px 13px 32px}.ji-title{font-size:27px}.ji-head{flex-direction:column}.ji-head-actions{width:100%}.ji-head-actions>.ji-btn{flex:1}.ji-metrics{grid-template-columns:1fr}.ji-toolbar{align-items:flex-start;flex-wrap:wrap}.ji-search{width:100%;order:-1;margin-left:0}.ji-filter-pop.status,.ji-filter-pop.date{left:0;top:92px;width:min(320px,calc(100vw - 26px))}.ji-email-grid{grid-template-columns:1fr}.ji-modal-head h3{font-size:19px}.ji-footer{align-items:flex-start;flex-direction:column}.ji-table thead{display:none}.ji-table,.ji-table tbody,.ji-table tr,.ji-table td{display:block;width:100%}.ji-table tbody tr{position:relative;display:grid;grid-template-columns:1fr 1fr;padding:9px 42px 9px 10px;border-bottom:1px solid #dde5e9}.ji-table td{height:auto;min-height:36px;padding:4px 7px;border-bottom:0;white-space:normal;overflow:visible}.ji-table td:before{content:attr(data-label);display:block;margin-bottom:2px;color:#748690;font-size:10px}.ji-row-actions-cell{position:absolute!important;right:8px;top:8px;width:34px!important;padding:0!important}.ji-row-actions{opacity:1;pointer-events:auto;flex-direction:column}.ji-row-action{border:1px solid #d7e0e4!important;border-radius:7px!important;margin-bottom:4px}.ji-row-menu{right:34px;top:0}.ji-stat-pop{left:0;transform:translate(0,6px)}.ji-trend-wrap:hover .ji-stat-pop,.ji-trend-wrap:focus .ji-stat-pop,.ji-trend-wrap:focus-within .ji-stat-pop{transform:translate(0,0)}.ji-stat-pop:after{left:22px}}
     </style>
 </head>
 <body>
@@ -1207,345 +1271,240 @@ $invoiceCsrfToken=(string)$_SESSION['invoices_csrf_token'];
     <?php require_once __DIR__ . '/includes/sidebar.php'; ?>
     <main class="fieldplx-main-content">
         <div class="fieldplx-content-wrapper">
-            <div class="fd-inv-page">
+            <div class="ji-page">
+                <header class="ji-head">
+                    <h1 class="ji-title">Invoices</h1>
+                    <div class="ji-head-actions">
+                        <?php if($jiCanCreate): ?><a href="add-invoice.php" class="ji-btn primary">New Invoice</a><?php endif; ?>
+                        <?php if($jiCanCreate || $jiCanUpdate): ?>
+                        <button type="button" class="ji-btn" id="moreActionsButton"><i class="bi bi-three-dots"></i> More Actions</button>
+                        <div class="ji-more-menu" id="moreActionsMenu">
+                            <?php if($jiCanCreate): ?><button type="button" data-top-action="batch-create"><i class="bi bi-files"></i><span>Batch Create<br>Invoices</span></button><?php endif; ?>
+                            <?php if($jiCanUpdate): ?><button type="button" data-top-action="batch-deliver"><i class="bi bi-envelope"></i><span>Batch Deliver<br>Invoices</span></button><?php endif; ?>
+                            <?php if($jiCanCreate): ?><button type="button" data-top-action="import"><i class="bi bi-box-arrow-in-down-left"></i><span>Import Invoice Data</span></button><?php endif; ?>
+                        </div>
+                        <?php endif; ?>
+                    </div>
+                </header>
 
-                <section class="fd-inv-head">
-                    <div>
-                        <h1 class="fd-inv-title">Invoices</h1>
-                        <p class="fd-inv-sub">View completed-job invoices, customer billing, collections and outstanding balances. Use the filters to quickly find paid, unpaid, partially paid or overdue invoices.</p>
-                    </div>
-                    <div class="fd-inv-actions">
-                        <a class="fd-inv-btn primary" href="add-invoice.php"><i class="bi bi-plus-lg"></i> Create Invoice</a>
-                        <button type="button" class="fd-inv-btn" id="refreshButton"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
-                    </div>
+                <section class="ji-metrics" aria-label="Invoice overview">
+                    <article class="ji-card">
+                        <div class="ji-card-title">Overview</div>
+                        <ul class="ji-overview-list">
+                            <li class="ji-overview-item"><span class="ji-dot red"></span><span>Past due (<b id="pastDueCount">0</b>)</span><strong id="pastDueAmount">0.00</strong></li>
+                            <li class="ji-overview-item"><span class="ji-dot yellow"></span><span>Sent but not due (<b id="sentNotDueCount">0</b>)</span><strong id="sentNotDueAmount">0.00</strong></li>
+                            <li class="ji-overview-item"><span class="ji-dot blue"></span><span>Draft (<b id="draftCount">0</b>)</span><strong id="draftAmount">0.00</strong></li>
+                        </ul>
+                    </article>
+
+                    <article class="ji-card">
+                        <div class="ji-card-head"><div><div class="ji-card-title">Issued</div><div class="ji-card-sub">Past 30 days</div></div><span class="ji-card-corner"><i class="bi bi-arrow-up-right"></i></span></div>
+                        <div class="ji-metric-main"><strong class="ji-metric-value" id="issuedCount">0</strong><span class="ji-trend-wrap" tabindex="0" aria-label="Issued comparison"><span class="ji-trend flat" id="issuedTrend">—%</span><span class="ji-stat-pop" role="tooltip"><span class="ji-stat-pop-title">Issued</span><span class="ji-stat-pop-row"><span id="issuedPrevRange">—</span><strong id="issuedPrevValue">0</strong></span><span class="ji-stat-pop-row"><span id="issuedCurrentRange">—</span><strong id="issuedCurrentValue">0</strong></span></span></span></div>
+                        <div class="ji-metric-foot" id="issuedTotal">0.00</div>
+                    </article>
+
+                    <article class="ji-card">
+                        <div class="ji-card-head"><div><div class="ji-card-title">Average invoice</div><div class="ji-card-sub">Past 30 days</div></div></div>
+                        <div class="ji-metric-main"><strong class="ji-metric-value money" id="averageInvoice">0.00</strong><span class="ji-trend-wrap" tabindex="0" aria-label="Average invoice comparison"><span class="ji-trend flat" id="averageTrend">—%</span><span class="ji-stat-pop" role="tooltip"><span class="ji-stat-pop-title">Average invoice</span><span class="ji-stat-pop-row"><span id="averagePrevRange">—</span><strong id="averagePrevValue">0.00</strong></span><span class="ji-stat-pop-row"><span id="averageCurrentRange">—</span><strong id="averageCurrentValue">0.00</strong></span></span></span></div>
+                    </article>
+
+                    <article class="ji-card">
+                        <div class="ji-card-head"><div class="ji-card-title">Invoice<br>payment<br>time</div><span class="ji-card-corner"><i class="bi bi-info-circle"></i>&nbsp;&nbsp;<i class="bi bi-arrow-up-right"></i></span></div>
+                        <div class="ji-metric-main"><strong class="ji-metric-value" id="paymentDays">—</strong><span class="ji-trend-wrap" tabindex="0" aria-label="Invoice payment time comparison"><span class="ji-trend flat" id="paymentTrend">—%</span><span class="ji-stat-pop" role="tooltip"><span class="ji-stat-pop-title">Invoice payment time</span><span class="ji-stat-pop-row"><span id="paymentPrevRange">—</span><strong id="paymentPrevValue">— days</strong></span><span class="ji-stat-pop-row"><span id="paymentCurrentRange">—</span><strong id="paymentCurrentValue">— days</strong></span></span></span></div>
+                        <div class="ji-metric-foot">Average days</div>
+                    </article>
                 </section>
 
-                <section class="row g-3 fd-inv-manage-summary">
-                    <div class="col-xl-3 col-md-6">
-                        <article class="fd-inv-stat fd-inv-overview-card">
-                            <div class="fd-inv-stat-heading">Overview</div>
-                            <ul class="fd-inv-overview-list">
-                                <li><span class="fd-inv-overview-dot navy"></span><span>Total invoices</span><strong id="statOverviewInvoices">0</strong></li>
-                                <li><span class="fd-inv-overview-dot blue"></span><span>Total billed</span><strong id="statOverviewBilled">0.00</strong></li>
-                                <li><span class="fd-inv-overview-dot green"></span><span>Collected</span><strong id="statOverviewCollected">0.00</strong></li>
-                                <li><span class="fd-inv-overview-dot red"></span><span>Overdue invoices</span><strong id="statOverviewOverdue">0</strong></li>
-                            </ul>
-                        </article>
-                    </div>
-                    <div class="col-xl-3 col-md-6">
-                        <article class="fd-inv-stat">
-                            <span class="fd-inv-stat-corner"><i class="bi bi-arrow-up-right"></i></span>
-                            <div class="fd-inv-stat-heading">Total Billed</div>
-                            <span class="fd-inv-stat-sub">All invoice value</span>
-                            <div class="fd-inv-metric-line"><strong class="fd-inv-stat-value money" id="statBilled">0.00</strong></div>
-                        </article>
-                    </div>
-                    <div class="col-xl-3 col-md-6">
-                        <article class="fd-inv-stat">
-                            <span class="fd-inv-stat-corner"><i class="bi bi-arrow-up-right"></i></span>
-                            <div class="fd-inv-stat-heading">Collected</div>
-                            <span class="fd-inv-stat-sub">Payments received</span>
-                            <div class="fd-inv-metric-line"><strong class="fd-inv-stat-value money" id="statCollected">0.00</strong></div>
-                        </article>
-                    </div>
-                    <div class="col-xl-3 col-md-6">
-                        <article class="fd-inv-stat">
-                            <span class="fd-inv-stat-corner"><i class="bi bi-arrow-up-right"></i></span>
-                            <div class="fd-inv-stat-heading">Outstanding</div>
-                            <span class="fd-inv-stat-sub" id="statOverdue">0 overdue</span>
-                            <div class="fd-inv-metric-line"><strong class="fd-inv-stat-value money" id="statOutstanding">0.00</strong></div>
-                        </article>
-                    </div>
-                    <span id="statInvoices" style="display:none">0</span>
-                </section>
+                <section>
+                    <div class="ji-list-heading"><h2>All invoices</h2><span class="ji-result-count" id="resultCount">(0 results)</span></div>
+                    <div class="ji-toolbar">
+                        <button type="button" class="ji-filter-pill" id="statusPill"><span>Status</span><span class="ji-filter-divider">|</span><span id="statusPillValue">All</span></button>
+                        <button type="button" class="ji-filter-pill" id="datePill"><i class="bi bi-calendar2"></i><span>Date</span><span class="ji-filter-divider">|</span><span id="datePillValue">All</span></button>
 
-                <section class="fd-inv-card">
-                    <div class="fd-inv-toolbar">
-                        <div class="fd-inv-search"><i class="bi bi-search"></i><input type="search" id="search" placeholder="Invoice, customer, job, quote, phone..."></div>
+                        <div class="ji-filter-pop status" id="statusPopover">
+                            <label class="ji-filter-label" for="statusFilter">Invoice status</label>
+                            <select id="statusFilter">
+                                <option value="">All</option>
+                                <option value="draft">Draft</option>
+                                <option value="awaiting_payment">Awaiting payment</option>
+                                <option value="overdue">Past due</option>
+                                <option value="partially_paid">Partially paid</option>
+                                <option value="paid">Paid</option>
+                                <option value="written_off">Written off</option>
+                                <option value="cancelled">Cancelled</option>
+                                <option value="archived">Archived</option>
+                            </select>
+                            <label class="ji-filter-label" for="paymentFilter">Payment status</label>
+                            <select id="paymentFilter">
+                                <option value="">All</option>
+                                <option value="outstanding">Outstanding</option>
+                                <option value="unpaid">Unpaid</option>
+                                <option value="partial">Partially paid</option>
+                                <option value="paid">Paid</option>
+                                <option value="overdue">Overdue</option>
+                            </select>
+                            <div id="branchFilterWrap">
+                                <label class="ji-filter-label" for="branchFilter">Branch</label>
+                                <select id="branchFilter"><option value="">All branches</option></select>
+                            </div>
+                            <div class="ji-filter-pop-actions"><button type="button" class="ji-btn" id="clearStatusFilters">Clear</button><button type="button" class="ji-btn primary" id="applyStatusFilters">Apply</button></div>
+                        </div>
 
-                        <select class="fd-inv-filter" id="statusFilter">
-                            <option value="">All Invoice Status</option>
-                            <option value="draft">Draft</option>
-                            <option value="sent">Sent</option>
-                            <option value="viewed">Viewed</option>
-                            <option value="partially_paid">Partially Paid</option>
-                            <option value="paid">Paid</option>
-                            <option value="overdue">Overdue</option>
-                            <option value="written_off">Written Off</option>
-                            <option value="cancelled">Cancelled</option>
-                            <option value="archived">Archived</option>
-                        </select>
+                        <div class="ji-filter-pop date" id="datePopover">
+                            <label class="ji-filter-label" for="dateType">Date type</label>
+                            <select id="dateType"><option value="issue_date">Issued date</option><option value="due_date">Due date</option><option value="created_at">Created date</option></select>
+                            <label class="ji-filter-label" for="fromDate">From</label><input type="date" id="fromDate">
+                            <label class="ji-filter-label" for="toDate">To</label><input type="date" id="toDate">
+                            <div class="ji-filter-pop-actions"><button type="button" class="ji-btn" id="clearDateFilters">Clear</button><button type="button" class="ji-btn primary" id="applyDateFilters">Apply</button></div>
+                        </div>
 
-                        <select class="fd-inv-filter" id="paymentFilter">
-                            <option value="">All Payment Status</option>
-                            <option value="outstanding">Outstanding</option>
-                            <option value="unpaid">Unpaid</option>
-                            <option value="partial">Partially Paid</option>
-                            <option value="paid">Paid</option>
-                            <option value="overdue">Overdue</option>
-                        </select>
-
-                        <select class="fd-inv-filter" id="branchFilter">
-                            <option value="">All Branches</option>
-                        </select>
-
-                        <select class="fd-inv-filter" id="dateType">
-                            <option value="issue_date">Issue Date</option>
-                            <option value="due_date">Due Date</option>
-                        </select>
-
-                        <input class="fd-inv-filter date" type="date" id="fromDate" title="From date">
-                        <input class="fd-inv-filter date" type="date" id="toDate" title="To date">
-
-                        <select class="fd-inv-filter" id="perPage" style="min-width:86px">
-                            <option value="10">10 rows</option>
-                            <option value="25">25 rows</option>
-                            <option value="50">50 rows</option>
-                        </select>
-
-                        <span class="fd-inv-spacer"></span>
-
-                        <button type="button" class="fd-inv-clear" id="clearButton"><i class="bi bi-x-circle"></i> Clear</button>
+                        <div class="ji-search"><i class="bi bi-search"></i><input type="search" id="search" placeholder="Search invoices..."></div>
                     </div>
 
-                    <div class="fd-inv-table-wrap">
-                        <table class="fd-inv-table">
+                    <div class="ji-table-wrap">
+                        <table class="ji-table">
                             <thead>
                                 <tr>
-                                    <th class="center">S.No</th>
-                                    <th>Invoice</th>
-                                    <th>Customer</th>
-                                    <th>Job / Quotation</th>
-                                    <th>Issue / Due</th>
-                                    <th>Branch</th>
-                                    <th class="num">Total</th>
-                                    <th class="num">Collected</th>
-                                    <th class="num">Balance</th>
-                                    <th>Invoice Status</th>
-                                    <th>Payment Status</th>
-                                    <th class="center">Action</th>
+                                    <th>Client <button type="button" class="ji-sort" data-sort="client"><i class="bi bi-chevron-expand"></i></button></th>
+                                    <th>Invoice number <button type="button" class="ji-sort" data-sort="invoice_no"><i class="bi bi-chevron-expand"></i></button></th>
+                                    <th>Due date <button type="button" class="ji-sort active" data-sort="due_date"><i class="bi bi-chevron-expand"></i></button></th>
+                                    <th>Subject</th>
+                                    <th>Status <button type="button" class="ji-sort" data-sort="status"><i class="bi bi-chevron-expand"></i></button></th>
+                                    <th>Total <button type="button" class="ji-sort" data-sort="total"><i class="bi bi-chevron-expand"></i></button></th>
+                                    <th>Balance <button type="button" class="ji-sort" data-sort="balance"><i class="bi bi-chevron-expand"></i></button></th>
+                                    <th aria-label="Actions"></th>
                                 </tr>
                             </thead>
-                            <tbody id="invoiceRows">
-                                <tr><td colspan="12" class="fd-inv-empty"><i class="bi bi-hourglass-split"></i>Loading invoices...</td></tr>
-                            </tbody>
+                            <tbody id="invoiceRows"><tr><td colspan="8" class="ji-empty">Loading invoices...</td></tr></tbody>
                         </table>
                     </div>
 
-                    <div class="fd-inv-footer">
-                        <div class="fd-inv-count" id="countText">Showing 0 invoices</div>
-                        <div class="fd-inv-pagination">
-                            <button type="button" class="fd-inv-page-btn" id="prevButton"><i class="bi bi-chevron-left"></i></button>
-                            <span class="fd-inv-page-label" id="pageText">Page 1 of 1</span>
-                            <button type="button" class="fd-inv-page-btn" id="nextButton"><i class="bi bi-chevron-right"></i></button>
-                        </div>
+                    <div class="ji-footer">
+                        <div id="countText">Showing 0 invoices</div>
+                        <div class="ji-pagination"><button type="button" class="ji-page-btn" id="prevButton"><i class="bi bi-chevron-left"></i></button><span id="pageText">Page 1 of 1</span><button type="button" class="ji-page-btn" id="nextButton"><i class="bi bi-chevron-right"></i></button></div>
                     </div>
                 </section>
-
             </div>
         </div>
     </main>
 </div>
 
-<div class="fd-inv-toast" id="toast">Notification</div>
+<div class="ji-modal-backdrop" id="emailModal" aria-hidden="true">
+    <section class="ji-modal" role="dialog" aria-modal="true" aria-labelledby="emailModalTitle">
+        <div class="ji-modal-head"><h3 id="emailModalTitle">Email invoice</h3><button type="button" class="ji-modal-close" id="emailClose" aria-label="Close"><i class="bi bi-x-lg"></i></button></div>
+        <form id="emailForm" enctype="multipart/form-data">
+            <input type="hidden" id="emailInvoiceId" name="invoice_id">
+            <input type="hidden" id="emailToHidden" name="to_emails">
+            <div class="ji-modal-body">
+                <div class="ji-email-grid">
+                    <div>
+                        <div class="ji-email-to"><span class="ji-email-to-label">To</span><div class="ji-email-chips" id="emailRecipientChips"></div><input type="text" class="ji-email-recipient-input" id="emailRecipientInput" placeholder="Add email"></div>
+                        <div class="ji-email-field"><label for="emailSubject">Subject</label><input type="text" id="emailSubject" name="email_subject" maxlength="255" required></div>
+                        <div class="ji-email-field"><label for="emailMessage">Message</label><textarea id="emailMessage" name="email_message" required></textarea></div>
+                        <div class="ji-email-pdf"><div class="ji-email-pdf-icon"><i class="bi bi-file-earmark-pdf"></i></div><div><strong id="emailPdfName">invoice.pdf</strong><small>Invoice PDF is generated and attached when the email is sent.</small></div></div>
+                    </div>
+                    <div class="ji-attachments">
+                        <h4>Attachments</h4>
+                        <div class="ji-drop" id="emailDrop"><button type="button" class="ji-btn" id="emailAttachmentPick">Select</button><span>Select or drag files here to upload</span><input type="file" id="emailAttachmentInput" name="email_attachments[]" multiple hidden></div>
+                        <div class="ji-email-file-list" id="emailAttachmentList"></div>
+                        <div class="ji-limit">You've attached <span id="emailAttachmentMb">0.00</span> MB of the 10.00 MB limit.<div class="ji-progress"><span id="emailAttachmentProgress"></span></div></div>
+                    </div>
+                </div>
+            </div>
+            <div class="ji-modal-foot" style="justify-content:space-between"><label class="ji-check"><input type="checkbox" id="sendMeCopy" name="send_me_copy" value="1"> Send me a copy</label><div style="display:flex;gap:8px"><button type="button" class="ji-btn" id="emailCancel">Cancel</button><button type="submit" class="ji-btn primary" id="sendEmailButton">Send Email</button></div></div>
+        </form>
+    </section>
+</div>
 
+<div class="ji-modal-backdrop" id="deleteModal" aria-hidden="true">
+    <section class="ji-modal small" role="dialog" aria-modal="true" aria-labelledby="deleteModalTitle">
+        <div class="ji-modal-head"><h3 id="deleteModalTitle">Delete invoice?</h3><button type="button" class="ji-modal-close" id="deleteClose" aria-label="Close"><i class="bi bi-x-lg"></i></button></div>
+        <div class="ji-modal-body ji-delete-copy"><strong>By deleting this invoice:</strong><ul><li>Its total will be removed from your client's active balance</li><li>It will be removed from normal invoice reports</li><li>A new invoice reminder won't be created</li></ul></div>
+        <div class="ji-modal-foot"><button type="button" class="ji-btn" id="deleteCancel">Cancel</button><button type="button" class="ji-btn danger" id="deleteConfirm">Delete Invoice</button></div>
+    </section>
+</div>
+
+<div class="ji-toast" id="toast">Notification</div>
 <?php require_once __DIR__ . '/includes/footer.php'; ?>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 (function(){
-    'use strict';
+'use strict';
+var csrfToken=<?= json_encode($invoiceCsrfToken) ?>;
+var pagePermissions={view:<?= $jiCanView?'true':'false' ?>,create:<?= $jiCanCreate?'true':'false' ?>,update:<?= $jiCanUpdate?'true':'false' ?>,delete:<?= $jiCanDelete?'true':'false' ?>};
+var apiUrl='api/invoices-jobber.php';
+var state={page:1,perPage:10,search:'',status:'',paymentStatus:'',branchId:'',dateType:'issue_date',fromDate:'',toDate:'',sortKey:'due_date',sortDir:'ASC',pagination:{page:1,pages:1,total:0,from:0,to:0},currency:{},branches:[],companyName:'FieldPlx'};
+var rowMap={},searchTimer=null,toastTimer=null,selectedDeleteInvoiceId=0,emailFiles=[],emailRecipients=[];
+function E(id){return document.getElementById(id)}
+function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;')}
+function toast(type,msg){var t=E('toast');if(toastTimer)clearTimeout(toastTimer);t.className='ji-toast '+(type||'')+' show';t.textContent=msg||'Notification';toastTimer=setTimeout(function(){t.classList.remove('show')},3200)}
+function parse(r){return r.text().then(function(raw){var d=null,text=String(raw||'').trim();try{d=text?JSON.parse(text):{}}catch(e){throw new Error(text.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim()||'Invalid server response.')}if(!r.ok||!d||d.success!==true)throw new Error(d&&d.message?d.message:'Request failed.');return d})}
+function request(fd){fd.append('csrf_token',csrfToken);return fetch(apiUrl,{method:'POST',body:fd,credentials:'same-origin',cache:'no-store',headers:{'X-Requested-With':'XMLHttpRequest','Accept':'application/json'}}).then(parse)}
+function money(v){var c=state.currency||{},p=parseInt(c.decimal_places,10);if(isNaN(p))p=2;var n=Number(v||0).toFixed(p),s=c.symbol||'';return c.symbol_position==='after'?n+(s?' '+s:''):(s||'')+n}
+function fmtDate(v){if(!v)return '—';var d=new Date(String(v).substring(0,10)+'T00:00:00');return isNaN(d.getTime())?String(v):d.toLocaleDateString(undefined,{month:'short',day:'2-digit',year:'numeric'})}
+function rangeDate(v){if(!v)return '—';var d=new Date(String(v).substring(0,10)+'T00:00:00');return isNaN(d.getTime())?String(v):d.toLocaleDateString(undefined,{month:'short',day:'numeric'})}
+function rangeText(period){if(!period)return '—';return rangeDate(period.start)+' - '+rangeDate(period.end)}
+function daysText(v,count){var n=Number(v);return Number(count||0)>0&&isFinite(n)?Math.round(n)+' days':'— days'}
+function invoiceNo(v){v=String(v||'—');return /^\d+$/.test(v)?'#'+v:v}
+function statusLabel(v){var map={awaiting_payment:'Awaiting payment',overdue:'Past due',partially_paid:'Partially paid',written_off:'Written off',draft:'Draft',paid:'Paid',sent:'Awaiting payment',viewed:'Awaiting payment',cancelled:'Cancelled',archived:'Archived'};return map[String(v||'').toLowerCase()]||String(v||'').replace(/_/g,' ').replace(/\b\w/g,function(x){return x.toUpperCase()})}
+function badge(v){var key=String(v||'').toLowerCase();return '<span class="ji-badge '+esc(key)+'">'+esc(statusLabel(key))+'</span>'}
+function trend(current,previous){current=Number(current||0);previous=Number(previous||0);if(previous<=0){return current>0?{value:'↑ 100%',cls:''}:{value:'—%',cls:'flat'}}var pct=((current-previous)/previous)*100;var rounded=Math.round(Math.abs(pct));return pct>0?{value:'↑ '+rounded+'%',cls:''}:pct<0?{value:'↓ '+rounded+'%',cls:'down'}:{value:'—%',cls:'flat'}}
+function setTrend(id,data){var n=E(id);n.textContent=data.value;n.className='ji-trend '+data.cls}
+function paymentTrend(current,previous,currentCount,previousCount){current=Number(current||0);previous=Number(previous||0);if(Number(currentCount||0)<=0||Number(previousCount||0)<=0||previous<=0)return {value:'—%',cls:'flat'};var pct=((current-previous)/previous)*100,rounded=Math.round(Math.abs(pct));return pct<0?{value:'↓ '+rounded+'%',cls:''}:pct>0?{value:'↑ '+rounded+'%',cls:'down'}:{value:'—%',cls:'flat'}}
+function closeMenus(){if(E('moreActionsMenu'))E('moreActionsMenu').classList.remove('show');E('statusPopover').classList.remove('show');E('datePopover').classList.remove('show');document.querySelectorAll('.ji-row-menu.show').forEach(function(m){m.classList.remove('show')});document.querySelectorAll('tr.row-active').forEach(function(r){r.classList.remove('row-active')})}
+function modal(id,show){var n=E(id);n.classList.toggle('show',!!show);n.setAttribute('aria-hidden',show?'false':'true');document.body.style.overflow=show?'hidden':''}
+function setBranches(rows){state.branches=rows||[];var html='<option value="">All branches</option>';state.branches.forEach(function(b){html+='<option value="'+Number(b.id)+'">'+esc(b.name||'Branch')+(b.branch_code?' · '+esc(b.branch_code):'')+'</option>'});E('branchFilter').innerHTML=html;E('branchFilter').value=state.branchId;E('branchFilterWrap').style.display=state.branches.length>1?'block':'none'}
+function renderSummary(s,periods){s=s||{};periods=periods||{};var current=periods.current||{},previous=periods.previous||{};E('pastDueCount').textContent=Number(s.past_due_count||0).toLocaleString();E('pastDueAmount').textContent=money(s.past_due_amount);E('sentNotDueCount').textContent=Number(s.sent_not_due_count||0).toLocaleString();E('sentNotDueAmount').textContent=money(s.sent_not_due_amount);E('draftCount').textContent=Number(s.draft_count||0).toLocaleString();E('draftAmount').textContent=money(s.draft_amount);E('issuedCount').textContent=Number(s.issued_30_count||0).toLocaleString();E('issuedTotal').textContent=money(s.issued_30_total);E('averageInvoice').textContent=money(s.average_30);var paymentCount=Number(s.payment_30_count||0);E('paymentDays').textContent=paymentCount>0?Math.round(Number(s.payment_days_30||0)):'—';setTrend('issuedTrend',trend(s.issued_30_count,s.issued_prev_count));setTrend('averageTrend',trend(s.average_30,s.average_prev));setTrend('paymentTrend',paymentTrend(s.payment_days_30,s.payment_days_prev,s.payment_30_count,s.payment_prev_count));E('issuedPrevRange').textContent=rangeText(previous);E('issuedCurrentRange').textContent=rangeText(current);E('issuedPrevValue').textContent=Number(s.issued_prev_count||0).toLocaleString();E('issuedCurrentValue').textContent=Number(s.issued_30_count||0).toLocaleString();E('averagePrevRange').textContent=rangeText(previous);E('averageCurrentRange').textContent=rangeText(current);E('averagePrevValue').textContent=money(s.average_prev);E('averageCurrentValue').textContent=money(s.average_30);E('paymentPrevRange').textContent=rangeText(previous);E('paymentCurrentRange').textContent=rangeText(current);E('paymentPrevValue').textContent=daysText(s.payment_days_prev,s.payment_prev_count);E('paymentCurrentValue').textContent=daysText(s.payment_days_30,s.payment_30_count)}
+function renderPagination(p){state.pagination=p||state.pagination;E('resultCount').textContent='('+Number(state.pagination.total||0).toLocaleString()+' result'+(Number(state.pagination.total||0)===1?'':'s')+')';E('countText').textContent=state.pagination.total>0?'Showing '+state.pagination.from+'-'+state.pagination.to+' of '+state.pagination.total+' invoices':'Showing 0 invoices';E('pageText').textContent='Page '+state.pagination.page+' of '+state.pagination.pages;E('prevButton').disabled=state.pagination.page<=1;E('nextButton').disabled=state.pagination.page>=state.pagination.pages}
+function renderRows(rows){var body=E('invoiceRows');rowMap={};if(!rows||!rows.length){body.innerHTML='<tr><td colspan="8" class="ji-empty">No invoices found.</td></tr>';return}var html='';rows.forEach(function(r){rowMap[String(r.id)]=r;var stateKey=String(r.payment_state||r.status||'').toLowerCase();var emailAction=pagePermissions.update?'<button type="button" class="ji-row-action" data-email="'+Number(r.id)+'" title="Email invoice"><i class="bi bi-envelope"></i></button>':'';var deleteAction=pagePermissions.delete?'<button type="button" class="danger" data-delete="'+Number(r.id)+'">Delete</button>':'';html+='<tr data-invoice-id="'+Number(r.id)+'" tabindex="0" role="link">'
++'<td data-label="Client"><span class="ji-client">'+esc(r.client_name||'—')+'</span></td>'
++'<td data-label="Invoice number"><span class="ji-number">'+esc(invoiceNo(r.invoice_no))+'</span></td>'
++'<td data-label="Due date">'+esc(fmtDate(r.due_date))+'</td>'
++'<td data-label="Subject" title="'+esc(r.subject||'For Services Rendered')+'">'+esc(r.subject||'For Services Rendered')+'</td>'
++'<td data-label="Status">'+badge(stateKey)+'</td>'
++'<td data-label="Total"><span class="ji-money">'+esc(money(r.total))+'</span></td>'
++'<td data-label="Balance"><span class="ji-money">'+esc(money(r.balance_due))+'</span></td>'
++'<td data-label="Actions" class="ji-row-actions-cell"><div class="ji-row-actions">'+emailAction+'<button type="button" class="ji-row-action" data-row-more="'+Number(r.id)+'" title="More"><i class="bi bi-three-dots"></i></button><div class="ji-row-menu" data-row-menu="'+Number(r.id)+'">'+deleteAction+'<a href="invoice-view.php?invoice_id='+Number(r.id)+'" target="_blank" rel="noopener">Open in New Tab <i class="bi bi-box-arrow-up-right"></i></a></div></div></td>'
++'</tr>'});body.innerHTML=html}
+function load(){var fd=new FormData();fd.append('action','list');fd.append('page',String(state.page));fd.append('per_page',String(state.perPage));fd.append('search',state.search);fd.append('status',state.status);fd.append('payment_status',state.paymentStatus);fd.append('branch_id',state.branchId);fd.append('date_type',state.dateType);fd.append('from_date',state.fromDate);fd.append('to_date',state.toDate);fd.append('sort_key',state.sortKey);fd.append('sort_dir',state.sortDir);request(fd).then(function(d){state.currency=d.currency||state.currency;state.companyName=d.company_name||'FieldPlx';if(d.permissions){pagePermissions=d.permissions}setBranches(d.branches||[]);renderSummary(d.summary||{},d.periods||{});renderPagination(d.pagination||{});renderRows(d.rows||[])}).catch(function(e){toast('error',e.message);E('invoiceRows').innerHTML='<tr><td colspan="8" class="ji-empty">'+esc(e.message)+'</td></tr>'})}
+function resetPage(){state.page=1;load()}
+function updateFilterLabels(){var statusParts=[];if(state.status)statusParts.push(statusLabel(state.status));if(state.paymentStatus)statusParts.push(statusLabel(state.paymentStatus));if(state.branchId){var b=state.branches.find(function(x){return String(x.id)===String(state.branchId)});if(b)statusParts.push(b.name)}E('statusPillValue').textContent=statusParts.length?statusParts.join(' · '):'All';E('datePillValue').textContent=(state.fromDate||state.toDate)?((state.fromDate?fmtDate(state.fromDate):'Any')+' - '+(state.toDate?fmtDate(state.toDate):'Any')):'All'}
 
-    var csrfToken=<?= json_encode($invoiceCsrfToken) ?>;
-    var state={
-        page:1,
-        perPage:10,
-        search:'',
-        status:'',
-        paymentStatus:'',
-        branchId:'',
-        dateType:'issue_date',
-        fromDate:'',
-        toDate:'',
-        pagination:{page:1,pages:1,total:0,from:0,to:0},
-        currency:{},
-        branches:[]
-    };
-    var searchTimer=null;
-    var toastTimer=null;
+if(E('moreActionsButton'))E('moreActionsButton').addEventListener('click',function(e){e.stopPropagation();var m=E('moreActionsMenu'),show=!m.classList.contains('show');closeMenus();if(show)m.classList.add('show')});
+if(E('moreActionsMenu'))E('moreActionsMenu').addEventListener('click',function(e){var b=e.target.closest('[data-top-action]');if(!b)return;var a=b.getAttribute('data-top-action');closeMenus();if(a==='batch-create')toast('warning','Batch Create Invoices is ready for its dedicated workflow page.');if(a==='batch-deliver')toast('warning','Batch Deliver Invoices is ready for its dedicated workflow page.');if(a==='import')toast('warning','Invoice import is ready for its dedicated import workflow.');});
+E('statusPill').addEventListener('click',function(e){e.stopPropagation();var p=E('statusPopover'),show=!p.classList.contains('show');closeMenus();if(show)p.classList.add('show')});
+E('datePill').addEventListener('click',function(e){e.stopPropagation();var p=E('datePopover'),show=!p.classList.contains('show');closeMenus();if(show)p.classList.add('show')});
+E('statusPopover').addEventListener('click',function(e){e.stopPropagation()});E('datePopover').addEventListener('click',function(e){e.stopPropagation()});
+E('applyStatusFilters').addEventListener('click',function(){state.status=E('statusFilter').value;state.paymentStatus=E('paymentFilter').value;state.branchId=E('branchFilter').value;updateFilterLabels();closeMenus();resetPage()});
+E('clearStatusFilters').addEventListener('click',function(){E('statusFilter').value='';E('paymentFilter').value='';E('branchFilter').value='';state.status='';state.paymentStatus='';state.branchId='';updateFilterLabels();closeMenus();resetPage()});
+E('applyDateFilters').addEventListener('click',function(){state.dateType=E('dateType').value;state.fromDate=E('fromDate').value;state.toDate=E('toDate').value;updateFilterLabels();closeMenus();resetPage()});
+E('clearDateFilters').addEventListener('click',function(){E('dateType').value='issue_date';E('fromDate').value='';E('toDate').value='';state.dateType='issue_date';state.fromDate='';state.toDate='';updateFilterLabels();closeMenus();resetPage()});
+E('search').addEventListener('input',function(){state.search=this.value.trim();if(searchTimer)clearTimeout(searchTimer);searchTimer=setTimeout(resetPage,280)});
+document.querySelectorAll('.ji-sort').forEach(function(btn){btn.addEventListener('click',function(){var key=this.getAttribute('data-sort');if(state.sortKey===key)state.sortDir=state.sortDir==='ASC'?'DESC':'ASC';else{state.sortKey=key;state.sortDir='ASC'}document.querySelectorAll('.ji-sort').forEach(function(x){x.classList.toggle('active',x.getAttribute('data-sort')===state.sortKey)});resetPage()})});
+E('prevButton').addEventListener('click',function(){if(state.page>1){state.page--;load()}});E('nextButton').addEventListener('click',function(){if(state.page<state.pagination.pages){state.page++;load()}});
 
-    function el(id){return document.getElementById(id)}
-    function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;')}
-    function title(v){return String(v||'-').replace(/_/g,' ').replace(/\b\w/g,function(x){return x.toUpperCase()})}
-    function notify(type,message){var t=el('toast');if(toastTimer)clearTimeout(toastTimer);t.className='fd-inv-toast '+(type||'')+' show';t.textContent=message||'Notification';toastTimer=setTimeout(function(){t.classList.remove('show')},3200)}
-    function parse(response){return response.text().then(function(raw){var d,text=String(raw||'').trim();try{d=text?JSON.parse(text):{}}catch(e){throw new Error(text.replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim()||'Invalid server response.')}if(!response.ok||!d.success)throw new Error(d.message||'Request failed.');return d})}
-    function request(fd){fd.append('csrf_token',csrfToken);return fetch('api/invoices.php',{method:'POST',body:fd,credentials:'same-origin',cache:'no-store',headers:{'X-Requested-With':'XMLHttpRequest','Accept':'application/json'}}).then(parse)}
-    function money(v){var c=state.currency||{},places=parseInt(c.decimal_places,10);if(isNaN(places))places=2;var n=Number(v||0).toFixed(places),sym=c.symbol||'';return c.symbol_position==='after'?n+(sym?' '+sym:''):(sym||'')+n}
-    function fmtDate(v){if(!v)return '-';var d=new Date(String(v).substring(0,10)+'T00:00:00');return isNaN(d.getTime())?esc(v):d.toLocaleDateString(undefined,{day:'2-digit',month:'short',year:'numeric'})}
-    function badge(value){var v=String(value||'').toLowerCase();return '<span class="fd-inv-badge '+esc(v)+'">'+esc(title(v))+'</span>'}
+E('invoiceRows').addEventListener('click',function(e){var emailBtn=e.target.closest('[data-email]');if(emailBtn){e.stopPropagation();openEmail(Number(emailBtn.getAttribute('data-email')));return}var moreBtn=e.target.closest('[data-row-more]');if(moreBtn){e.stopPropagation();var id=moreBtn.getAttribute('data-row-more'),menu=document.querySelector('[data-row-menu="'+id+'"]'),tr=moreBtn.closest('tr'),show=!menu.classList.contains('show');closeMenus();if(show){menu.classList.add('show');if(tr)tr.classList.add('row-active')}return}var deleteBtn=e.target.closest('[data-delete]');if(deleteBtn){e.stopPropagation();openDelete(Number(deleteBtn.getAttribute('data-delete')));return}if(e.target.closest('a,button,input,select,textarea,label'))return;var tr=e.target.closest('tr[data-invoice-id]');if(tr)window.location.href='invoice-view.php?invoice_id='+encodeURIComponent(tr.getAttribute('data-invoice-id'))});
+E('invoiceRows').addEventListener('keydown',function(e){if((e.key==='Enter'||e.key===' ')&&!e.target.closest('a,button')){var tr=e.target.closest('tr[data-invoice-id]');if(tr){e.preventDefault();window.location.href='invoice-view.php?invoice_id='+encodeURIComponent(tr.getAttribute('data-invoice-id'))}}});
+document.addEventListener('click',function(){closeMenus()});
 
-    function setBranches(rows){
-        state.branches=rows||[];
-        var selected=String(el('branchFilter').value||state.branchId||'');
-        var html='<option value="">All Branches</option>';
-        state.branches.forEach(function(b){
-            html+='<option value="'+Number(b.id)+'">'+esc(b.name||'Branch')+(b.branch_code?' · '+esc(b.branch_code):'')+'</option>';
-        });
-        el('branchFilter').innerHTML=html;
-        el('branchFilter').value=selected;
-    }
+function validEmail(v){return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(v||''))}
+function syncRecipients(){E('emailToHidden').value=emailRecipients.join(',');E('emailRecipientChips').innerHTML=emailRecipients.map(function(v,i){return '<span class="ji-email-chip">'+esc(v)+'<button type="button" data-remove-recipient="'+i+'"><i class="bi bi-x"></i></button></span>'}).join('')}
+function addRecipient(raw){String(raw||'').split(/[;,\s]+/).forEach(function(v){v=v.trim().toLowerCase();if(validEmail(v)&&emailRecipients.indexOf(v)<0)emailRecipients.push(v)});syncRecipients()}
+function safePdfName(no){return 'invoice_'+String(no||'invoice').replace(/[^A-Za-z0-9_-]/g,'_')+'.pdf'}
+function openEmail(id){closeMenus();var r=rowMap[String(id)];if(!r){toast('error','Invoice details are not available.');return}emailRecipients=[];emailFiles=[];if(r.client_email)addRecipient(r.client_email);syncEmailFiles();E('emailInvoiceId').value=id;E('emailModalTitle').textContent='Email invoice '+invoiceNo(r.invoice_no)+' to '+(r.client_name||'Client');E('emailSubject').value='Invoice from '+(state.companyName||'FieldPlx')+' - '+(r.subject||'For Services Rendered');E('emailMessage').value='Hi '+(r.client_name||'Client')+',\n\nThank you for choosing to work with us.\n\nJust a quick note to let you know your invoice is now available.\n\nPlease let us know if you have any questions.\n\nSincerely,\n'+(state.companyName||'FieldPlx');E('emailPdfName').textContent=safePdfName(r.invoice_no);E('sendMeCopy').checked=false;modal('emailModal',true);setTimeout(function(){E('emailRecipientInput').focus()},80)}
+function closeEmail(){modal('emailModal',false);E('emailRecipientInput').value=''}
+E('emailClose').addEventListener('click',closeEmail);E('emailCancel').addEventListener('click',closeEmail);E('emailModal').addEventListener('click',function(e){if(e.target===this)closeEmail()});
+E('emailRecipientInput').addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===','||e.key===';'){e.preventDefault();addRecipient(this.value);this.value=''}});E('emailRecipientInput').addEventListener('blur',function(){if(this.value.trim()){addRecipient(this.value);this.value=''}});E('emailRecipientChips').addEventListener('click',function(e){var b=e.target.closest('[data-remove-recipient]');if(!b)return;emailRecipients.splice(Number(b.getAttribute('data-remove-recipient')),1);syncRecipients()});
+function syncEmailFiles(){var total=0;E('emailAttachmentList').innerHTML=emailFiles.map(function(f,i){total+=Number(f.size||0);return '<div class="ji-email-file"><i class="bi bi-paperclip"></i><span>'+esc(f.name)+'</span><small>'+((f.size||0)/1024/1024).toFixed(2)+' MB</small><button type="button" data-remove-file="'+i+'"><i class="bi bi-x"></i></button></div>'}).join('');var mb=total/1024/1024;E('emailAttachmentMb').textContent=mb.toFixed(2);E('emailAttachmentProgress').style.width=Math.min(100,mb/10*100)+'%'}
+function acceptEmailFiles(list){var next=emailFiles.slice();Array.prototype.forEach.call(list||[],function(f){if(f&&f.size>0)next.push(f)});var total=next.reduce(function(s,f){return s+Number(f.size||0)},0);if(total>10*1024*1024){toast('error','Email attachments cannot exceed 10 MB in total.');return}emailFiles=next;syncEmailFiles()}
+E('emailAttachmentPick').addEventListener('click',function(){E('emailAttachmentInput').click()});E('emailAttachmentInput').addEventListener('change',function(){acceptEmailFiles(this.files);this.value=''});E('emailAttachmentList').addEventListener('click',function(e){var b=e.target.closest('[data-remove-file]');if(!b)return;emailFiles.splice(Number(b.getAttribute('data-remove-file')),1);syncEmailFiles()});['dragenter','dragover'].forEach(function(ev){E('emailDrop').addEventListener(ev,function(e){e.preventDefault();this.classList.add('dragover')})});['dragleave','drop'].forEach(function(ev){E('emailDrop').addEventListener(ev,function(e){e.preventDefault();this.classList.remove('dragover');if(ev==='drop')acceptEmailFiles(e.dataTransfer.files)})});
+E('emailForm').addEventListener('submit',function(e){e.preventDefault();if(E('emailRecipientInput').value.trim()){addRecipient(E('emailRecipientInput').value);E('emailRecipientInput').value=''}if(!emailRecipients.length){toast('error','Add at least one valid recipient email address.');return}var fd=new FormData();fd.append('action','send_email');fd.append('invoice_id',E('emailInvoiceId').value);fd.append('to_emails',emailRecipients.join(','));fd.append('email_subject',E('emailSubject').value.trim());fd.append('email_message',E('emailMessage').value.trim());fd.append('send_me_copy',E('sendMeCopy').checked?'1':'0');emailFiles.forEach(function(f){fd.append('email_attachments[]',f,f.name)});var btn=E('sendEmailButton'),old=btn.textContent;btn.disabled=true;btn.textContent='Sending...';request(fd).then(function(d){toast('success',d.message||'Invoice email sent successfully.');closeEmail();load()}).catch(function(err){toast('error',err.message)}).then(function(){btn.disabled=false;btn.textContent=old})});
 
-    function renderSummary(summary){
-        summary=summary||{};
-        var totalInvoices=Number(summary.total_invoices||0);
-        var totalBilled=money(summary.total_billed);
-        var totalCollected=money(summary.total_collected);
-        var totalOutstanding=money(summary.total_outstanding);
-        var overdueInvoices=Number(summary.overdue_invoices||0);
+function openDelete(id){closeMenus();selectedDeleteInvoiceId=id;modal('deleteModal',true)}function closeDelete(){selectedDeleteInvoiceId=0;modal('deleteModal',false)}
+E('deleteClose').addEventListener('click',closeDelete);E('deleteCancel').addEventListener('click',closeDelete);E('deleteModal').addEventListener('click',function(e){if(e.target===this)closeDelete()});E('deleteConfirm').addEventListener('click',function(){if(!selectedDeleteInvoiceId)return;var btn=this,old=btn.textContent;btn.disabled=true;btn.textContent='Deleting...';var fd=new FormData();fd.append('action','delete_invoice');fd.append('invoice_id',String(selectedDeleteInvoiceId));request(fd).then(function(d){toast('success',d.message||'Invoice deleted.');closeDelete();resetPage()}).catch(function(err){toast('error',err.message)}).then(function(){btn.disabled=false;btn.textContent=old})});
 
-        el('statInvoices').textContent=totalInvoices.toLocaleString();
-        el('statBilled').textContent=totalBilled;
-        el('statCollected').textContent=totalCollected;
-        el('statOutstanding').textContent=totalOutstanding;
-        el('statOverdue').textContent=overdueInvoices+' overdue';
-        el('statOverviewInvoices').textContent=totalInvoices.toLocaleString();
-        el('statOverviewBilled').textContent=totalBilled;
-        el('statOverviewCollected').textContent=totalCollected;
-        el('statOverviewOverdue').textContent=overdueInvoices.toLocaleString();
-    }
-
-    function renderRows(rows){
-        var body=el('invoiceRows');
-        if(!rows||!rows.length){
-            body.innerHTML='<tr><td colspan="12" class="fd-inv-empty"><i class="bi bi-receipt"></i>No invoices found for the selected filters.</td></tr>';
-            return;
-        }
-
-        var start=(Number(state.pagination.from||1)-1);
-        var html='';
-
-        rows.forEach(function(r,index){
-            var contact=[r.client_email,r.client_phone].filter(Boolean).join(' • ');
-            var jobQuote=[];
-            if(r.job_no)jobQuote.push('<a class="fd-inv-link" href="job-view?job_id='+Number(r.job_id)+'">'+esc(r.job_no)+'</a>');
-            if(r.quote_no)jobQuote.push('<span class="fd-inv-subtext">Quote: '+esc(r.quote_no)+'</span>');
-
-            var canCollect=Number(r.balance_due||0)>0.005&&['cancelled','archived','written_off'].indexOf(String(r.status||''))===-1;
-
-            html+='<tr data-invoice-id="'+Number(r.id)+'" tabindex="0" role="link" aria-label="Open invoice '+esc(r.invoice_no||'')+'">'
-                +'<td class="center">'+(start+index+1)+'</td>'
-                +'<td><a class="fd-inv-main fd-inv-link" href="invoice-view?invoice_id='+Number(r.id)+'">'+esc(r.invoice_no||'-')+'</a><span class="fd-inv-subtext">Created '+esc(fmtDate(r.created_at))+'</span></td>'
-                +'<td><span class="fd-inv-main">'+esc(r.client_name||'-')+'</span>'+(r.client_company?'<span class="fd-inv-subtext">'+esc(r.client_company)+'</span>':'')+(contact?'<span class="fd-inv-subtext">'+esc(contact)+'</span>':'')+'</td>'
-                +'<td>'+(jobQuote.length?jobQuote.join(''):'-')+(r.job_title?'<span class="fd-inv-subtext">'+esc(r.job_title)+'</span>':'')+'</td>'
-                +'<td><span class="fd-inv-main">'+esc(fmtDate(r.issue_date))+'</span><span class="fd-inv-subtext">Due: '+esc(fmtDate(r.due_date))+'</span></td>'
-                +'<td><span class="fd-inv-main">'+esc(r.branch_name||'Head Office')+'</span></td>'
-                +'<td class="num"><span class="fd-inv-money">'+esc(money(r.total))+'</span></td>'
-                +'<td class="num"><span class="fd-inv-money paid">'+esc(money(r.amount_paid))+'</span></td>'
-                +'<td class="num"><span class="fd-inv-money balance">'+esc(money(r.balance_due))+'</span></td>'
-                +'<td>'+badge(r.status)+'</td>'
-                +'<td>'+badge(r.payment_state)+'</td>'
-                +'<td class="center"><div class="fd-inv-actions-cell">'
-                    +'<a class="fd-inv-icon" href="invoice-print?invoice_id='+Number(r.id)+'" target="_blank" rel="noopener" title="Print Invoice"><i class="bi bi-printer"></i></a>'
-                    +(canCollect?'<a class="fd-inv-icon collect" href="invoice-view?invoice_id='+Number(r.id)+'&collect=1" title="Collect Payment"><i class="bi bi-cash-stack"></i></a>':'')
-                +'</div></td>'
-            +'</tr>';
-        });
-
-        body.innerHTML=html;
-    }
-
-    var invoiceRows=el('invoiceRows');
-    invoiceRows.addEventListener('click',function(event){
-        if(event.target.closest('a,button,input,select,textarea,label'))return;
-        var row=event.target.closest('tr[data-invoice-id]');
-        if(!row||!invoiceRows.contains(row))return;
-        var invoiceId=Number(row.getAttribute('data-invoice-id')||0);
-        if(invoiceId>0)window.location.href='invoice-view?invoice_id='+encodeURIComponent(invoiceId);
-    });
-    invoiceRows.addEventListener('keydown',function(event){
-        if(event.key!=='Enter'&&event.key!==' ')return;
-        if(event.target.closest('a,button,input,select,textarea,label'))return;
-        var row=event.target.closest('tr[data-invoice-id]');
-        if(!row||!invoiceRows.contains(row))return;
-        event.preventDefault();
-        var invoiceId=Number(row.getAttribute('data-invoice-id')||0);
-        if(invoiceId>0)window.location.href='invoice-view?invoice_id='+encodeURIComponent(invoiceId);
-    });
-
-    function renderPagination(p){
-        state.pagination=p||state.pagination;
-        el('countText').textContent=state.pagination.total>0
-            ?'Showing '+state.pagination.from+'-'+state.pagination.to+' of '+state.pagination.total+' invoices'
-            :'Showing 0 invoices';
-        el('pageText').textContent='Page '+state.pagination.page+' of '+state.pagination.pages;
-        el('prevButton').disabled=state.pagination.page<=1;
-        el('nextButton').disabled=state.pagination.page>=state.pagination.pages;
-    }
-
-    function load(){
-        var fd=new FormData();
-        fd.append('action','list');
-        fd.append('page',state.page);
-        fd.append('per_page',state.perPage);
-        fd.append('search',state.search);
-        fd.append('status',state.status);
-        fd.append('payment_status',state.paymentStatus);
-        fd.append('branch_id',state.branchId);
-        fd.append('date_type',state.dateType);
-        fd.append('from_date',state.fromDate);
-        fd.append('to_date',state.toDate);
-
-        request(fd).then(function(data){
-            state.currency=data.currency||state.currency;
-            setBranches(data.branches||[]);
-            renderSummary(data.summary||{});
-            renderPagination(data.pagination||{});
-            renderRows(data.rows||[]);
-        }).catch(function(error){
-            notify('error',error.message);
-            el('invoiceRows').innerHTML='<tr><td colspan="12" class="fd-inv-empty"><i class="bi bi-exclamation-circle"></i>'+esc(error.message)+'</td></tr>';
-        });
-    }
-
-    function resetPageAndLoad(){state.page=1;load()}
-
-    el('search').addEventListener('input',function(){
-        state.search=this.value.trim();
-        if(searchTimer)clearTimeout(searchTimer);
-        searchTimer=setTimeout(resetPageAndLoad,280);
-    });
-
-    el('statusFilter').addEventListener('change',function(){state.status=this.value;resetPageAndLoad()});
-    el('paymentFilter').addEventListener('change',function(){state.paymentStatus=this.value;resetPageAndLoad()});
-    el('branchFilter').addEventListener('change',function(){state.branchId=this.value;resetPageAndLoad()});
-    el('dateType').addEventListener('change',function(){state.dateType=this.value;resetPageAndLoad()});
-    el('fromDate').addEventListener('change',function(){state.fromDate=this.value;resetPageAndLoad()});
-    el('toDate').addEventListener('change',function(){state.toDate=this.value;resetPageAndLoad()});
-    el('perPage').addEventListener('change',function(){state.perPage=Number(this.value||10);resetPageAndLoad()});
-
-    el('prevButton').addEventListener('click',function(){if(state.page>1){state.page--;load()}});
-    el('nextButton').addEventListener('click',function(){if(state.page<state.pagination.pages){state.page++;load()}});
-    el('refreshButton').addEventListener('click',load);
-
-    el('clearButton').addEventListener('click',function(){
-        state.page=1;
-        state.search='';
-        state.status='';
-        state.paymentStatus='';
-        state.branchId='';
-        state.dateType='issue_date';
-        state.fromDate='';
-        state.toDate='';
-        el('search').value='';
-        el('statusFilter').value='';
-        el('paymentFilter').value='';
-        el('branchFilter').value='';
-        el('dateType').value='issue_date';
-        el('fromDate').value='';
-        el('toDate').value='';
-        load();
-    });
-
-    load();
+document.addEventListener('keydown',function(e){if(e.key==='Escape'){closeMenus();if(E('emailModal').classList.contains('show'))closeEmail();if(E('deleteModal').classList.contains('show'))closeDelete()}});
+updateFilterLabels();load();
 })();
 </script>
 </body>

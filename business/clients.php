@@ -1,169 +1,27 @@
 <?php
-/* FieldPlx Customers Page - Version 3.2.0 - 2026-09-02 - Clickable Customer Rows */
 require_once __DIR__ . '/includes/auth.php';
 
-$pageTitle = 'Customers';
+$pageTitle = 'Clients';
 $activePage = 'clients';
 
 if (session_status() === PHP_SESSION_NONE) {
-  session_start();
+    session_start();
 }
 
 if (empty($_SESSION['clients_csrf_token'])) {
-  $_SESSION['clients_csrf_token'] = bin2hex(random_bytes(32));
+    $_SESSION['clients_csrf_token'] = bin2hex(random_bytes(32));
 }
 
 $clientsCsrfToken = (string) $_SESSION['clients_csrf_token'];
-
-/*
- * Customer statistics are loaded directly on this page.
- * No separate customer-stats API request is used.
- *
- * CRM definition preserved from the existing FieldPlx logic:
- * - an explicit client record is already a customer;
- * - a lead becomes a customer on its first qualifying Job or Invoice;
- * - cancelled/archived operational records do not qualify.
- */
-$customerStats = array(
-  'total' => 0,
-  'lead_total' => 0,
-  'customer_total' => 0,
-  'active_total' => 0,
-  'inactive_total' => 0,
-  'new_leads_30' => 0,
-  'prior_leads_30' => 0,
-  'new_leads_change' => 0.0,
-  'new_customers_30' => 0,
-  'prior_customers_30' => 0,
-  'new_customers_change' => 0.0,
-  'current_period_label' => date('M j', strtotime('-29 days')) . ' - ' . date('M j'),
-  'prior_period_label' => date('M j', strtotime('-59 days')) . ' - ' . date('M j', strtotime('-30 days'))
-);
-
-$customerStatsTenantId = isset($_SESSION['tenant_id']) ? (int) $_SESSION['tenant_id'] : 0;
-$customerStatsPdo = null;
-if (isset($pdo) && $pdo instanceof PDO) {
-  $customerStatsPdo = $pdo;
-} elseif (isset($db) && $db instanceof PDO) {
-  $customerStatsPdo = $db;
-}
-
-if ($customerStatsTenantId > 0 && $customerStatsPdo instanceof PDO) {
-  try {
-    $customerStatsStmt = $customerStatsPdo->prepare(
-      "SELECT
-          COUNT(*) AS total,
-          SUM(CASE WHEN effective_customer_at IS NULL AND original_type = 'lead' THEN 1 ELSE 0 END) AS lead_total,
-          SUM(CASE WHEN effective_customer_at IS NOT NULL OR original_type = 'client' THEN 1 ELSE 0 END) AS customer_total,
-          SUM(CASE WHEN crm_status = 'active' THEN 1 ELSE 0 END) AS active_total,
-          SUM(CASE WHEN crm_status = 'inactive' THEN 1 ELSE 0 END) AS inactive_total,
-          SUM(CASE
-                WHEN effective_customer_at IS NULL
-                 AND original_type = 'lead'
-                 AND client_created_at >= DATE_SUB(CURDATE(), INTERVAL 29 DAY)
-                 AND client_created_at < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
-                THEN 1 ELSE 0
-              END) AS new_leads_30,
-          SUM(CASE
-                WHEN effective_customer_at IS NULL
-                 AND original_type = 'lead'
-                 AND client_created_at >= DATE_SUB(CURDATE(), INTERVAL 59 DAY)
-                 AND client_created_at < DATE_SUB(CURDATE(), INTERVAL 29 DAY)
-                THEN 1 ELSE 0
-              END) AS prior_leads_30,
-          SUM(CASE
-                WHEN effective_customer_at >= DATE_SUB(CURDATE(), INTERVAL 29 DAY)
-                 AND effective_customer_at < DATE_ADD(CURDATE(), INTERVAL 1 DAY)
-                THEN 1 ELSE 0
-              END) AS new_customers_30,
-          SUM(CASE
-                WHEN effective_customer_at >= DATE_SUB(CURDATE(), INTERVAL 59 DAY)
-                 AND effective_customer_at < DATE_SUB(CURDATE(), INTERVAL 29 DAY)
-                THEN 1 ELSE 0
-              END) AS prior_customers_30
-       FROM (
-          SELECT
-            c.id,
-            c.client_type AS original_type,
-            c.status AS crm_status,
-            c.created_at AS client_created_at,
-            CASE
-              WHEN c.client_type = 'client' THEN c.created_at
-              WHEN j.first_job_at IS NULL THEN i.first_invoice_at
-              WHEN i.first_invoice_at IS NULL THEN j.first_job_at
-              WHEN j.first_job_at <= i.first_invoice_at THEN j.first_job_at
-              ELSE i.first_invoice_at
-            END AS effective_customer_at
-          FROM clients c
-          LEFT JOIN (
-            SELECT tenant_id, client_id, MIN(created_at) AS first_job_at
-            FROM jobs
-            WHERE deleted_at IS NULL
-              AND status NOT IN ('draft', 'cancelled', 'archived')
-            GROUP BY tenant_id, client_id
-          ) j
-            ON j.tenant_id = c.tenant_id
-           AND j.client_id = c.id
-          LEFT JOIN (
-            SELECT tenant_id, client_id, MIN(created_at) AS first_invoice_at
-            FROM invoices
-            WHERE status NOT IN ('cancelled', 'archived', 'written_off')
-            GROUP BY tenant_id, client_id
-          ) i
-            ON i.tenant_id = c.tenant_id
-           AND i.client_id = c.id
-          WHERE c.tenant_id = :tenant_id
-            AND c.deleted_at IS NULL
-            AND c.client_type <> 'archived'
-       ) crm"
-    );
-    $customerStatsStmt->execute(array(':tenant_id' => $customerStatsTenantId));
-    $customerStatsRow = $customerStatsStmt->fetch(PDO::FETCH_ASSOC);
-
-    if ($customerStatsRow) {
-      $currentLeads = isset($customerStatsRow['new_leads_30']) ? (int) $customerStatsRow['new_leads_30'] : 0;
-      $priorLeads = isset($customerStatsRow['prior_leads_30']) ? (int) $customerStatsRow['prior_leads_30'] : 0;
-      $currentCustomers = isset($customerStatsRow['new_customers_30']) ? (int) $customerStatsRow['new_customers_30'] : 0;
-      $priorCustomers = isset($customerStatsRow['prior_customers_30']) ? (int) $customerStatsRow['prior_customers_30'] : 0;
-
-      $customerStats['total'] = isset($customerStatsRow['total']) ? (int) $customerStatsRow['total'] : 0;
-      $customerStats['lead_total'] = isset($customerStatsRow['lead_total']) ? (int) $customerStatsRow['lead_total'] : 0;
-      $customerStats['customer_total'] = isset($customerStatsRow['customer_total']) ? (int) $customerStatsRow['customer_total'] : 0;
-      $customerStats['active_total'] = isset($customerStatsRow['active_total']) ? (int) $customerStatsRow['active_total'] : 0;
-      $customerStats['inactive_total'] = isset($customerStatsRow['inactive_total']) ? (int) $customerStatsRow['inactive_total'] : 0;
-      $customerStats['new_leads_30'] = $currentLeads;
-      $customerStats['prior_leads_30'] = $priorLeads;
-      $customerStats['new_leads_change'] = $priorLeads > 0
-        ? (($currentLeads - $priorLeads) / $priorLeads) * 100
-        : ($currentLeads > 0 ? 100.0 : 0.0);
-      $customerStats['new_customers_30'] = $currentCustomers;
-      $customerStats['prior_customers_30'] = $priorCustomers;
-      $customerStats['new_customers_change'] = $priorCustomers > 0
-        ? (($currentCustomers - $priorCustomers) / $priorCustomers) * 100
-        : ($currentCustomers > 0 ? 100.0 : 0.0);
-    }
-  } catch (Throwable $customerStatsError) {
-    error_log('FieldPlx customers direct stats error: ' . $customerStatsError->getMessage());
-  }
-}
-
-$leadChangeValue = (float) $customerStats['new_leads_change'];
-$customerChangeValue = (float) $customerStats['new_customers_change'];
-$leadTrendClass = $leadChangeValue > 0 ? '' : ($leadChangeValue < 0 ? ' down' : ' neutral');
-$customerTrendClass = $customerChangeValue > 0 ? '' : ($customerChangeValue < 0 ? ' down' : ' neutral');
-$leadTrendArrow = $leadChangeValue > 0 ? '↑ ' : ($leadChangeValue < 0 ? '↓ ' : '');
-$customerTrendArrow = $customerChangeValue > 0 ? '↑ ' : ($customerChangeValue < 0 ? '↓ ' : '');
 ?>
-
 <!DOCTYPE html>
 <html lang="en">
-
 <head>
     <meta charset="utf-8" />
     <meta content="width=device-width, initial-scale=1" name="viewport" />
-    <title>Customers - FieldPlx</title>
+    <title>Clients - FieldPlx</title>
     <?php require_once __DIR__ . '/includes/links.php'; ?>
-    <style>
+<style>
     :root {
         --fieldplx-primary: #6d28d9;
         --fieldplx-primary-dark: #5b21b6;
@@ -4041,16 +3899,24 @@ $customerTrendArrow = $customerChangeValue > 0 ? '↑ ' : ($customerChangeValue 
 
 
 
-    /* ==========================================================
-       Customers page - Version 3.2.1
-       Header action overflow / topbar overlap fix
-       ========================================================== */
 
-    /*
-     * The shared navigation is fixed in the live layout. Keep this page's
-     * content below it instead of allowing the Customers header to sit
-     * underneath the topbar. This fixes Add Customer / More Actions overlap.
-     */
+    /* ==========================================================
+       Clients Manage - Jobber style / Add Invoice UI
+       Version 4.0.0
+       ========================================================== */
+    :root {
+        --cm-green: #2f8d22;
+        --cm-green-dark: #26751c;
+        --cm-green-soft: #eaf4e6;
+        --cm-navy: #00263a;
+        --cm-text: #183445;
+        --cm-muted: #647787;
+        --cm-border: #dce3e7;
+        --cm-pill: #eceae6;
+        --cm-bg: #ffffff;
+        --cm-danger: #e24234;
+    }
+
     .fieldplx-topbar {
         position: fixed !important;
         top: 0 !important;
@@ -4062,113 +3928,109 @@ $customerTrendArrow = $customerChangeValue > 0 ? '↑ ' : ($customerChangeValue 
         padding-top: var(--fieldplx-topbar-height);
     }
 
-    .fd-teams-header {
-        min-width: 0;
-        position: relative;
-        z-index: 20;
-        overflow: visible;
+    .fd-dashboard.cm-page {
+        max-width: 1600px;
+        padding: 18px 20px 34px;
+        background: #fff;
     }
 
-    .fd-teams-header>div:first-child {
-        min-width: 0;
-        flex: 1 1 auto;
-    }
-
-    .fd-teams-actions {
-        min-width: 0;
-        flex: 0 0 auto;
-        margin-left: auto;
+    .cm-header {
         display: flex;
         align-items: center;
-        justify-content: flex-end;
-        gap: 8px;
-        flex-wrap: nowrap;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 25px;
     }
 
-    .fd-teams-actions .fd-team-button {
-        flex: 0 0 auto;
+    .cm-title {
+        margin: 0;
+        color: var(--cm-navy);
+        font-size: 30px;
+        line-height: 1.1;
+        font-weight: 800;
+        letter-spacing: -0.7px;
+    }
+
+    .cm-header-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .cm-btn {
+        min-height: 40px;
+        padding: 0 16px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 7px;
+        border: 1px solid var(--cm-border);
+        border-radius: 8px;
+        background: #fff;
+        color: var(--cm-text);
+        font-size: 12px;
+        font-weight: 700;
+        text-decoration: none !important;
+        cursor: pointer;
+        transition: .15s ease;
         white-space: nowrap;
     }
 
-    .fd-customer-more {
+    .cm-btn:hover,
+    .cm-btn:focus {
+        border-color: #b8cfac;
+        color: var(--cm-green-dark);
+        background: #fbfdf9;
+        outline: none;
+    }
+
+    .cm-btn.primary {
+        border-color: var(--cm-green);
+        background: var(--cm-green);
+        color: #fff;
+    }
+
+    .cm-btn.primary:hover {
+        border-color: var(--cm-green-dark);
+        background: var(--cm-green-dark);
+        color: #fff;
+    }
+
+    .cm-btn.danger {
+        border-color: var(--cm-danger);
+        background: var(--cm-danger);
+        color: #fff;
+    }
+
+    .cm-btn:disabled {
+        opacity: .55;
+        cursor: not-allowed;
+    }
+
+    .cm-more-wrap {
         position: relative;
-        z-index: 30;
+        z-index: 100;
     }
 
-    .fd-customer-more-menu {
-        z-index: 40;
-        max-width: min(215px, calc(100vw - 24px));
-    }
-
-    @media (max-width: 991.98px) {
-        .fd-teams-header {
-            align-items: flex-start;
-        }
-
-        .fd-teams-actions {
-            flex-wrap: wrap;
-        }
-    }
-
-    @media (max-width: 767.98px) {
-        .fieldplx-main-content {
-            padding-top: 64px;
-        }
-
-        .fd-teams-actions {
-            width: 100%;
-            margin-left: 0;
-            justify-content: flex-start;
-        }
-    }
-
-    @media (max-width: 420px) {
-
-        .fd-teams-actions>.fd-team-button,
-        .fd-teams-actions>.fd-customer-more {
-            flex: 1 1 calc(50% - 4px);
-            min-width: 0;
-        }
-
-        .fd-teams-actions>.fd-customer-more>.fd-team-button {
-            width: 100%;
-        }
-    }
-
-    /* ==========================================================
-       Customers page - Version 3.1.0
-       Quotation-style summary cards + customer More menus
-       ========================================================== */
-    .fd-teams-header {
-        position: relative;
-        z-index: 20;
-        overflow: visible;
-    }
-
-    .fd-customer-more {
-        position: relative;
-        z-index: 30;
-    }
-
-    .fd-customer-more-menu {
+    .cm-menu {
+        width: 210px;
         position: absolute;
-        top: calc(100% + 7px);
+        top: calc(100% + 6px);
         right: 0;
-        z-index: 40;
-        width: 215px;
-        padding: 6px;
+        z-index: 150;
         display: none;
-        border: 1px solid #e1e7ef;
-        border-radius: 10px;
+        padding: 6px;
+        border: 1px solid var(--cm-border);
+        border-radius: 9px;
         background: #fff;
-        box-shadow: 0 16px 38px rgba(15, 23, 42, .15);
+        box-shadow: 0 14px 36px rgba(0, 38, 58, .14);
     }
 
-    .fd-customer-more.open .fd-customer-more-menu {
+    .cm-more-wrap.open .cm-menu {
         display: block;
     }
 
-    .fd-customer-more-item {
+    .cm-menu-item {
         width: 100%;
         min-height: 36px;
         padding: 8px 10px;
@@ -4176,150 +4038,119 @@ $customerTrendArrow = $customerChangeValue > 0 ? '↑ ' : ($customerChangeValue 
         align-items: center;
         gap: 9px;
         border: 0;
-        border-radius: 7px;
+        border-radius: 6px;
         background: transparent;
-        color: #33445f !important;
+        color: var(--cm-text) !important;
+        font-size: 11px;
         text-align: left;
         text-decoration: none !important;
-        font: inherit;
-        font-size: 10px;
         cursor: pointer;
     }
 
-    .fd-customer-more-item i {
-        width: 16px;
-        color: #123d70;
-        font-size: 13px;
-        text-align: center;
+    .cm-menu-item:hover {
+        background: #f5f4f1;
+        color: var(--cm-navy) !important;
     }
 
-    .fd-customer-more-item:hover,
-    .fd-customer-more-item:focus {
-        color: var(--fd-green-dark) !important;
-        background: var(--fd-green-soft);
-        outline: 0;
+    .cm-menu-item.danger {
+        color: var(--cm-danger) !important;
     }
 
-    .fd-customer-more-item:hover i,
-    .fd-customer-more-item:focus i {
-        color: var(--fd-green-dark);
-    }
-
-    /* Same visual structure as Quotations: Overview + 3 metric cards. */
-    .fd-customer-summary {
-        margin-bottom: 16px;
-    }
-
-    .fd-customer-summary>div {
-        display: flex;
-    }
-
-    .fd-customer-summary-card {
-        width: 100%;
-        min-height: 134px;
-        padding: 15px 18px;
-        position: relative;
-        overflow: visible;
-        border: 1px solid #dfe6ef;
-        border-radius: 12px;
-        background: #fff;
-        box-shadow: 0 3px 12px rgba(24, 45, 76, .035);
-    }
-
-    .fd-customer-summary-title {
-        margin: 0;
-        color: #10213c;
-        font-size: 15px;
-        line-height: 1.2;
-        font-weight: 700;
-    }
-
-    .fd-customer-summary-period {
-        display: block;
-        margin-top: 3px;
-        color: #7f8da1;
-        font-size: 10px;
-        line-height: 1.2;
-    }
-
-    .fd-customer-summary-arrow {
-        position: absolute;
-        top: 15px;
-        right: 16px;
-        color: #8191a6;
-        font-size: 15px;
-        line-height: 1;
-    }
-
-    .fd-customer-summary-number-row {
-        min-height: 67px;
-        display: flex;
-        align-items: flex-end;
+    .cm-cards {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr)) minmax(330px, 1.32fr);
         gap: 8px;
-        padding-top: 10px;
+        margin-bottom: 18px;
     }
 
-    .fd-customer-summary-value {
-        color: #030d1b;
-        font-size: 31px;
-        line-height: 1;
-        font-weight: 700;
-        letter-spacing: -.45px;
-    }
-
-    .fd-customer-summary-subvalue {
-        display: block;
-        margin-top: 7px;
-        color: #728197;
-        font-size: 10px;
-    }
-
-    .fd-customer-trend-change {
+    .cm-card {
+        min-height: 145px;
         position: relative;
-        margin-bottom: 1px;
-        padding: 4px 7px;
-        border-radius: 999px;
-        color: #398523;
-        background: #edf7e8;
-        font-size: 10px;
+        padding: 16px 17px;
+        border: 1px solid var(--cm-border);
+        border-radius: 8px;
+        background: #fff;
+        overflow: visible;
+    }
+
+    .cm-card-title {
+        margin: 0;
+        color: var(--cm-navy);
+        font-size: 14px;
+        font-weight: 700;
+    }
+
+    .cm-card-period {
+        margin-top: 4px;
+        color: var(--cm-muted);
+        font-size: 10.5px;
+    }
+
+    .cm-card-arrow {
+        position: absolute;
+        top: 17px;
+        right: 16px;
+        color: var(--cm-navy);
+        font-size: 13px;
+    }
+
+    .cm-stat-row {
+        position: absolute;
+        left: 17px;
+        bottom: 15px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .cm-stat-value {
+        color: var(--cm-navy);
+        font-size: 26px;
         line-height: 1;
+        font-weight: 800;
+    }
+
+    .cm-trend {
+        position: relative;
+        padding: 4px 8px;
+        border-radius: 999px;
+        color: #26751c;
+        background: var(--cm-green-soft);
+        font-size: 10px;
         font-weight: 600;
         cursor: help;
     }
 
-    .fd-customer-trend-change.down {
-        color: #bf4d54;
-        background: #fff0f1;
+    .cm-trend.down {
+        color: #b53f36;
+        background: #fff0ef;
     }
 
-    .fd-customer-trend-change.neutral {
-        color: #64748b;
-        background: #f1f5f9;
+    .cm-trend.neutral {
+        color: #687987;
+        background: #eef2f4;
     }
 
-    .fd-customer-trend-tooltip {
+    .cm-trend-tooltip {
+        width: 180px;
         position: absolute;
         left: 50%;
         bottom: calc(100% + 9px);
-        z-index: 1080;
-        width: 190px;
+        z-index: 1000;
         padding: 10px 11px;
-        border: 1px solid #e5e7eb;
-        border-radius: 9px;
+        border: 1px solid var(--cm-border);
+        border-radius: 8px;
         background: #fff;
-        box-shadow: 0 12px 30px rgba(15, 23, 42, .17);
-        color: #334155;
-        font-size: 10px;
-        font-weight: 500;
-        line-height: 1.55;
+        color: var(--cm-text);
+        box-shadow: 0 10px 28px rgba(0, 38, 58, .16);
         opacity: 0;
         visibility: hidden;
-        transform: translate(-50%, 5px);
-        transition: .15s ease;
+        transform: translate(-50%, 4px);
+        transition: .14s ease;
         pointer-events: none;
     }
 
-    .fd-customer-trend-tooltip::after {
+    .cm-trend-tooltip::after {
         position: absolute;
         top: 100%;
         left: 50%;
@@ -4329,1258 +4160,1937 @@ $customerTrendArrow = $customerChangeValue > 0 ? '↑ ' : ($customerChangeValue 
         content: "";
     }
 
-    .fd-customer-trend-change:hover .fd-customer-trend-tooltip,
-    .fd-customer-trend-change:focus .fd-customer-trend-tooltip {
+    .cm-trend:hover .cm-trend-tooltip,
+    .cm-trend:focus .cm-trend-tooltip {
         opacity: 1;
         visibility: visible;
         transform: translate(-50%, 0);
     }
 
-    .fd-customer-tooltip-title {
+    .cm-tooltip-title {
         display: block;
         margin-bottom: 4px;
-        color: #64748b;
+        color: var(--cm-muted);
         font-weight: 600;
     }
 
-    .fd-customer-tooltip-row {
+    .cm-tooltip-row {
         display: flex;
         justify-content: space-between;
-        gap: 10px;
+        gap: 12px;
+        line-height: 1.6;
     }
 
-    .fd-customer-tooltip-row strong {
-        color: #0f172a;
+    .cm-merge-card {
+        min-height: 145px;
+        display: flex;
+        align-items: stretch;
+        padding: 0;
+        overflow: hidden;
     }
 
-    .fd-customer-overview-list {
-        margin-top: 7px;
-        display: grid;
-        gap: 5px;
+    .cm-merge-copy {
+        min-width: 0;
+        flex: 1;
+        padding: 16px 14px 14px 16px;
     }
 
-    .fd-customer-overview-row {
-        min-height: 14px;
-        display: grid;
-        grid-template-columns: 7px minmax(0, 1fr) auto;
+    .cm-merge-copy p {
+        max-width: 220px;
+        margin: 0 0 16px;
+        color: #52697a;
+        font-size: 12px;
+        line-height: 1.28;
+    }
+
+    .cm-merge-art {
+        width: 122px;
+        min-width: 122px;
+        position: relative;
+        background: linear-gradient(160deg, #f0f2f1, #fbfbfa);
+    }
+
+    .cm-merge-art::before,
+    .cm-merge-art::after {
+        position: absolute;
+        left: 18px;
+        right: 12px;
+        height: 42px;
+        border-radius: 4px;
+        border: 1px solid #dde2e1;
+        background: #fff;
+        box-shadow: 0 3px 8px rgba(0,0,0,.04);
+        content: "";
+    }
+
+    .cm-merge-art::before { top: 18px; transform: rotate(-3deg); }
+    .cm-merge-art::after { bottom: 14px; transform: rotate(2deg); }
+
+    .cm-section-title-row {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        margin: 12px 0 17px;
+    }
+
+    .cm-section-title-row h2 {
+        margin: 0;
+        color: var(--cm-navy);
+        font-size: 18px;
+        font-weight: 800;
+    }
+
+    .cm-result-count {
+        color: var(--cm-muted);
+        font-size: 11px;
+    }
+
+    .cm-toolbar {
+        display: flex;
         align-items: center;
-        gap: 6px;
-        color: #5d6c82;
-        font-size: 9.5px;
-        line-height: 1.15;
+        gap: 8px;
+        margin-bottom: 13px;
+        position: relative;
+        z-index: 40;
     }
 
-    .fd-customer-overview-row strong {
-        color: #17243a;
-        font-size: 9.5px;
-        font-weight: 700;
+    .cm-filter-wrap {
+        position: relative;
     }
 
-    .fd-customer-overview-dot {
-        width: 6px;
-        height: 6px;
-        border-radius: 50%;
-        background: #91a0b4;
-    }
-
-    .fd-customer-overview-dot.lead {
-        background: #9aa9bc;
-    }
-
-    .fd-customer-overview-dot.customer {
-        background: #d6a825;
-    }
-
-    .fd-customer-overview-dot.active {
-        background: #68aa1d;
-    }
-
-    .fd-customer-overview-dot.inactive {
-        background: #e45b66;
-    }
-
-    /* Version 3.2: the customer row itself opens Customer View. */
-    .fd-client-click-row {
-        cursor: pointer;
-    }
-
-    .fd-client-click-row:active {
-        background: #f7fbed;
-    }
-
-    /* Row-level More menu is fixed so table scrolling never clips it. */
-    .fd-client-row-more-button {
-        min-width: 64px;
-        height: 29px;
-        padding: 0 9px;
+    .cm-filter-pill {
+        min-height: 36px;
+        padding: 0 13px;
         display: inline-flex;
         align-items: center;
-        justify-content: center;
-        gap: 5px;
-        border: 1px solid #dfe7ef;
-        border-radius: 7px;
-        color: #43546c;
+        gap: 8px;
+        border: 1px solid var(--cm-border);
+        border-radius: 999px;
         background: #fff;
-        font-size: 9px;
-        font-weight: 700;
+        color: var(--cm-text);
+        font-size: 11px;
         cursor: pointer;
     }
 
-    .fd-client-row-more-button:hover,
-    .fd-client-row-more-button.active {
-        border-color: #cfe3ae;
-        color: var(--fd-green-dark);
-        background: var(--fd-green-soft);
+    .cm-filter-pill.status {
+        border-color: var(--cm-pill);
+        background: var(--cm-pill);
     }
 
-    .fd-client-row-more-menu {
-        width: 190px;
-        padding: 6px;
-        position: fixed;
-        z-index: 24000;
+    .cm-filter-pill strong {
+        font-weight: 700;
+    }
+
+    .cm-filter-dropdown {
+        width: 250px;
+        position: absolute;
+        top: calc(100% + 6px);
+        left: 0;
+        z-index: 90;
         display: none;
-        border: 1px solid #dfe6ef;
-        border-radius: 10px;
+        padding: 6px;
+        border: 1px solid var(--cm-border);
+        border-radius: 8px;
         background: #fff;
-        box-shadow: 0 18px 42px rgba(0, 17, 49, .17);
+        box-shadow: 0 12px 28px rgba(0, 38, 58, .14);
     }
 
-    .fd-client-row-more-menu.show {
+    .cm-filter-wrap.open .cm-filter-dropdown {
         display: block;
     }
 
-    .fd-client-row-more-menu .fd-customer-more-item+.fd-customer-more-item {
-        margin-top: 2px;
-    }
-
-    @media (max-width: 991.98px) {
-        .fd-customer-summary-card {
-            min-height: 126px;
-        }
-    }
-
-    @media (max-width: 575.98px) {
-        .fd-customer-summary-card {
-            min-height: 122px;
-        }
-
-        .fd-customer-summary-value {
-            font-size: 28px;
-        }
-    }
-
-    a,
-    a:link,
-    a:visited,
-    a:hover,
-    a:focus,
-    a:active {
-        text-decoration: none !important
-    }
-
-    .fd-client-type {
-        display: inline-flex;
-        align-items: center;
-        padding: 5px 7px;
-        border-radius: 5px;
-        font-size: 8.5px;
-        font-weight: 600
-    }
-
-    .fd-client-type.client,
-    .fd-client-type.active {
-        color: #5d971b;
-        background: #f0f8e5
-    }
-
-    .fd-client-type.lead,
-    .fd-client-type.new {
-        color: #123d70;
-        background: #edf2f7
-    }
-
-    .fd-client-type.inactive {
-        color: #6f7b90;
-        background: #eef2f6
-    }
-
-    .fd-client-type.archived {
-        color: #8a5e10;
-        background: #fff7df
-    }
-
-    .fd-client-checks {
-        grid-column: 1/-1;
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px
-    }
-
-    .fd-client-check {
-        min-height: 38px;
+    .cm-filter-option {
+        width: 100%;
+        min-height: 34px;
         padding: 7px 9px;
-        display: inline-flex;
+        display: flex;
         align-items: center;
-        gap: 7px;
-        border: 1px solid #e3e8ed;
-        border-radius: 7px;
-        color: #5c6d82;
+        justify-content: space-between;
+        gap: 8px;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: var(--cm-text);
+        font-size: 11px;
+        text-align: left;
+        cursor: pointer;
+    }
+
+    .cm-filter-option:hover,
+    .cm-filter-option.active {
+        background: #f4f3ef;
+    }
+
+    .cm-toolbar-spacer { margin-left: auto; }
+
+    .cm-search {
+        width: 255px;
+        position: relative;
+    }
+
+    .cm-search i {
+        position: absolute;
+        left: 14px;
+        top: 50%;
+        transform: translateY(-50%);
+        color: #5b7484;
+        font-size: 14px;
+    }
+
+    .cm-search input {
+        width: 100%;
+        height: 40px;
+        padding: 8px 12px 8px 40px;
+        border: 1px solid var(--cm-border);
+        border-radius: 8px;
         background: #fff;
-        font-size: 8.5px
+        color: var(--cm-text);
+        font-size: 11px;
+        outline: none;
     }
 
-    .fd-client-check input {
-        width: 14px;
-        height: 14px;
-        accent-color: var(--fd-green)
+    .cm-search input:focus {
+        border-color: #7ca96c;
+        box-shadow: 0 0 0 2px rgba(47,141,34,.10);
     }
 
-
-
-    /* Customers table font + alignment correction */
-    .fd-client-table {
-        table-layout: auto;
+    .cm-table-wrap {
+        width: 100%;
+        overflow: visible;
     }
 
-    .fd-client-table th {
-        padding: 12px 14px !important;
-        color: #5f6f86 !important;
-        font-size: 9px !important;
-        line-height: 1.2 !important;
-        font-weight: 700 !important;
-        letter-spacing: .01em !important;
-        text-align: left !important;
-        vertical-align: middle !important;
-        white-space: nowrap !important;
+    .cm-table {
+        width: 100%;
+        table-layout: fixed;
+        border-collapse: collapse;
     }
 
-    .fd-client-table td {
-        padding: 12px 14px !important;
-        color: #33445f !important;
-        font-size: 9.5px !important;
-        line-height: 1.45 !important;
-        font-weight: 400 !important;
-        text-align: left !important;
-        vertical-align: middle !important;
+    .cm-table th,
+    .cm-table td {
+        border-bottom: 1px solid var(--cm-border);
+        color: var(--cm-text);
+        font-size: 11px;
+        text-align: left;
+        vertical-align: middle;
     }
 
-    .fd-client-table th:first-child,
-    .fd-client-table td:first-child {
-        width: 58px;
-        text-align: center !important;
+    .cm-table th {
+        height: 42px;
+        padding: 8px 8px;
+        font-weight: 500;
+        color: #4f6675;
     }
 
-    .fd-client-person {
-        min-width: 185px;
-        align-items: center !important;
+    .cm-table td {
+        min-height: 50px;
+        padding: 10px 8px;
     }
 
-    .fd-client-person strong {
-        color: #17233b !important;
-        font-size: 10.5px !important;
-        line-height: 1.35 !important;
-        font-weight: 700 !important;
-    }
+    .cm-col-check { width: 36px; }
+    .cm-col-name { width: 26%; }
+    .cm-col-address { width: 28%; }
+    .cm-col-tags { width: 21%; }
+    .cm-col-status { width: 12%; }
+    .cm-col-last { width: 13%; }
 
-    .fd-client-person small {
-        margin-top: 3px !important;
-        color: #8793a5 !important;
-        font-size: 8.5px !important;
-        line-height: 1.3 !important;
-        font-weight: 400 !important;
-    }
-
-    .fd-client-table td small {
-        color: #66758a !important;
-        font-size: 8.5px !important;
-        line-height: 1.35 !important;
-    }
-
-    .fd-client-badge {
-        min-height: 22px;
-        padding: 4px 7px !important;
-        display: inline-flex !important;
-        align-items: center !important;
-        justify-content: center !important;
-        border-radius: 5px !important;
-        font-size: 8.5px !important;
-        line-height: 1 !important;
-        font-weight: 700 !important;
-        text-transform: capitalize !important;
-        white-space: nowrap !important;
-    }
-
-    .fd-client-actions-cell {
-        min-width: 100px;
-        justify-content: flex-start !important;
-        align-items: center !important;
-        gap: 4px !important;
-    }
-
-    .fd-client-icon-btn {
-        width: 29px !important;
-        height: 29px !important;
-        min-width: 29px !important;
-        display: inline-flex !important;
-        align-items: center !important;
-        justify-content: center !important;
-        line-height: 1 !important;
-    }
-
-    .fd-client-icon-btn i {
-        line-height: 1 !important;
-        font-size: 12px !important;
-    }
-
-    .fd-client-table td:nth-child(3),
-    .fd-client-table td:nth-child(9) {
-        vertical-align: middle !important;
-    }
-
-    .fd-client-table td:nth-child(10) {
-        color: #52627a !important;
-        font-size: 9px !important;
-    }
-
-    .fd-client-table th:last-child,
-    .fd-client-table td:last-child {
-        text-align: left !important;
-    }
-
-    .fd-client-table a,
-    .fd-client-table a:visited,
-    .fd-client-table a:hover,
-    .fd-client-table a:focus,
-    .fd-client-table a:active {
+    .cm-sort-button {
+        padding: 0;
+        border: 0;
+        background: transparent;
         color: inherit;
+        font: inherit;
+        cursor: pointer;
+    }
+
+    .cm-sort-button i { margin-left: 3px; color: #94a4ad; font-size: 10px; }
+
+    .cm-checkbox {
+        width: 17px;
+        height: 17px;
+        border-radius: 4px;
+        accent-color: var(--cm-green);
+    }
+
+    .cm-row {
+        position: relative;
+        transition: background .12s ease;
+        cursor: pointer;
+    }
+
+    .cm-row:hover {
+        background: #f4f2ed;
+    }
+
+    .cm-name {
+        color: var(--cm-navy);
+        font-weight: 700;
         text-decoration: none !important;
     }
 
-    .fd-client-table a.fd-client-badge,
-    .fd-client-table a.fd-client-badge:visited {
-        color: #123d70 !important;
+    .cm-address {
+        display: -webkit-box;
+        overflow: hidden;
+        color: #405c6d;
+        line-height: 1.4;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
     }
 
-    @media(max-width:767.98px) {
-
-        .fd-client-table th,
-        .fd-client-table td {
-            padding: 10px 11px !important;
-        }
+    .cm-tags {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        flex-wrap: wrap;
     }
 
-    /* Client location/view/delete controls */
-    .fd-client-location-link {
-        min-width: 42px;
-        height: 28px;
-        padding: 0 8px;
+    .cm-tag {
+        max-width: 105px;
+        padding: 4px 9px;
         display: inline-flex;
         align-items: center;
-        justify-content: center;
-        gap: 5px;
-        border: 1px solid #dfe7ef;
-        border-radius: 7px;
-        color: #123d70 !important;
-        background: #f8fafc;
-        font-size: 9px;
-        font-weight: 700;
-        text-decoration: none !important
-    }
-
-    .fd-client-location-link:hover {
-        border-color: #cfe3ae;
-        color: var(--fd-green-dark) !important;
-        background: var(--fd-green-soft)
-    }
-
-    .fd-team-actions-cell a.fd-team-icon-button {
-        text-decoration: none !important
-    }
-
-
-    /* Customers - Version 3.1.0 action column */
-    .fd-client-table th:last-child,
-    .fd-client-table td:last-child {
-        min-width: 250px;
+        border-radius: 999px;
+        background: #edf1f2;
+        color: #173c50;
+        font-size: 10px;
+        overflow: hidden;
+        text-overflow: ellipsis;
         white-space: nowrap;
     }
 
-    .fd-client-actions-cell {
-        min-width: 238px;
+    .cm-tag-more {
+        color: var(--cm-muted);
+        font-size: 10px;
+    }
+
+    .cm-status {
         display: inline-flex;
         align-items: center;
-        gap: 5px;
-        flex-wrap: nowrap;
+        gap: 6px;
+        padding: 4px 9px;
+        border-radius: 999px;
+        color: #2c6f22;
+        background: #e8f2e5;
+        font-size: 10px;
     }
 
-    .fd-client-actions-cell .fd-team-icon-button {
-        flex: 0 0 29px;
+    .cm-status::before {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #36a225;
+        content: "";
     }
 
-    .fd-client-action-divider {
-        width: 1px;
+    .cm-status.new {
+        color: #786714;
+        background: #f5f0cf;
+    }
+
+    .cm-status.new::before { background: #c6a915; }
+    .cm-status.inactive { color: #687987; background: #edf1f3; }
+    .cm-status.inactive::before { background: #72818c; }
+    .cm-status.archived { color: #6c7480; background: #eceeef; }
+    .cm-status.archived::before { background: #89939a; }
+
+    .cm-last-cell {
+        position: relative;
+        min-height: 30px;
+        display: flex;
+        align-items: center;
+    }
+
+    .cm-row-actions {
+        position: absolute;
+        top: 50%;
+        right: 0;
+        display: flex;
+        align-items: center;
+        border: 1px solid var(--cm-border);
+        border-radius: 7px;
+        background: #fff;
+        box-shadow: 0 4px 10px rgba(0,38,58,.08);
+        opacity: 0;
+        visibility: hidden;
+        transform: translateY(-50%);
+        transition: .12s ease;
+        overflow: hidden;
+    }
+
+    .cm-row:hover .cm-row-actions,
+    .cm-row:focus-within .cm-row-actions {
+        opacity: 1;
+        visibility: visible;
+    }
+
+    .cm-icon-btn {
+        width: 38px;
+        height: 34px;
+        display: grid;
+        place-items: center;
+        border: 0;
+        border-right: 1px solid #eef1f2;
+        background: #fff;
+        color: #173c50;
+        font-size: 15px;
+        text-decoration: none !important;
+        cursor: pointer;
+    }
+
+    .cm-icon-btn:last-child { border-right: 0; }
+    .cm-icon-btn:hover { background: #f4f3ef; color: var(--cm-navy); }
+    .cm-icon-btn.disabled { opacity: .35; pointer-events: none; }
+
+    .cm-row-menu {
+        width: 162px;
+        position: fixed;
+        z-index: 25000;
+        display: none;
+        padding: 5px;
+        border: 1px solid var(--cm-border);
+        border-radius: 8px;
+        background: #fff;
+        box-shadow: 0 14px 32px rgba(0, 38, 58, .16);
+    }
+
+    .cm-row-menu.show { display: block; }
+
+    .cm-empty {
+        padding: 34px 15px !important;
+        text-align: center !important;
+        color: var(--cm-muted) !important;
+    }
+
+    .cm-pagination {
+        min-height: 48px;
+        display: none;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding-top: 12px;
+        color: var(--cm-muted);
+        font-size: 10px;
+    }
+
+    .cm-pagination.show { display: flex; }
+    .cm-pagination-actions { display: flex; gap: 6px; }
+
+    .cm-modal-backdrop {
+        position: fixed;
+        inset: 0;
+        z-index: 26000;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 18px;
+        background: rgba(0, 18, 28, .38);
+    }
+
+    .cm-modal-backdrop.show { display: flex; }
+
+    .cm-modal {
+        width: min(610px, 100%);
+        border: 1px solid var(--cm-border);
+        border-radius: 10px;
+        background: #fff;
+        box-shadow: 0 22px 55px rgba(0, 38, 58, .22);
+    }
+
+    .cm-modal.small { width: min(470px, 100%); }
+
+    .cm-modal-head {
+        min-height: 66px;
+        padding: 16px 22px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+    }
+
+    .cm-modal-head h3 {
+        margin: 0;
+        color: var(--cm-navy);
+        font-size: 20px;
+        line-height: 1.2;
+        font-weight: 800;
+    }
+
+    .cm-close {
+        width: 32px;
+        height: 32px;
+        display: grid;
+        place-items: center;
+        border: 0;
+        background: transparent;
+        color: var(--cm-text);
+        font-size: 19px;
+        cursor: pointer;
+    }
+
+    .cm-modal-body { padding: 0 22px 20px; }
+    .cm-modal-footer {
+        padding: 14px 22px 18px;
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+    }
+
+    .cm-tag-editor-top {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-bottom: 8px;
+    }
+
+    .cm-select-tags-btn {
+        min-height: 36px;
+        padding: 0 13px;
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid var(--cm-border);
+        border-radius: 999px;
+        background: #fff;
+        color: var(--cm-text);
+        font-size: 11px;
+        cursor: pointer;
+    }
+
+    .cm-selected-tag {
+        min-height: 36px;
+        padding: 0 8px 0 13px;
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        border-radius: 999px;
+        background: var(--cm-pill);
+        color: var(--cm-text);
+        font-size: 11px;
+    }
+
+    .cm-selected-tag button {
+        width: 23px;
         height: 23px;
-        flex: 0 0 1px;
-        margin: 0 2px;
-        background: #e5eaf1;
+        display: grid;
+        place-items: center;
+        border: 0;
+        border-radius: 50%;
+        background: #fff;
+        color: #6b7e88;
+        cursor: pointer;
     }
 
-    @media(max-width:575.98px) {
-
-        .fd-client-table th:last-child,
-        .fd-client-table td:last-child {
-            min-width: 238px;
-        }
+    .cm-tag-picker {
+        width: 245px;
+        position: absolute;
+        z-index: 27000;
+        display: none;
+        border: 1px solid var(--cm-border);
+        border-radius: 8px;
+        background: #fff;
+        box-shadow: 0 12px 28px rgba(0,38,58,.16);
+        overflow: hidden;
     }
-    </style>
+
+    .cm-tag-picker.show { display: block; }
+
+    .cm-tag-search {
+        width: 100%;
+        height: 48px;
+        padding: 0 14px;
+        border: 0;
+        border-bottom: 1px solid var(--cm-border);
+        outline: 0;
+        font-size: 11px;
+    }
+
+    .cm-tag-picker-meta {
+        min-height: 44px;
+        padding: 0 14px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        border-bottom: 1px solid var(--cm-border);
+        color: var(--cm-navy);
+        font-size: 10px;
+        font-weight: 700;
+    }
+
+    .cm-clear-link,
+    .cm-create-tag-link {
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--cm-green-dark);
+        font-size: 10px;
+        font-weight: 700;
+        text-decoration: underline;
+        cursor: pointer;
+    }
+
+    .cm-tag-list { max-height: 185px; overflow-y: auto; }
+    .cm-tag-option {
+        width: 100%;
+        min-height: 40px;
+        padding: 8px 14px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border: 0;
+        background: #fff;
+        color: var(--cm-text);
+        font-size: 11px;
+        text-align: left;
+        cursor: pointer;
+    }
+    .cm-tag-option:hover { background: #f5f4f1; }
+    .cm-tag-option i { visibility: hidden; }
+    .cm-tag-option.selected i { visibility: visible; }
+    .cm-tag-picker-create { padding: 10px 14px; border-top: 1px solid var(--cm-border); }
+
+    .cm-confirm-copy {
+        margin: 0;
+        color: #415b6c;
+        font-size: 12px;
+        line-height: 1.55;
+    }
+
+    .cm-toast {
+        width: min(360px, calc(100vw - 28px));
+        position: fixed;
+        top: 82px;
+        right: 18px;
+        z-index: 30000;
+        padding: 11px 13px;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        border-radius: 8px;
+        color: #fff;
+        opacity: 0;
+        visibility: hidden;
+        transform: translateY(-8px);
+        transition: .16s ease;
+        box-shadow: 0 12px 30px rgba(0,38,58,.18);
+    }
+
+    .cm-toast.show { opacity: 1; visibility: visible; transform: translateY(0); }
+    .cm-toast.success { background: #2f8d22; }
+    .cm-toast.error { background: #cf4a43; }
+    .cm-toast.warning { background: #9b7b17; }
+    .cm-toast.info { background: #173c50; }
+    .cm-toast span { flex: 1; font-size: 11px; }
+    .cm-toast button { border: 0; background: transparent; color: #fff; }
+
+    @media (max-width: 1199.98px) {
+        .cm-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 991.98px) {
+        .fieldplx-main-content { padding-top: var(--fieldplx-topbar-height); }
+        .cm-col-address { width: 31%; }
+        .cm-col-tags { width: 18%; }
+    }
+
+    @media (max-width: 767.98px) {
+        .fieldplx-main-content { padding-top: 64px; }
+        .fd-dashboard.cm-page { padding: 16px 13px 28px; }
+        .cm-header { align-items: flex-start; }
+        .cm-title { font-size: 26px; }
+        .cm-cards { grid-template-columns: 1fr; }
+        .cm-toolbar { flex-wrap: wrap; }
+        .cm-toolbar-spacer { display: none; }
+        .cm-search { width: 100%; order: -1; }
+        .cm-table thead { display: none; }
+        .cm-table,
+        .cm-table tbody,
+        .cm-table tr,
+        .cm-table td { display: block; width: 100% !important; }
+        .cm-table tr { padding: 12px 40px 12px 12px; border-bottom: 1px solid var(--cm-border); }
+        .cm-table td { min-height: auto; padding: 4px 0; border: 0; }
+        .cm-table td.cm-check-cell { position: absolute; right: 12px; top: 12px; width: auto !important; }
+        .cm-address { -webkit-line-clamp: 3; }
+        .cm-last-cell { min-height: 34px; }
+        .cm-row-actions { right: auto; left: 0; top: 100%; transform: none; }
+        .cm-row:hover .cm-row-actions,
+        .cm-row:focus-within .cm-row-actions { position: static; margin-top: 6px; display: inline-flex; transform: none; }
+    }
+
+    @media (max-width: 520px) {
+        .cm-header { flex-direction: column; }
+        .cm-header-actions { width: 100%; }
+        .cm-header-actions > * { flex: 1; }
+        .cm-header-actions .cm-btn { width: 100%; }
+        .cm-modal-head h3 { font-size: 17px; }
+        .cm-modal-head, .cm-modal-body, .cm-modal-footer { padding-left: 16px; padding-right: 16px; }
+    }
+
+
+
+    /* ==========================================================
+       Clients manage v4.1.0 - bulk selection + email composer
+       ========================================================== */
+    .cm-selection-bar {
+        min-height: 48px;
+        display: none;
+        align-items: center;
+        gap: 14px;
+        padding: 5px 8px;
+        border-bottom: 1px solid var(--cm-border);
+        color: var(--cm-text);
+        background: #fff;
+    }
+
+    .cm-selection-bar.show { display: flex; }
+    .cm-selection-bar .cm-checkbox { flex: 0 0 auto; }
+    .cm-selection-count { font-size: 11px; font-weight: 700; white-space: nowrap; }
+    .cm-selection-clear {
+        padding: 0;
+        border: 0;
+        background: transparent;
+        color: var(--cm-green-dark);
+        font-size: 11px;
+        font-weight: 700;
+        text-decoration: underline;
+        cursor: pointer;
+    }
+    .cm-selection-icon {
+        width: 34px;
+        height: 34px;
+        display: grid;
+        place-items: center;
+        border: 0;
+        border-radius: 7px;
+        background: transparent;
+        color: #173c50;
+        font-size: 17px;
+        cursor: pointer;
+    }
+    .cm-selection-icon:hover { background: #f4f3ef; }
+    .cm-selection-icon.danger:hover { color: #cf4a43; background: #fff1ef; }
+    .cm-table-wrap.selection-active .cm-table thead { display: none; }
+    .cm-row.is-selected { background: #fbfcf8; }
+
+    .cm-email-modal {
+        width: min(930px, calc(100vw - 34px));
+        max-height: calc(100vh - 34px);
+        overflow: auto;
+        border: 1px solid var(--cm-border);
+        border-radius: 10px;
+        background: #fff;
+        box-shadow: 0 24px 64px rgba(0, 38, 58, .24);
+    }
+    .cm-email-head {
+        min-height: 72px;
+        padding: 18px 24px 12px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+    }
+    .cm-email-head h3 {
+        margin: 0;
+        color: var(--cm-navy);
+        font-size: 21px;
+        line-height: 1.2;
+        font-weight: 800;
+    }
+    .cm-email-body {
+        padding: 8px 24px 18px;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 315px;
+        gap: 24px;
+    }
+    .cm-email-left { min-width: 0; }
+    .cm-email-to {
+        min-height: 58px;
+        display: grid;
+        grid-template-columns: 28px minmax(0, 1fr) 28px;
+        align-items: center;
+        gap: 7px;
+        padding: 7px 10px;
+        border: 1px solid var(--cm-border);
+        border-radius: 8px;
+        background: #fff;
+    }
+    .cm-email-to-label { color: #526c7c; font-size: 11px; }
+    .cm-email-chip-wrap { display: flex; flex-wrap: wrap; gap: 6px; min-width: 0; }
+    .cm-email-chip {
+        max-width: 100%;
+        min-height: 35px;
+        padding: 0 12px;
+        display: inline-flex;
+        align-items: center;
+        gap: 9px;
+        border: 1px solid var(--cm-border);
+        border-radius: 999px;
+        color: #315367;
+        background: #fff;
+        font-size: 11px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .cm-email-more { color: #173c50; text-align: center; font-size: 18px; }
+    .cm-email-field {
+        margin-top: 10px;
+        position: relative;
+    }
+    .cm-email-field label {
+        position: absolute;
+        top: 7px;
+        left: 13px;
+        z-index: 2;
+        color: #67808f;
+        font-size: 10px;
+        pointer-events: none;
+    }
+    .cm-email-field input,
+    .cm-email-field textarea {
+        width: 100%;
+        border: 1px solid var(--cm-border);
+        border-radius: 8px;
+        color: var(--cm-text);
+        background: #fff;
+        outline: 0;
+        font: inherit;
+        font-size: 11px;
+    }
+    .cm-email-field input {
+        height: 50px;
+        padding: 20px 13px 7px;
+    }
+    .cm-email-field textarea {
+        min-height: 270px;
+        padding: 25px 13px 11px;
+        resize: vertical;
+        line-height: 1.55;
+    }
+    .cm-email-field input:focus,
+    .cm-email-field textarea:focus,
+    .cm-email-drop:focus-within {
+        border-color: #7ca96c;
+        box-shadow: 0 0 0 2px rgba(47,141,34,.10);
+    }
+    .cm-email-helper {
+        margin-top: 5px;
+        color: #687f8e;
+        font-size: 9px;
+        line-height: 1.4;
+    }
+    .cm-email-attachments h4 {
+        margin: 3px 0 14px;
+        color: var(--cm-navy);
+        font-size: 13px;
+        font-weight: 800;
+    }
+    .cm-email-drop {
+        min-height: 90px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        padding: 12px;
+        border: 1px dashed #d8e0e4;
+        border-radius: 8px;
+        color: #607986;
+        background: #fff;
+        text-align: center;
+        cursor: pointer;
+    }
+    .cm-email-drop.dragover { border-color: #7ca96c; background: #f8fbf5; }
+    .cm-email-select {
+        min-height: 32px;
+        padding: 0 13px;
+        border: 1px solid var(--cm-border);
+        border-radius: 7px;
+        color: var(--cm-green-dark);
+        background: #fff;
+        font-size: 10px;
+        font-weight: 700;
+        cursor: pointer;
+    }
+    .cm-email-drop small { font-size: 9px; }
+    .cm-email-size-text { margin-top: 10px; color: #5f7785; font-size: 9px; }
+    .cm-email-progress { height: 7px; margin-top: 5px; border-radius: 999px; overflow: hidden; background: #dedcd4; }
+    .cm-email-progress > span { width: 0; height: 100%; display: block; background: var(--cm-green); transition: width .15s ease; }
+    .cm-email-file-list { margin-top: 10px; display: grid; gap: 6px; }
+    .cm-email-file {
+        min-height: 40px;
+        padding: 7px 8px;
+        display: grid;
+        grid-template-columns: 1fr auto;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid var(--cm-border);
+        border-radius: 7px;
+        color: #405c6d;
+        background: #fff;
+        font-size: 9px;
+    }
+    .cm-email-file strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9.5px; }
+    .cm-email-file small { color: #83939d; font-size: 8px; }
+    .cm-email-file button { width: 26px; height: 26px; border: 0; border-radius: 6px; background: transparent; color: #687f8e; cursor: pointer; }
+    .cm-email-file button:hover { color: #cf4a43; background: #fff1ef; }
+    .cm-email-footer {
+        padding: 0 24px 20px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+    }
+    .cm-email-copy {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: #405c6d;
+        font-size: 11px;
+    }
+    .cm-email-copy input { width: 17px; height: 17px; accent-color: var(--cm-green); }
+    .cm-email-actions { display: flex; gap: 8px; }
+
+    @media (max-width: 760px) {
+        .cm-email-modal { width: min(620px, calc(100vw - 22px)); }
+        .cm-email-body { grid-template-columns: 1fr; padding-left: 16px; padding-right: 16px; gap: 16px; }
+        .cm-email-head { padding-left: 16px; padding-right: 16px; }
+        .cm-email-footer { padding-left: 16px; padding-right: 16px; flex-direction: column; align-items: stretch; }
+        .cm-email-actions { justify-content: flex-end; }
+        .cm-email-field textarea { min-height: 210px; }
+    }
+
+</style>
 </head>
-
 <body>
     <?php require_once __DIR__ . '/includes/nav.php'; ?>
     <div class="fieldplx-main-layout">
         <?php require_once __DIR__ . '/includes/sidebar.php'; ?>
         <main class="fieldplx-main-content">
             <div class="fieldplx-content-wrapper">
-                <div class="fd-dashboard">
-                    <section class="fd-teams-header">
-                        <div>
-                            <h1 class="fd-teams-title">Customers</h1>
-                            <p class="fd-teams-subtitle">Manage CRM leads and customers, contact preferences, branch
-                                ownership, tax
-                                details and account manager assignments.</p>
-                        </div>
-                        <div class="fd-teams-actions"><a class="fd-team-button primary" href="client-form.php"><i
-                                    class="bi bi-person-plus"></i> Add Customer</a>
-                            <div class="fd-customer-more" id="customerMoreActions">
-                                <button type="button" class="fd-team-button" id="customerMoreActionsButton"
-                                    aria-expanded="false"><i class="bi bi-three-dots"></i> More Actions <i
-                                        class="bi bi-chevron-down"></i></button>
-                                <div class="fd-customer-more-menu" role="menu" aria-label="Customer actions">
-                                    <a class="fd-customer-more-item" href="customer-import.php" role="menuitem"><i
-                                            class="bi bi-upload"></i> Import Customers</a>
-                                    <button class="fd-customer-more-item" type="button" id="exportCustomersButton"
-                                        role="menuitem"><i class="bi bi-download"></i> Export Customers</button>
+                <div class="fd-dashboard cm-page">
+                    <section class="cm-header">
+                        <h1 class="cm-title">Clients</h1>
+                        <div class="cm-header-actions">
+                            <a class="cm-btn primary" href="client-form.php">New Client</a>
+                            <div class="cm-more-wrap" id="cmMoreWrap">
+                                <button type="button" class="cm-btn" id="cmMoreButton" aria-expanded="false"><i class="bi bi-three-dots"></i> More Actions</button>
+                                <div class="cm-menu" id="cmMoreMenu" aria-hidden="true">
+                                    <a class="cm-menu-item" href="customer-import.php"><i class="bi bi-upload"></i> Import Clients</a>
+                                    <button type="button" class="cm-menu-item" id="cmExportButton"><i class="bi bi-download"></i> Export Clients</button>
+                                    <a class="cm-menu-item" href="client-merge.php"><i class="bi bi-intersect"></i> Merge Clients</a>
                                 </div>
                             </div>
                         </div>
                     </section>
-                    <section class="row g-3 fd-customer-summary">
-                        <div class="col-xl-3 col-md-6">
-                            <article class="fd-customer-summary-card">
-                                <h2 class="fd-customer-summary-title">Overview</h2>
-                                <div class="fd-customer-overview-list">
-                                    <div class="fd-customer-overview-row"><span
-                                            class="fd-customer-overview-dot lead"></span><span>Leads</span><strong><?= (int) $customerStats['lead_total'] ?></strong>
-                                    </div>
-                                    <div class="fd-customer-overview-row"><span
-                                            class="fd-customer-overview-dot customer"></span><span>Customers</span><strong><?= (int) $customerStats['customer_total'] ?></strong>
-                                    </div>
-                                    <div class="fd-customer-overview-row"><span
-                                            class="fd-customer-overview-dot active"></span><span>Active</span><strong><?= (int) $customerStats['active_total'] ?></strong>
-                                    </div>
-                                    <div class="fd-customer-overview-row"><span
-                                            class="fd-customer-overview-dot inactive"></span><span>Inactive</span><strong><?= (int) $customerStats['inactive_total'] ?></strong>
-                                    </div>
-                                </div>
-                            </article>
-                        </div>
 
-                        <div class="col-xl-3 col-md-6">
-                            <article class="fd-customer-summary-card">
-                                <span class="fd-customer-summary-arrow"><i class="bi bi-arrow-up-right"></i></span>
-                                <h2 class="fd-customer-summary-title">Total CRM</h2>
-                                <span class="fd-customer-summary-period">All customers and leads</span>
-                                <div class="fd-customer-summary-number-row">
-                                    <strong class="fd-customer-summary-value"
-                                        id="statTotal"><?= (int) $customerStats['total'] ?></strong>
-                                </div>
-                            </article>
-                        </div>
-
-                        <div class="col-xl-3 col-md-6">
-                            <article class="fd-customer-summary-card">
-                                <span class="fd-customer-summary-arrow"><i class="bi bi-arrow-up-right"></i></span>
-                                <h2 class="fd-customer-summary-title">New Leads</h2>
-                                <span class="fd-customer-summary-period">Past 30 days</span>
-                                <div class="fd-customer-summary-number-row">
-                                    <strong class="fd-customer-summary-value"
-                                        id="statNewLeads"><?= (int) $customerStats['new_leads_30'] ?></strong>
-                                    <span
-                                        class="fd-customer-trend-change<?= htmlspecialchars($leadTrendClass, ENT_QUOTES, 'UTF-8') ?>"
-                                        id="statNewLeadsChange" tabindex="0">
-                                        <?= htmlspecialchars($leadTrendArrow . rtrim(rtrim(number_format(abs($leadChangeValue), 1, '.', ''), '0'), '.') . '%', ENT_QUOTES, 'UTF-8') ?>
-                                        <span class="fd-customer-trend-tooltip">
-                                            <span class="fd-customer-tooltip-title">New leads</span>
-                                            <span
-                                                class="fd-customer-tooltip-row"><span><?= htmlspecialchars($customerStats['prior_period_label'], ENT_QUOTES, 'UTF-8') ?></span><strong><?= (int) $customerStats['prior_leads_30'] ?></strong></span>
-                                            <span
-                                                class="fd-customer-tooltip-row"><span><?= htmlspecialchars($customerStats['current_period_label'], ENT_QUOTES, 'UTF-8') ?></span><strong><?= (int) $customerStats['new_leads_30'] ?></strong></span>
-                                        </span>
-                                    </span>
-                                </div>
-                            </article>
-                        </div>
-
-                        <div class="col-xl-3 col-md-6">
-                            <article class="fd-customer-summary-card">
-                                <span class="fd-customer-summary-arrow"><i class="bi bi-arrow-up-right"></i></span>
-                                <h2 class="fd-customer-summary-title">New Customers</h2>
-                                <span class="fd-customer-summary-period">Past 30 days</span>
-                                <div class="fd-customer-summary-number-row">
-                                    <strong class="fd-customer-summary-value"
-                                        id="statNewCustomers"><?= (int) $customerStats['new_customers_30'] ?></strong>
-                                    <span
-                                        class="fd-customer-trend-change<?= htmlspecialchars($customerTrendClass, ENT_QUOTES, 'UTF-8') ?>"
-                                        id="statNewCustomersChange" tabindex="0">
-                                        <?= htmlspecialchars($customerTrendArrow . rtrim(rtrim(number_format(abs($customerChangeValue), 1, '.', ''), '0'), '.') . '%', ENT_QUOTES, 'UTF-8') ?>
-                                        <span class="fd-customer-trend-tooltip">
-                                            <span class="fd-customer-tooltip-title">New customers</span>
-                                            <span
-                                                class="fd-customer-tooltip-row"><span><?= htmlspecialchars($customerStats['prior_period_label'], ENT_QUOTES, 'UTF-8') ?></span><strong><?= (int) $customerStats['prior_customers_30'] ?></strong></span>
-                                            <span
-                                                class="fd-customer-tooltip-row"><span><?= htmlspecialchars($customerStats['current_period_label'], ENT_QUOTES, 'UTF-8') ?></span><strong><?= (int) $customerStats['new_customers_30'] ?></strong></span>
-                                        </span>
-                                    </span>
-                                </div>
-                            </article>
-                        </div>
+                    <section class="cm-cards">
+                        <article class="cm-card">
+                            <span class="cm-card-arrow"><i class="bi bi-arrow-up-right"></i></span>
+                            <h2 class="cm-card-title">New leads</h2>
+                            <div class="cm-card-period">Past 30 days</div>
+                            <div class="cm-stat-row">
+                                <strong class="cm-stat-value" id="cmNewLeads">0</strong>
+                                <span class="cm-trend neutral" id="cmLeadTrend" tabindex="0">- 0%
+                                    <span class="cm-trend-tooltip" id="cmLeadTooltip"></span>
+                                </span>
+                            </div>
+                        </article>
+                        <article class="cm-card">
+                            <span class="cm-card-arrow"><i class="bi bi-arrow-up-right"></i></span>
+                            <h2 class="cm-card-title">New clients</h2>
+                            <div class="cm-card-period">Past 30 days</div>
+                            <div class="cm-stat-row">
+                                <strong class="cm-stat-value" id="cmNewClients">0</strong>
+                                <span class="cm-trend neutral" id="cmClientTrend" tabindex="0">- 0%
+                                    <span class="cm-trend-tooltip" id="cmClientTooltip"></span>
+                                </span>
+                            </div>
+                        </article>
+                        <article class="cm-card">
+                            <span class="cm-card-arrow"><i class="bi bi-arrow-up-right"></i></span>
+                            <h2 class="cm-card-title">Total new clients</h2>
+                            <div class="cm-card-period">Year to date</div>
+                            <div class="cm-stat-row">
+                                <strong class="cm-stat-value" id="cmClientsYtd">0</strong>
+                            </div>
+                        </article>
+                        <article class="cm-card cm-merge-card">
+                            <div class="cm-merge-copy">
+                                <p>Merge duplicate clients into a single profile to keep information accurate</p>
+                                <a class="cm-btn" href="client-merge.php">Merge Clients</a>
+                            </div>
+                            <div class="cm-merge-art" aria-hidden="true"></div>
+                        </article>
                     </section>
 
-                    <section class="fd-card fd-teams-card">
-                        <div class="fd-teams-toolbar">
-                            <div class="fd-team-search"><i class="bi bi-search"></i><input type="search"
-                                    id="clientsSearch" placeholder="Search name, company, email or phone"
-                                    autocomplete="off"></div><select class="fd-team-filter" id="typeFilter">
-                                <option value="">All Types</option>
-                                <option value="lead">Lead</option>
-                                <option value="client">Customer</option>
-                                <option value="archived">Archived</option>
-                            </select><select class="fd-team-filter" id="statusFilter">
-                                <option value="">All Status</option>
-                                <option value="new">New</option>
-                                <option value="active">Active</option>
-                                <option value="inactive">Inactive</option>
-                                <option value="archived">Archived</option>
-                            </select><select class="fd-team-filter" id="branchFilter">
-                                <option value="">All Branches</option>
-                            </select>
-                            <div class="fd-team-toolbar-spacer"></div><button type="button" class="fd-team-button"
-                                id="clearFiltersButton"><i class="bi bi-x-circle"></i> Clear</button>
-                        </div>
-                        <div class="fd-team-table-wrap">
-                            <table class="fd-team-table fd-client-table">
-                                <thead>
-                                    <tr>
-                                        <th>S/No</th>
-                                        <th>Customer</th>
-                                        <th>Type</th>
-                                        <th>Contact</th>
-                                        <th>Branch</th>
-                                        <th>Source</th>
-                                        <th>Preferred Contact</th>
-                                        <th>Account Manager</th>
-                                        <th>Locations</th>
-                                        <th>Status</th>
-                                        <th>Last Activity</th>
-                                        <th>Actions</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="clientsTableBody">
-                                    <tr>
-                                        <td colspan="12" class="fd-team-empty">Loading customers...</td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
-                        <div class="fd-team-pagination"><span id="clientsCountText">Showing 0 customers</span>
-                            <div class="fd-team-pagination-actions"><button type="button" class="fd-team-button"
-                                    id="prevPageButton"><i class="bi bi-chevron-left"></i></button><button type="button"
-                                    class="fd-team-button" id="nextPageButton"><i
-                                        class="bi bi-chevron-right"></i></button></div>
-                        </div>
+                    <section class="cm-section-title-row">
+                        <h2>Filtered clients</h2>
+                        <span class="cm-result-count" id="cmResultCount">(0 results)</span>
                     </section>
 
-                    <div class="fd-client-row-more-menu" id="clientRowMoreMenu" role="menu" aria-hidden="true">
-                        <a class="fd-customer-more-item" id="clientRowAddQuotation" href="#" role="menuitem"><i
-                                class="bi bi-file-earmark-text"></i> Add Quotation</a>
-                        <a class="fd-customer-more-item" id="clientRowCreateJob" href="#" role="menuitem"><i
-                                class="bi bi-hammer"></i> Create Job</a>
-                        <a class="fd-customer-more-item" id="clientRowAddInvoice" href="#" role="menuitem"><i
-                                class="bi bi-receipt"></i> Add Invoice</a>
-                        <a class="fd-customer-more-item" id="clientRowPayment" href="#" role="menuitem"><i
-                                class="bi bi-cash-coin"></i> Payment</a>
+                    <section class="cm-toolbar">
+                        <div class="cm-filter-wrap" id="cmTagFilterWrap">
+                            <button type="button" class="cm-filter-pill" id="cmTagFilterButton"><span id="cmTagFilterLabel">Filter by tag</span><i class="bi bi-plus-lg"></i></button>
+                            <div class="cm-filter-dropdown" id="cmTagFilterMenu"></div>
+                        </div>
+                        <div class="cm-filter-wrap" id="cmStatusFilterWrap">
+                            <button type="button" class="cm-filter-pill status" id="cmStatusFilterButton"><strong>Status</strong><span>|</span><span id="cmStatusFilterLabel">Leads and Active</span></button>
+                            <div class="cm-filter-dropdown" id="cmStatusFilterMenu">
+                                <button class="cm-filter-option active" type="button" data-scope="leads_active">Leads and Active <i class="bi bi-check-lg"></i></button>
+                                <button class="cm-filter-option" type="button" data-scope="all">All clients <i class="bi bi-check-lg"></i></button>
+                                <button class="cm-filter-option" type="button" data-scope="leads">Leads only <i class="bi bi-check-lg"></i></button>
+                                <button class="cm-filter-option" type="button" data-scope="active">Active <i class="bi bi-check-lg"></i></button>
+                                <button class="cm-filter-option" type="button" data-scope="inactive">Inactive <i class="bi bi-check-lg"></i></button>
+                                <button class="cm-filter-option" type="button" data-scope="archived">Archived <i class="bi bi-check-lg"></i></button>
+                            </div>
+                        </div>
+                        <div class="cm-toolbar-spacer"></div>
+                        <div class="cm-search"><i class="bi bi-search"></i><input type="search" id="cmSearch" placeholder="Search clients..." autocomplete="off"></div>
+                    </section>
+
+                    <section class="cm-selection-bar" id="cmSelectionBar" aria-hidden="true">
+                        <input class="cm-checkbox" type="checkbox" id="cmBulkSelectAll" checked aria-label="Select all visible clients">
+                        <strong class="cm-selection-count" id="cmSelectionCount">0 selected</strong>
+                        <button type="button" class="cm-selection-clear" id="cmDeselectAll">Deselect All</button>
+                        <button type="button" class="cm-selection-icon" id="cmBulkTagButton" title="Tag selected clients" aria-label="Tag selected clients"><i class="bi bi-tag"></i></button>
+                        <button type="button" class="cm-selection-icon danger" id="cmBulkDeleteButton" title="Delete selected clients" aria-label="Delete selected clients"><i class="bi bi-trash"></i></button>
+                    </section>
+
+                    <section class="cm-table-wrap" id="cmTableWrap">
+                        <table class="cm-table">
+                            <thead>
+                                <tr>
+                                    <th class="cm-col-check"><input class="cm-checkbox" type="checkbox" id="cmSelectAll" aria-label="Select all clients"></th>
+                                    <th class="cm-col-name"><button type="button" class="cm-sort-button" data-sort="name">Name <i class="bi bi-chevron-expand"></i></button></th>
+                                    <th class="cm-col-address">Address</th>
+                                    <th class="cm-col-tags">Tags</th>
+                                    <th class="cm-col-status">Status</th>
+                                    <th class="cm-col-last"><button type="button" class="cm-sort-button" data-sort="last_activity">Last Activity <i class="bi bi-chevron-expand"></i></button></th>
+                                </tr>
+                            </thead>
+                            <tbody id="cmTableBody">
+                                <tr><td colspan="6" class="cm-empty">Loading clients...</td></tr>
+                            </tbody>
+                        </table>
+                    </section>
+
+                    <div class="cm-pagination" id="cmPagination">
+                        <span id="cmPaginationText"></span>
+                        <div class="cm-pagination-actions">
+                            <button type="button" class="cm-btn" id="cmPrevPage"><i class="bi bi-chevron-left"></i></button>
+                            <button type="button" class="cm-btn" id="cmNextPage"><i class="bi bi-chevron-right"></i></button>
+                        </div>
                     </div>
                 </div>
-                <div class="fd-team-modal-backdrop" id="clientModalBackdrop" aria-hidden="true">
-                    <section class="fd-team-modal" role="dialog" aria-modal="true">
-                        <div class="fd-team-modal-header"><span class="fd-team-modal-icon"><i
-                                    class="bi bi-person-vcard"></i></span>
-                            <div class="fd-team-modal-heading">
-                                <h3 id="clientModalTitle">Add Customer</h3>
-                                <p id="clientModalSubtitle">Create a lead or active customer record.</p>
-                            </div><button type="button" class="fd-team-modal-close" id="clientModalClose"><i
-                                    class="bi bi-x-lg"></i></button>
-                        </div>
-                        <form id="clientForm">
-                            <div class="fd-team-modal-body"><input type="hidden" id="clientId" name="client_id"
-                                    value="0">
-                                <div class="fd-team-form-grid">
-                                    <div class="fd-team-section-title">Customer Identity</div>
-                                    <div class="fd-team-field"><label>Customer Type</label><select id="clientType"
-                                            name="client_type">
-                                            <option value="lead">Lead</option>
-                                            <option value="client">Customer</option>
-                                            <option value="archived">Archived</option>
-                                        </select></div>
-                                    <div class="fd-team-field"><label>Status</label><select id="clientStatus"
-                                            name="status">
-                                            <option value="new">New</option>
-                                            <option value="active">Active</option>
-                                            <option value="inactive">Inactive</option>
-                                            <option value="archived">Archived</option>
-                                        </select></div>
-                                    <div class="fd-team-field"><label>Display Name</label><input type="text"
-                                            id="displayName" name="display_name" maxlength="190" required></div>
-                                    <div class="fd-team-field"><label>Company Name</label><input type="text"
-                                            id="companyName" name="company_name" maxlength="190"></div>
-                                    <div class="fd-team-field"><label>First Name</label><input type="text"
-                                            id="firstName" name="first_name" maxlength="120"></div>
-                                    <div class="fd-team-field"><label>Last Name</label><input type="text" id="lastName"
-                                            name="last_name" maxlength="120"></div>
-                                    <div class="fd-team-section-title">Contact & Ownership</div>
-                                    <div class="fd-team-field"><label>Email</label><input type="email" id="email"
-                                            name="email" maxlength="190"></div>
-                                    <div class="fd-team-field"><label>Phone</label><input type="text" id="phone"
-                                            name="phone" maxlength="50"></div>
-                                    <div class="fd-team-field"><label>Alternate Phone</label><input type="text"
-                                            id="alternatePhone" name="alternate_phone" maxlength="50"></div>
-                                    <div class="fd-team-field"><label>Source</label><input type="text" id="source"
-                                            name="source" maxlength="120" placeholder="Website / Referral / Walk-in">
-                                    </div>
-                                    <div class="fd-team-field"><label>Branch</label><select id="branchId"
-                                            name="branch_id">
-                                            <option value="">No Branch</option>
-                                        </select></div>
-                                    <div class="fd-team-field"><label>Account Manager</label><select
-                                            id="accountManagerId" name="account_manager_id">
-                                            <option value="">No Account Manager</option>
-                                        </select></div>
-                                    <div class="fd-team-field"><label>Preferred Contact</label><select
-                                            id="preferredContactMethod" name="preferred_contact_method">
-                                            <option value="email">Email</option>
-                                            <option value="sms">SMS</option>
-                                            <option value="phone">Phone</option>
-                                            <option value="whatsapp">WhatsApp</option>
-                                            <option value="none">None</option>
-                                        </select></div>
-                                    <div class="fd-team-field"><label>Tax Number</label><input type="text"
-                                            id="taxNumber" name="tax_number" maxlength="100"></div>
-                                    <div class="fd-client-checks"><label class="fd-client-check"><input type="checkbox"
-                                                id="allowEmail" name="allow_email" value="1" checked> Allow
-                                            Email</label><label class="fd-client-check"><input type="checkbox"
-                                                id="allowSms" name="allow_sms" value="1" checked> Allow SMS</label>
-                                    </div>
-                                    <div class="fd-team-section-title">Internal Notes</div>
-                                    <div class="fd-team-field full"><label>Notes</label><textarea id="notes"
-                                            name="notes" maxlength="5000"></textarea></div>
-                                </div>
-                            </div>
-                            <div class="fd-team-modal-footer"><button type="button" class="fd-team-button"
-                                    id="cancelClientButton">Cancel</button><button type="submit"
-                                    class="fd-team-button primary" id="saveClientButton"><span
-                                        class="fd-team-loader"></span><i class="bi bi-check-lg"></i><span
-                                        id="saveClientText">Save Customer</span></button></div>
-                        </form>
-                    </section>
-                </div>
-                <div class="fd-team-modal-backdrop" id="archiveModalBackdrop" aria-hidden="true">
-                    <section class="fd-team-modal fd-team-confirm">
-                        <div class="fd-team-modal-header"><span class="fd-team-modal-icon"><i
-                                    class="bi bi-archive"></i></span>
-                            <div class="fd-team-modal-heading">
-                                <h3>Delete Customer</h3>
-                                <p>Historical CRM and operational references will be preserved.</p>
-                            </div><button type="button" class="fd-team-modal-close" id="archiveModalClose"><i
-                                    class="bi bi-x-lg"></i></button>
-                        </div>
-                        <div class="fd-team-modal-body" id="archiveClientMessage">Delete this customer?</div>
-                        <div class="fd-team-modal-footer"><button type="button" class="fd-team-button"
-                                id="cancelArchiveButton">Cancel</button><button type="button"
-                                class="fd-team-button danger" id="confirmArchiveButton"><span
-                                    class="fd-team-loader"></span><i class="bi bi-trash"></i>
-                                Delete</button></div>
-                    </section>
-                </div>
-                <div class="fd-team-toast info" id="clientsToast"><span class="fd-team-toast-message"
-                        id="clientsToastMessage">Notification</span><button type="button" class="fd-team-toast-close"
-                        id="clientsToastClose"><i class="bi bi-x"></i></button></div>
-                <script>
-                (function() {
-                    'use strict';
-                    var csrfToken = <?= json_encode($clientsCsrfToken) ?>;
-                    var state = {
-                        page: 1,
-                        perPage: 10,
-                        search: '',
-                        type: '',
-                        status: '',
-                        branchId: '',
-                        archiveId: 0,
-                        meta: {
-                            branches: [],
-                            users: []
-                        }
-                    };
-                    var tableBody = document.getElementById('clientsTableBody'),
-                        clientModal = document.getElementById('clientModalBackdrop'),
-                        archiveModal = document.getElementById('archiveModalBackdrop'),
-                        clientForm = document.getElementById('clientForm'),
-                        saveButton = document.getElementById('saveClientButton'),
-                        toast = document.getElementById('clientsToast'),
-                        toastMessage = document.getElementById('clientsToastMessage'),
-                        toastTimer = null,
-                        searchTimer = null;
-
-                    function esc(v) {
-                        return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g,
-                            '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;')
-                    }
-
-                    function initials(v) {
-                        var p = String(v || '').trim().split(/\s+/),
-                            x = '';
-                        if (p.length) x += p[0].charAt(0);
-                        if (p.length > 1) x += p[p.length - 1].charAt(0);
-                        return x.toUpperCase() || 'C'
-                    }
-
-                    function toastShow(t, m) {
-                        if (toastTimer) clearTimeout(toastTimer);
-                        toast.className = 'fd-team-toast ' + (t || 'info') + ' show';
-                        toastMessage.textContent = m || 'Notification';
-                        toastTimer = setTimeout(function() {
-                            toast.classList.remove('show')
-                        }, 3000)
-                    }
-
-                    function loading(b, on) {
-                        if (!b) return;
-                        b.disabled = !!on;
-                        b.classList.toggle('loading', !!on)
-                    }
-
-                    function parseResponse(r) {
-                        return r.text().then(function(raw) {
-                            var t = (raw || '').trim(),
-                                d;
-                            try {
-                                d = t ? JSON.parse(t) : {}
-                            } catch (e) {
-                                var c = t.replace(/<br\s*\/?>/gi, ' ').replace(/<[^>]*>/g, ' ').replace(
-                                    /\s+/g, ' ').trim();
-                                throw new Error(c ? 'Server error: ' + c :
-                                    'Server returned an invalid response.')
-                            }
-                            if (!r.ok || !d.success) throw new Error(d.message || 'Request failed.');
-                            return d
-                        })
-                    }
-
-                    function request(fd) {
-                        fd.append('csrf_token', csrfToken);
-                        return fetch('api/clients.php', {
-                            method: 'POST',
-                            body: fd,
-                            credentials: 'same-origin',
-                            headers: {
-                                'X-Requested-With': 'XMLHttpRequest',
-                                'Accept': 'application/json'
-                            }
-                        }).then(parseResponse)
-                    }
-
-                    function fmtDate(v) {
-                        if (!v) return '-';
-                        var d = new Date(String(v).replace(' ', 'T'));
-                        return isNaN(d.getTime()) ? esc(v) : d.toLocaleDateString(undefined, {
-                            day: '2-digit',
-                            month: 'short',
-                            year: 'numeric'
-                        })
-                    }
-
-                    function applyMeta(meta) {
-                        state.meta = meta || state.meta;
-                        var bh = '<option value="">No Branch</option>',
-                            bf = '<option value="">All Branches</option>';
-                        state.meta.branches.forEach(function(x) {
-                            bh += '<option value="' + Number(x.id) + '">' + esc(x.name) + '</option>';
-                            bf += '<option value="' + Number(x.id) + '">' + esc(x.name) + '</option>'
-                        });
-                        document.getElementById('branchId').innerHTML = bh;
-                        document.getElementById('branchFilter').innerHTML = bf;
-                        var mh = '<option value="">No Account Manager</option>';
-                        state.meta.users.forEach(function(x) {
-                            mh += '<option value="' + Number(x.id) + '">' + esc(x.name) + '</option>'
-                        });
-                        document.getElementById('accountManagerId').innerHTML = mh
-                    }
-
-                    function render(rows) {
-                        if (!rows.length) {
-                            tableBody.innerHTML =
-                                '<tr><td colspan="12" class="fd-team-empty">No customers found.</td></tr>';
-                            return;
-                        }
-
-                        var h = '';
-                        rows.forEach(function(r, i) {
-                            var clientId = Number(r.id || 0);
-                            var serial = ((state.page - 1) * state.perPage + i + 1);
-
-                            h += '<tr class="fd-client-click-row" data-client-id="' + clientId + '">' +
-                                '<td>' + serial + '</td>' +
-                                '<td><div class="fd-team-name"><span class="fd-team-name-icon">' + esc(
-                                    initials(r.display_name)) + '</span><span><strong>' + esc(r
-                                    .display_name) + '</strong><small>' + esc(r.company_name || ((r
-                                    .first_name || '') + (r.last_name ? ' ' + r.last_name : '')) || '-') +
-                                '</small></span></div></td>' +
-                                '<td><span class="fd-client-type ' + esc(r.client_type) + '">' + esc(r
-                                    .client_type) + '</span></td>' +
-                                '<td>' + esc(r.email || '-') + '<br><small>' + esc(r.phone || '-') +
-                                '</small></td>' +
-                                '<td>' + esc(r.branch_name || '-') + '</td>' +
-                                '<td>' + esc(r.source || '-') + '</td>' +
-                                '<td>' + esc(r.preferred_contact_method || '-') + '</td>' +
-                                '<td>' + esc(r.account_manager_name || '-') + '</td>' +
-                                '<td><a class="fd-client-location-link" href="client-locations.php?client_id=' +
-                                clientId +
-                                '" title="Manage Locations"><i class="bi bi-geo-alt"></i><span>' + Number(r
-                                    .location_count || 0) + '</span></a></td>' +
-                                '<td><span class="fd-client-type ' + esc(r.status) + '">' + esc(r.status) +
-                                '</span></td>' +
-                                '<td>' + fmtDate(r.last_activity_at || r.updated_at || r.created_at) +
-                                '</td>' +
-                                '<td><div class="fd-team-actions-cell fd-client-actions-cell">' +
-                                '<a class="fd-team-icon-button" href="client-locations.php?client_id=' +
-                                clientId +
-                                '" title="Locations" aria-label="Locations"><i class="bi bi-geo-alt"></i></a>' +
-                                '<a class="fd-team-icon-button" href="client-form.php?client_id=' +
-                                clientId +
-                                '" title="Edit Customer" aria-label="Edit Customer"><i class="bi bi-pencil"></i></a>' +
-                                '<button type="button" class="fd-team-icon-button danger" data-action="delete" data-id="' +
-                                clientId +
-                                '" title="Delete Customer" aria-label="Delete Customer"><i class="bi bi-trash"></i></button>' +
-                                '<span class="fd-client-action-divider" aria-hidden="true"></span>' +
-                                '<button type="button" class="fd-client-row-more-button" data-action="row-more" data-id="' +
-                                clientId +
-                                '" aria-expanded="false"><i class="bi bi-three-dots"></i> More</button>' +
-                                '</div></td>' +
-                                '</tr>';
-                        });
-
-                        tableBody.innerHTML = h;
-                    }
-
-                    function load() {
-                        var fd = new FormData();
-                        fd.append('action', 'list');
-                        fd.append('page', state.page);
-                        fd.append('per_page', state.perPage);
-                        fd.append('search', state.search);
-                        fd.append('client_type', state.type);
-                        fd.append('status', state.status);
-                        fd.append('branch_id', state.branchId);
-                        tableBody.innerHTML =
-                            '<tr><td colspan="12" class="fd-team-empty">Loading customers...</td></tr>';
-                        request(fd).then(function(d) {
-                            render(d.clients || []);
-                            applyMeta(d.meta || {});
-                            var p = d.pagination || {};
-                            document.getElementById('clientsCountText').textContent = 'Showing ' + Number(p
-                                    .from || 0) + '-' + Number(p.to || 0) + ' of ' + Number(p.total || 0) +
-                                ' customers';
-                            document.getElementById('prevPageButton').disabled = state.page <= 1;
-                            document.getElementById('nextPageButton').disabled = state.page >= Number(p
-                                .pages || 1);
-                        }).catch(function(e) {
-                            tableBody.innerHTML = '<tr><td colspan="12" class="fd-team-empty">' + esc(e
-                                .message) + '</td></tr>';
-                            toastShow('error', e.message)
-                        })
-                    }
-
-                    function resetForm() {
-                        clientForm.reset();
-                        document.getElementById('clientId').value = 0;
-                        document.getElementById('clientType').value = 'lead';
-                        document.getElementById('clientStatus').value = 'new';
-                        document.getElementById('preferredContactMethod').value = 'email';
-                        document.getElementById('allowEmail').checked = true;
-                        document.getElementById('allowSms').checked = true
-                    }
-
-                    function openClient(id) {
-                        resetForm();
-                        clientModal.classList.add('show');
-                        if (id <= 0) {
-                            document.getElementById('clientModalTitle').textContent = 'Add Customer';
-                            document.getElementById('saveClientText').textContent = 'Save Customer';
-                            return
-                        }
-                        var fd = new FormData();
-                        fd.append('action', 'get');
-                        fd.append('client_id', id);
-                        request(fd).then(function(d) {
-                            applyMeta(d.meta || {});
-                            var r = d.client || {};
-                            document.getElementById('clientModalTitle').textContent = 'Edit Customer';
-                            document.getElementById('saveClientText').textContent = 'Update Customer';
-                            ['clientId', 'displayName', 'companyName', 'firstName', 'lastName', 'email',
-                                'phone', 'alternatePhone', 'source', 'taxNumber', 'notes'
-                            ].forEach(function(k) {
-                                var map = {
-                                    clientId: 'id',
-                                    displayName: 'display_name',
-                                    companyName: 'company_name',
-                                    firstName: 'first_name',
-                                    lastName: 'last_name',
-                                    alternatePhone: 'alternate_phone',
-                                    taxNumber: 'tax_number'
-                                };
-                                document.getElementById(k).value = r[map[k] || k] || ''
-                            });
-                            document.getElementById('clientType').value = r.client_type || 'lead';
-                            document.getElementById('clientStatus').value = r.status || 'new';
-                            document.getElementById('branchId').value = r.branch_id || '';
-                            document.getElementById('accountManagerId').value = r.account_manager_id || '';
-                            document.getElementById('preferredContactMethod').value = r
-                                .preferred_contact_method || 'email';
-                            document.getElementById('allowEmail').checked = Number(r.allow_email) === 1;
-                            document.getElementById('allowSms').checked = Number(r.allow_sms) === 1
-                        }).catch(function(e) {
-                            closeClient();
-                            toastShow('error', e.message)
-                        })
-                    }
-
-                    function closeClient() {
-                        clientModal.classList.remove('show')
-                    }
-                    clientForm.onsubmit = function(e) {
-                        e.preventDefault();
-                        if (!clientForm.reportValidity()) {
-                            toastShow('warning', 'Complete the required customer fields.');
-                            return
-                        }
-                        var fd = new FormData(clientForm);
-                        fd.append('action', 'save');
-                        loading(saveButton, true);
-                        request(fd).then(function(d) {
-                            closeClient();
-                            toastShow('success', d.message);
-                            load()
-                        }).catch(function(e) {
-                            toastShow('error', e.message)
-                        }).finally(function() {
-                            loading(saveButton, false)
-                        })
-                    };
-
-                    function toggle(id, current) {
-                        var fd = new FormData();
-                        fd.append('action', 'change_status');
-                        fd.append('client_id', id);
-                        fd.append('status', current === 'active' ? 'inactive' : 'active');
-                        request(fd).then(function(d) {
-                            toastShow('success', d.message);
-                            load()
-                        }).catch(function(e) {
-                            toastShow('error', e.message)
-                        })
-                    }
-
-                    function archiveOpen(id, name) {
-                        state.archiveId = Number(id);
-                        document.getElementById('archiveClientMessage').textContent = 'Delete customer "' + (name ||
-                                'this customer') +
-                            '"? The customer will be soft-deleted so existing operational history remains preserved.';
-                        archiveModal.classList.add('show')
-                    }
-
-                    function archiveClose() {
-                        state.archiveId = 0;
-                        archiveModal.classList.remove('show')
-                    }
-                    document.getElementById('confirmArchiveButton').onclick = function() {
-                        if (state.archiveId <= 0) return;
-                        var b = this,
-                            fd = new FormData();
-                        fd.append('action', 'delete');
-                        fd.append('client_id', state.archiveId);
-                        loading(b, true);
-                        request(fd).then(function(d) {
-                            archiveClose();
-                            toastShow('success', d.message);
-                            window.setTimeout(function() {
-                                window.location.reload();
-                            }, 350)
-                        }).catch(function(e) {
-                            toastShow('error', e.message)
-                        }).finally(function() {
-                            loading(b, false)
-                        })
-                    };
-                    tableBody.onclick = function(e) {
-                        var b = e.target.closest('[data-action]');
-                        if (b && tableBody.contains(b)) {
-                            var a = b.dataset.action,
-                                id = Number(b.dataset.id);
-                            if (a === 'edit') openClient(id);
-                            else if (a === 'toggle') toggle(id, b.dataset.status);
-                            else if (a === 'delete') {
-                                closeClientRowMore();
-                                var actionRow = b.closest('tr');
-                                archiveOpen(id, actionRow ? actionRow.querySelector('.fd-team-name strong')
-                                    .textContent : '');
-                            } else if (a === 'row-more') {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                toggleClientRowMore(b, id);
-                            }
-                            return;
-                        }
-
-                        /* Keep links/buttons inside the row independent from the row navigation. */
-                        if (e.target.closest('a, button, input, select, textarea, label')) return;
-
-                        var row = e.target.closest('tr[data-client-id]');
-                        if (!row || !tableBody.contains(row)) return;
-                        var clientId = Number(row.dataset.clientId || 0);
-                        if (clientId <= 0) return;
-
-                        closeClientRowMore();
-                        window.location.href = 'client-view.php?client_id=' + encodeURIComponent(clientId);
-                    };
-                    var clientRowMoreMenu = document.getElementById('clientRowMoreMenu');
-                    var activeClientRowMoreButton = null;
-
-                    function closeClientRowMore() {
-                        if (!clientRowMoreMenu) return;
-                        clientRowMoreMenu.classList.remove('show');
-                        clientRowMoreMenu.setAttribute('aria-hidden', 'true');
-                        if (activeClientRowMoreButton) {
-                            activeClientRowMoreButton.classList.remove('active');
-                            activeClientRowMoreButton.setAttribute('aria-expanded', 'false');
-                        }
-                        activeClientRowMoreButton = null;
-                    }
-
-                    function positionClientRowMore(button) {
-                        if (!clientRowMoreMenu || !button) return;
-                        var rect = button.getBoundingClientRect();
-                        var menuWidth = 190;
-                        var menuHeight = clientRowMoreMenu.offsetHeight || 164;
-                        var left = Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 10);
-                        left = Math.max(10, left);
-                        var top = rect.bottom + 6;
-                        if (top + menuHeight > window.innerHeight - 10) top = Math.max(10, rect.top - menuHeight -
-                            6);
-                        clientRowMoreMenu.style.left = Math.round(left) + 'px';
-                        clientRowMoreMenu.style.top = Math.round(top) + 'px';
-                    }
-
-                    function toggleClientRowMore(button, clientId) {
-                        if (!clientRowMoreMenu || !button || clientId <= 0) return;
-                        var isSameOpen = activeClientRowMoreButton === button && clientRowMoreMenu.classList
-                            .contains('show');
-                        closeClientRowMore();
-                        if (isSameOpen) return;
-                        document.getElementById('clientRowAddQuotation').href = 'add-quotation.php?client_id=' +
-                            clientId;
-                        document.getElementById('clientRowCreateJob').href = 'job-form.php?client_id=' + clientId;
-                        document.getElementById('clientRowAddInvoice').href = 'add-invoice.php?client_id=' +
-                            clientId;
-                        document.getElementById('clientRowPayment').href = 'payment.php?client_id=' + clientId;
-                        activeClientRowMoreButton = button;
-                        button.classList.add('active');
-                        button.setAttribute('aria-expanded', 'true');
-                        clientRowMoreMenu.classList.add('show');
-                        clientRowMoreMenu.setAttribute('aria-hidden', 'false');
-                        positionClientRowMore(button);
-                    }
-                    if (clientRowMoreMenu) {
-                        clientRowMoreMenu.addEventListener('click', function(e) {
-                            e.stopPropagation();
-                        });
-                    }
-                    window.addEventListener('resize', closeClientRowMore);
-                    window.addEventListener('scroll', closeClientRowMore, true);
-
-                    var moreActions = document.getElementById('customerMoreActions'),
-                        moreActionsButton = document.getElementById('customerMoreActionsButton'),
-                        moreActionsMenu = moreActions ? moreActions.querySelector('.fd-customer-more-menu') : null;
-
-                    function setMoreActions(open) {
-                        if (!moreActions || !moreActionsButton || !moreActionsMenu) return;
-                        moreActions.classList.toggle('open', !!open);
-                        moreActionsButton.setAttribute('aria-expanded', open ? 'true' : 'false');
-                        moreActionsMenu.setAttribute('aria-hidden', open ? 'false' : 'true');
-                    }
-                    if (moreActionsButton) {
-                        moreActionsButton.addEventListener('click', function(e) {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setMoreActions(!moreActions.classList.contains('open'));
-                        });
-                    }
-                    document.addEventListener('click', function(e) {
-                        if (moreActions && !moreActions.contains(e.target)) setMoreActions(false);
-                        if (clientRowMoreMenu && !clientRowMoreMenu.contains(e.target) && !(
-                                activeClientRowMoreButton && activeClientRowMoreButton.contains(e.target)))
-                            closeClientRowMore();
-                    });
-                    document.addEventListener('keydown', function(e) {
-                        if (e.key === 'Escape') {
-                            setMoreActions(false);
-                            closeClientRowMore();
-                            if (moreActionsButton) moreActionsButton.focus();
-                        }
-                    });
-                    document.getElementById('exportCustomersButton').onclick = function() {
-                        var button = this,
-                            fd = new FormData();
-                        fd.append('action', 'export');
-                        fd.append('search', state.search);
-                        fd.append('client_type', state.type);
-                        fd.append('status', state.status);
-                        fd.append('branch_id', state.branchId);
-                        loading(button, true);
-                        request(fd).then(function(d) {
-                            var rows = d.customers || [];
-                            var columns = [
-                                'Customer ID', 'Customer Type', 'Display Name', 'Company Name',
-                                'First Name', 'Last Name', 'Email', 'Phone', 'Alternate Phone',
-                                'Source', 'Preferred Contact', 'Allow Email', 'Allow SMS', 'Status',
-                                'Tax Number', 'Notes', 'Branch', 'Account Manager', 'Portal Status',
-                                'Last Activity', 'Created At', 'Updated At',
-                                'Location Count', 'Location ID', 'Location Type', 'Location Name',
-                                'Address Line 1', 'Address Line 2', 'City', 'State', 'Postal Code',
-                                'Country', 'Latitude', 'Longitude', 'Location Contact Name',
-                                'Location Contact Phone', 'Gate Code', 'Access Notes',
-                                'Service Instructions', 'Primary Location', 'Location Status'
-                            ];
-                            var keys = [
-                                'customer_id', 'client_type', 'display_name', 'company_name',
-                                'first_name', 'last_name', 'email', 'phone', 'alternate_phone',
-                                'source', 'preferred_contact_method', 'allow_email_label',
-                                'allow_sms_label', 'status', 'tax_number', 'notes', 'branch_name',
-                                'account_manager_name', 'portal_status', 'last_activity_at',
-                                'created_at', 'updated_at',
-                                'location_count', 'location_id', 'location_type', 'location_name',
-                                'address_line1', 'address_line2', 'city', 'state', 'postal_code',
-                                'country_name', 'latitude', 'longitude', 'location_contact_name',
-                                'location_contact_phone', 'gate_code', 'access_notes',
-                                'service_instructions', 'is_primary_label', 'location_status'
-                            ];
-                            var quote = function(v) {
-                                return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
-                            };
-                            var csv = '\ufeff' + columns.map(quote).join(',') + '\r\n' + rows.map(
-                                function(row) {
-                                    return keys.map(function(key) {
-                                        return quote(row[key]);
-                                    }).join(',');
-                                }).join('\r\n');
-                            var blob = new Blob([csv], {
-                                type: 'text/csv;charset=utf-8'
-                            });
-                            var url = URL.createObjectURL(blob),
-                                link = document.createElement('a');
-                            link.href = url;
-                            link.download = 'customers-with-locations-' + new Date().toISOString()
-                                .slice(0, 10) + '.csv';
-                            document.body.appendChild(link);
-                            link.click();
-                            link.remove();
-                            URL.revokeObjectURL(url);
-                            toastShow('success', d.message);
-                            setMoreActions(false);
-                        }).catch(function(e) {
-                            toastShow('error', e.message);
-                        }).finally(function() {
-                            loading(button, false);
-                        });
-                    };
-                    document.getElementById('clientModalClose').onclick = closeClient;
-                    document.getElementById('cancelClientButton').onclick = closeClient;
-                    document.getElementById('archiveModalClose').onclick = archiveClose;
-                    document.getElementById('cancelArchiveButton').onclick = archiveClose;
-                    document.getElementById('clientsToastClose').onclick = function() {
-                        toast.classList.remove('show')
-                    };
-                    document.getElementById('clearFiltersButton').onclick = function() {
-                        document.getElementById('clientsSearch').value = '';
-                        document.getElementById('typeFilter').value = '';
-                        document.getElementById('statusFilter').value = '';
-                        document.getElementById('branchFilter').value = '';
-                        state.search = '';
-                        state.type = '';
-                        state.status = '';
-                        state.branchId = '';
-                        state.page = 1;
-                        load()
-                    };
-                    document.getElementById('clientsSearch').oninput = function(e) {
-                        if (searchTimer) clearTimeout(searchTimer);
-                        searchTimer = setTimeout(function() {
-                            state.search = e.target.value.trim();
-                            state.page = 1;
-                            load()
-                        }, 250)
-                    };
-                    document.getElementById('typeFilter').onchange = function(e) {
-                        state.type = e.target.value;
-                        state.page = 1;
-                        load()
-                    };
-                    document.getElementById('statusFilter').onchange = function(e) {
-                        state.status = e.target.value;
-                        state.page = 1;
-                        load()
-                    };
-                    document.getElementById('branchFilter').onchange = function(e) {
-                        state.branchId = e.target.value;
-                        state.page = 1;
-                        load()
-                    };
-                    document.getElementById('prevPageButton').onclick = function() {
-                        if (state.page > 1) {
-                            state.page--;
-                            load()
-                        }
-                    };
-                    document.getElementById('nextPageButton').onclick = function() {
-                        state.page++;
-                        load()
-                    };
-                    clientModal.onclick = function(e) {
-                        if (e.target === clientModal) closeClient()
-                    };
-                    archiveModal.onclick = function(e) {
-                        if (e.target === archiveModal) archiveClose()
-                    };
-                    load();
-                })();
-                </script>
             </div>
         </main>
     </div>
+
+    <div class="cm-row-menu" id="cmRowMenu" aria-hidden="true">
+        <button type="button" class="cm-menu-item" data-row-action="archive"><i class="bi bi-archive"></i> Archive</button>
+        <button type="button" class="cm-menu-item danger" data-row-action="delete"><i class="bi bi-trash"></i> Delete</button>
+        <a class="cm-menu-item" id="cmOpenNewTab" href="#" target="_blank" rel="noopener"><i class="bi bi-box-arrow-up-right"></i> Open in New Tab</a>
+    </div>
+
+    <div class="cm-modal-backdrop" id="cmTagsModal" aria-hidden="true">
+        <section class="cm-modal" role="dialog" aria-modal="true" aria-labelledby="cmTagsModalTitle">
+            <div class="cm-modal-head">
+                <h3 id="cmTagsModalTitle">Edit tags</h3>
+                <button type="button" class="cm-close" id="cmTagsClose"><i class="bi bi-x-lg"></i></button>
+            </div>
+            <div class="cm-modal-body">
+                <div class="cm-tag-editor-top" id="cmSelectedTags"></div>
+                <div class="cm-tag-picker" id="cmTagPicker">
+                    <input type="search" class="cm-tag-search" id="cmTagSearch" placeholder="Search tags" autocomplete="off">
+                    <div class="cm-tag-picker-meta"><span id="cmTagSelectedCount">0 selected</span><button type="button" class="cm-clear-link" id="cmClearTags">Clear</button></div>
+                    <div class="cm-tag-list" id="cmTagList"></div>
+                    <div class="cm-tag-picker-create"><button type="button" class="cm-create-tag-link" id="cmCreateTag">Create new tag</button></div>
+                </div>
+            </div>
+            <div class="cm-modal-footer">
+                <button type="button" class="cm-btn" id="cmTagsCancel">Cancel</button>
+                <button type="button" class="cm-btn primary" id="cmTagsSave">Save</button>
+            </div>
+        </section>
+    </div>
+
+    <div class="cm-modal-backdrop" id="cmConfirmModal" aria-hidden="true">
+        <section class="cm-modal small" role="dialog" aria-modal="true">
+            <div class="cm-modal-head">
+                <h3 id="cmConfirmTitle">Confirm</h3>
+                <button type="button" class="cm-close" id="cmConfirmClose"><i class="bi bi-x-lg"></i></button>
+            </div>
+            <div class="cm-modal-body"><p class="cm-confirm-copy" id="cmConfirmCopy"></p></div>
+            <div class="cm-modal-footer">
+                <button type="button" class="cm-btn" id="cmConfirmCancel">Cancel</button>
+                <button type="button" class="cm-btn danger" id="cmConfirmAction">Confirm</button>
+            </div>
+        </section>
+    </div>
+
+    <div class="cm-modal-backdrop" id="cmEmailModal" aria-hidden="true">
+        <section class="cm-email-modal" role="dialog" aria-modal="true" aria-labelledby="cmEmailTitle">
+            <div class="cm-email-head">
+                <h3 id="cmEmailTitle">Send email</h3>
+                <button type="button" class="cm-close" id="cmEmailClose" aria-label="Close email"><i class="bi bi-x-lg"></i></button>
+            </div>
+            <form id="cmEmailForm" enctype="multipart/form-data">
+                <div class="cm-email-body">
+                    <div class="cm-email-left">
+                        <div class="cm-email-to">
+                            <span class="cm-email-to-label">To</span>
+                            <div class="cm-email-chip-wrap" id="cmEmailTo"></div>
+                            <span class="cm-email-more"><i class="bi bi-three-dots"></i></span>
+                        </div>
+                        <div class="cm-email-field">
+                            <label for="cmEmailSubject">Subject</label>
+                            <input type="text" id="cmEmailSubject" maxlength="250" autocomplete="off">
+                        </div>
+                        <div class="cm-email-field">
+                            <label for="cmEmailMessage">Message</label>
+                            <textarea id="cmEmailMessage" maxlength="20000"></textarea>
+                        </div>
+                        <div class="cm-email-helper">Your client will receive this message at the email address shown above.</div>
+                    </div>
+                    <aside class="cm-email-attachments">
+                        <h4>Attachments</h4>
+                        <div class="cm-email-drop" id="cmEmailDrop" tabindex="0">
+                            <button type="button" class="cm-email-select" id="cmEmailSelect">Select</button>
+                            <small>Select or drag files here to upload</small>
+                            <input type="file" id="cmEmailFiles" multiple hidden>
+                        </div>
+                        <div class="cm-email-size-text" id="cmEmailSizeText">You've attached 0.00 MB of the 10.00 MB limit.</div>
+                        <div class="cm-email-progress"><span id="cmEmailProgress"></span></div>
+                        <div class="cm-email-file-list" id="cmEmailFileList"></div>
+                    </aside>
+                </div>
+                <div class="cm-email-footer">
+                    <label class="cm-email-copy"><input type="checkbox" id="cmEmailCopy"> Send me a copy</label>
+                    <div class="cm-email-actions">
+                        <button type="button" class="cm-btn" id="cmEmailCancel">Cancel</button>
+                        <button type="submit" class="cm-btn primary" id="cmEmailSend">Send Email</button>
+                    </div>
+                </div>
+            </form>
+        </section>
+    </div>
+
+    <div class="cm-toast info" id="cmToast"><span id="cmToastMessage">Notification</span><button type="button" id="cmToastClose"><i class="bi bi-x-lg"></i></button></div>
+
     <?php require_once __DIR__ . '/includes/footer.php'; ?>
-
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+    (function () {
+        'use strict';
+        var csrfToken = <?= json_encode($clientsCsrfToken) ?>;
+        var API_URL = 'api/client-manage.php';
+        var state = {
+            page: 1,
+            perPage: 25,
+            search: '',
+            statusScope: 'leads_active',
+            tagId: 0,
+            sort: 'name',
+            direction: 'asc',
+            tags: [],
+            rows: [],
+            activeRowId: 0,
+            activeRowName: '',
+            tagClientId: 0,
+            tagClientName: '',
+            selectedTags: [],
+            confirmAction: '',
+            confirmClientId: 0,
+            confirmClientName: '',
+            confirmClientIds: [],
+            selectedClientIds: [],
+            tagMode: 'single',
+            tagClientIds: [],
+            emailClientId: 0,
+            emailClientName: '',
+            emailClientEmail: '',
+            emailFiles: []
+        };
+
+        var tableBody = document.getElementById('cmTableBody');
+        var rowMenu = document.getElementById('cmRowMenu');
+        var tagModal = document.getElementById('cmTagsModal');
+        var tagPicker = document.getElementById('cmTagPicker');
+        var confirmModal = document.getElementById('cmConfirmModal');
+        var emailModal = document.getElementById('cmEmailModal');
+        var selectionBar = document.getElementById('cmSelectionBar');
+        var tableWrap = document.getElementById('cmTableWrap');
+        var toast = document.getElementById('cmToast');
+        var toastMessage = document.getElementById('cmToastMessage');
+        var toastTimer = null;
+        var searchTimer = null;
+
+        function esc(v) {
+            return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+        }
+
+        function parseResponse(r) {
+            return r.text().then(function (raw) {
+                var text = (raw || '').trim(), data;
+                try { data = text ? JSON.parse(text) : {}; }
+                catch (e) {
+                    text = text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+                    throw new Error(text || 'Invalid server response.');
+                }
+                if (!r.ok || !data.success) throw new Error(data.message || 'Request failed.');
+                return data;
+            });
+        }
+
+        function request(payload) {
+            payload.append('csrf_token', csrfToken);
+            return fetch(API_URL, {
+                method: 'POST',
+                body: payload,
+                credentials: 'same-origin',
+                headers: { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' }
+            }).then(parseResponse);
+        }
+
+        function showToast(type, message) {
+            if (toastTimer) clearTimeout(toastTimer);
+            toast.className = 'cm-toast ' + (type || 'info') + ' show';
+            toastMessage.textContent = message || 'Notification';
+            toastTimer = setTimeout(function () { toast.classList.remove('show'); }, 3300);
+        }
+
+        function titleCase(v) {
+            v = String(v || '').replace(/_/g, ' ');
+            return v.replace(/\b\w/g, function (m) { return m.toUpperCase(); });
+        }
+
+        function addressOf(row) {
+            return [row.address_line1, row.address_line2, row.city, row.state, row.postal_code].filter(function (v) {
+                return String(v || '').trim() !== '';
+            }).join(', ');
+        }
+
+        function relativeDate(value) {
+            if (!value) return '-';
+            var d = new Date(String(value).replace(' ', 'T'));
+            if (isNaN(d.getTime())) return esc(value);
+            var now = new Date();
+            var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+            var day = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+            var diff = Math.round((today - day) / 86400000);
+            if (diff === 0) return 'Today';
+            if (diff === 1) return 'Yesterday';
+            if (diff >= 0 && diff < 7) return d.toLocaleDateString(undefined, { weekday: 'short' });
+            return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+        }
+
+        function trendClass(value) {
+            value = Number(value || 0);
+            return value > 0 ? '' : (value < 0 ? ' down' : ' neutral');
+        }
+
+        function trendText(value) {
+            value = Number(value || 0);
+            var arrow = value > 0 ? '↑ ' : (value < 0 ? '↓ ' : '- ');
+            var abs = Math.abs(value);
+            var shown = Math.round(abs * 10) / 10;
+            return arrow + shown + '%';
+        }
+
+        function applyStats(stats) {
+            stats = stats || {};
+            document.getElementById('cmNewLeads').textContent = Number(stats.new_leads_30 || 0);
+            document.getElementById('cmNewClients').textContent = Number(stats.new_clients_30 || 0);
+            document.getElementById('cmClientsYtd').textContent = Number(stats.new_clients_ytd || 0);
+
+            var lead = document.getElementById('cmLeadTrend');
+            lead.className = 'cm-trend' + trendClass(stats.new_leads_change);
+            lead.firstChild.nodeValue = trendText(stats.new_leads_change) + ' ';
+            document.getElementById('cmLeadTooltip').innerHTML = '<span class="cm-tooltip-title">New leads</span>' +
+                '<span class="cm-tooltip-row"><span>' + esc(stats.prior_period_label || '') + '</span><strong>' + Number(stats.prior_leads_30 || 0) + '</strong></span>' +
+                '<span class="cm-tooltip-row"><span>' + esc(stats.current_period_label || '') + '</span><strong>' + Number(stats.new_leads_30 || 0) + '</strong></span>';
+
+            var client = document.getElementById('cmClientTrend');
+            client.className = 'cm-trend' + trendClass(stats.new_clients_change);
+            client.firstChild.nodeValue = trendText(stats.new_clients_change) + ' ';
+            document.getElementById('cmClientTooltip').innerHTML = '<span class="cm-tooltip-title">New clients</span>' +
+                '<span class="cm-tooltip-row"><span>' + esc(stats.prior_period_label || '') + '</span><strong>' + Number(stats.prior_clients_30 || 0) + '</strong></span>' +
+                '<span class="cm-tooltip-row"><span>' + esc(stats.current_period_label || '') + '</span><strong>' + Number(stats.new_clients_30 || 0) + '</strong></span>';
+        }
+
+        function renderTags(tags) {
+            if (!tags || !tags.length) return '';
+            var visible = tags.slice(0, 2);
+            var html = visible.map(function (tag) {
+                return '<span class="cm-tag">' + esc(tag.name) + '</span>';
+            }).join('');
+            if (tags.length > 2) html += '<span class="cm-tag-more">+' + (tags.length - 2) + '</span>';
+            return html;
+        }
+
+        function renderRows(rows) {
+            state.rows = rows || [];
+            if (!state.rows.length) {
+                tableBody.innerHTML = '<tr><td colspan="6" class="cm-empty">No clients found.</td></tr>';
+                return;
+            }
+            tableBody.innerHTML = state.rows.map(function (row) {
+                var id = Number(row.id || 0);
+                var address = addressOf(row) || '-';
+                var emailClass = row.email ? '' : ' disabled';
+                var status = String(row.status || 'new').toLowerCase();
+                var isSelected = state.selectedClientIds.indexOf(id) !== -1;
+                return '<tr class="cm-row' + (isSelected ? ' is-selected' : '') + '" data-client-id="' + id + '">' +
+                    '<td class="cm-check-cell"><input class="cm-checkbox cm-row-check" type="checkbox" value="' + id + '"' + (isSelected ? ' checked' : '') + ' aria-label="Select ' + esc(row.display_name) + '"></td>' +
+                    '<td><a class="cm-name" href="client-view.php?client_id=' + id + '">' + esc(row.display_name || 'Client') + '</a></td>' +
+                    '<td><span class="cm-address">' + esc(address) + '</span></td>' +
+                    '<td><div class="cm-tags">' + renderTags(row.tags || []) + '</div></td>' +
+                    '<td><span class="cm-status ' + esc(status) + '">' + esc(titleCase(status)) + '</span></td>' +
+                    '<td><div class="cm-last-cell"><span>' + esc(relativeDate(row.last_activity_at || row.updated_at || row.created_at)) + '</span>' +
+                        '<div class="cm-row-actions">' +
+                            '<button type="button" class="cm-icon-btn" data-action="tags" data-id="' + id + '" title="Edit tags"><i class="bi bi-tag"></i></button>' +
+                            '<button type="button" class="cm-icon-btn' + emailClass + '" data-action="email" data-id="' + id + '" title="Email client"' + (row.email ? '' : ' disabled') + '><i class="bi bi-envelope"></i></button>' +
+                            '<button type="button" class="cm-icon-btn" data-action="more" data-id="' + id + '" title="More"><i class="bi bi-three-dots"></i></button>' +
+                        '</div></div></td>' +
+                    '</tr>';
+            }).join('');
+        }
+
+        function renderTagFilter() {
+            var menu = document.getElementById('cmTagFilterMenu');
+            var html = '<button type="button" class="cm-filter-option' + (state.tagId === 0 ? ' active' : '') + '" data-tag-filter="0">All tags <i class="bi bi-check-lg"></i></button>';
+            state.tags.forEach(function (tag) {
+                html += '<button type="button" class="cm-filter-option' + (state.tagId === Number(tag.id) ? ' active' : '') + '" data-tag-filter="' + Number(tag.id) + '">' + esc(tag.name) + ' <i class="bi bi-check-lg"></i></button>';
+            });
+            menu.innerHTML = html;
+            var selected = state.tags.find(function (tag) { return Number(tag.id) === state.tagId; });
+            document.getElementById('cmTagFilterLabel').textContent = selected ? selected.name : 'Filter by tag';
+        }
+
+        function load() {
+            var fd = new FormData();
+            fd.append('action', 'list');
+            fd.append('page', state.page);
+            fd.append('per_page', state.perPage);
+            fd.append('search', state.search);
+            fd.append('status_scope', state.statusScope);
+            fd.append('tag_id', state.tagId);
+            fd.append('sort', state.sort);
+            fd.append('direction', state.direction);
+            tableBody.innerHTML = '<tr><td colspan="6" class="cm-empty">Loading clients...</td></tr>';
+            request(fd).then(function (data) {
+                state.tags = data.tags || [];
+                renderTagFilter();
+                applyStats(data.stats || {});
+                state.selectedClientIds = [];
+                renderRows(data.clients || []);
+                updateSelectionUI();
+                var p = data.pagination || {};
+                document.getElementById('cmResultCount').textContent = '(' + Number(p.total || 0) + ' result' + (Number(p.total || 0) === 1 ? '' : 's') + ')';
+                document.getElementById('cmPaginationText').textContent = 'Showing ' + Number(p.from || 0) + '-' + Number(p.to || 0) + ' of ' + Number(p.total || 0);
+                document.getElementById('cmPrevPage').disabled = Number(p.page || 1) <= 1;
+                document.getElementById('cmNextPage').disabled = Number(p.page || 1) >= Number(p.pages || 1);
+                document.getElementById('cmPagination').classList.toggle('show', Number(p.pages || 1) > 1);
+                document.getElementById('cmSelectAll').checked = false;
+                document.getElementById('cmSelectAll').indeterminate = false;
+            }).catch(function (e) {
+                tableBody.innerHTML = '<tr><td colspan="6" class="cm-empty">' + esc(e.message) + '</td></tr>';
+                showToast('error', e.message);
+            });
+        }
+
+        function rowData(id) {
+            return state.rows.find(function (row) { return Number(row.id) === Number(id); }) || null;
+        }
 
 
+        function currentPageIds() {
+            return state.rows.map(function (row) { return Number(row.id || 0); }).filter(function (id) { return id > 0; });
+        }
+
+        function isSelected(id) {
+            return state.selectedClientIds.indexOf(Number(id)) !== -1;
+        }
+
+        function setSelected(id, selected) {
+            id = Number(id || 0);
+            if (id <= 0) return;
+            var index = state.selectedClientIds.indexOf(id);
+            if (selected && index === -1) state.selectedClientIds.push(id);
+            if (!selected && index !== -1) state.selectedClientIds.splice(index, 1);
+        }
+
+        function updateSelectionUI() {
+            var count = state.selectedClientIds.length;
+            selectionBar.classList.toggle('show', count > 0);
+            selectionBar.setAttribute('aria-hidden', count > 0 ? 'false' : 'true');
+            tableWrap.classList.toggle('selection-active', count > 0);
+            document.getElementById('cmSelectionCount').textContent = count + ' selected';
+            document.getElementById('cmBulkSelectAll').checked = count > 0 && currentPageIds().every(isSelected);
+            var all = document.getElementById('cmSelectAll');
+            var ids = currentPageIds();
+            var selectedOnPage = ids.filter(isSelected).length;
+            all.checked = ids.length > 0 && selectedOnPage === ids.length;
+            all.indeterminate = selectedOnPage > 0 && selectedOnPage < ids.length;
+            document.querySelectorAll('.cm-row-check').forEach(function (box) {
+                var checked = isSelected(Number(box.value));
+                box.checked = checked;
+                var row = box.closest('.cm-row');
+                if (row) row.classList.toggle('is-selected', checked);
+            });
+        }
+
+        function clearSelection() {
+            state.selectedClientIds = [];
+            updateSelectionUI();
+        }
+
+        function openBulkTags() {
+            if (!state.selectedClientIds.length) return;
+            state.tagMode = 'bulk';
+            state.tagClientId = 0;
+            state.tagClientName = '';
+            state.tagClientIds = state.selectedClientIds.slice();
+            state.selectedTags = [];
+            document.getElementById('cmTagsModalTitle').textContent = 'Add tags to ' + state.tagClientIds.length + ' clients';
+            document.getElementById('cmTagSearch').value = '';
+            renderSelectedTags();
+            renderTagPickerList('');
+            tagPicker.classList.remove('show');
+            tagModal.classList.add('show');
+            tagModal.setAttribute('aria-hidden', 'false');
+        }
+
+        function openBulkDelete() {
+            if (!state.selectedClientIds.length) return;
+            state.confirmAction = 'bulk_delete';
+            state.confirmClientId = 0;
+            state.confirmClientIds = state.selectedClientIds.slice();
+            document.getElementById('cmConfirmTitle').textContent = 'Delete ' + state.confirmClientIds.length + ' clients?';
+            document.getElementById('cmConfirmCopy').textContent = 'The selected clients will be removed from the active client list. Existing operational history is preserved through soft delete.';
+            document.getElementById('cmConfirmAction').textContent = 'Delete Clients';
+            confirmModal.classList.add('show');
+            confirmModal.setAttribute('aria-hidden', 'false');
+        }
+
+        function closeRowMenu() {
+            rowMenu.classList.remove('show');
+            rowMenu.setAttribute('aria-hidden', 'true');
+            state.activeRowId = 0;
+            state.activeRowName = '';
+        }
+
+        function openRowMenu(button, id) {
+            var row = rowData(id);
+            if (!row) return;
+            state.activeRowId = id;
+            state.activeRowName = row.display_name || 'this client';
+            document.getElementById('cmOpenNewTab').href = 'client-view.php?client_id=' + encodeURIComponent(id);
+            rowMenu.classList.add('show');
+            rowMenu.setAttribute('aria-hidden', 'false');
+            var rect = button.getBoundingClientRect();
+            var width = 162;
+            var height = rowMenu.offsetHeight || 128;
+            var left = Math.min(rect.right - width, window.innerWidth - width - 8);
+            var top = rect.bottom + 5;
+            if (top + height > window.innerHeight - 8) top = Math.max(8, rect.top - height - 5);
+            rowMenu.style.left = Math.max(8, left) + 'px';
+            rowMenu.style.top = top + 'px';
+        }
+
+        function selectedTagObjects() {
+            return state.tags.filter(function (tag) { return state.selectedTags.indexOf(Number(tag.id)) !== -1; });
+        }
+
+        function renderSelectedTags() {
+            var box = document.getElementById('cmSelectedTags');
+            var html = '<button type="button" class="cm-select-tags-btn" id="cmSelectTagsButton">Select tags <i class="bi bi-plus-lg"></i></button>';
+            selectedTagObjects().forEach(function (tag) {
+                html += '<span class="cm-selected-tag">' + esc(tag.name) + '<button type="button" data-remove-tag="' + Number(tag.id) + '"><i class="bi bi-x-lg"></i></button></span>';
+            });
+            box.innerHTML = html;
+            document.getElementById('cmTagSelectedCount').textContent = state.selectedTags.length + ' selected';
+        }
+
+        function renderTagPickerList(search) {
+            search = String(search || '').toLowerCase();
+            var filtered = state.tags.filter(function (tag) { return String(tag.name || '').toLowerCase().indexOf(search) !== -1; });
+            document.getElementById('cmTagList').innerHTML = filtered.length ? filtered.map(function (tag) {
+                var selected = state.selectedTags.indexOf(Number(tag.id)) !== -1;
+                return '<button type="button" class="cm-tag-option' + (selected ? ' selected' : '') + '" data-pick-tag="' + Number(tag.id) + '"><span>' + esc(tag.name) + '</span><i class="bi bi-check-lg"></i></button>';
+            }).join('') : '<div class="cm-empty">No tags found.</div>';
+        }
+
+        function positionTagPicker() {
+            var trigger = document.getElementById('cmSelectTagsButton');
+            if (!trigger) return;
+            var rect = trigger.getBoundingClientRect();
+            var width = 245;
+            var left = Math.min(rect.left, window.innerWidth - width - 10);
+            tagPicker.style.left = Math.max(10, left) + 'px';
+            tagPicker.style.top = (rect.bottom + 6) + 'px';
+        }
+
+        function openTags(id) {
+            var row = rowData(id);
+            if (!row) return;
+            state.tagMode = 'single';
+            state.tagClientIds = [];
+            state.tagClientId = id;
+            state.tagClientName = row.display_name || 'Client';
+            state.selectedTags = (row.tags || []).map(function (tag) { return Number(tag.id); });
+            document.getElementById('cmTagsModalTitle').textContent = 'Edit tags for ' + state.tagClientName;
+            document.getElementById('cmTagSearch').value = '';
+            renderSelectedTags();
+            renderTagPickerList('');
+            tagPicker.classList.remove('show');
+            tagModal.classList.add('show');
+            tagModal.setAttribute('aria-hidden', 'false');
+        }
+
+        function closeTags() {
+            tagPicker.classList.remove('show');
+            tagModal.classList.remove('show');
+            tagModal.setAttribute('aria-hidden', 'true');
+            state.tagClientId = 0;
+            state.tagClientName = '';
+            state.tagClientIds = [];
+            state.tagMode = 'single';
+        }
+
+        function saveTags() {
+            if (state.tagMode === 'single' && state.tagClientId <= 0) return;
+            if (state.tagMode === 'bulk' && !state.tagClientIds.length) return;
+            if (state.tagMode === 'bulk' && !state.selectedTags.length) {
+                showToast('warning', 'Select at least one tag to add.');
+                return;
+            }
+            var button = document.getElementById('cmTagsSave');
+            button.disabled = true;
+            var fd = new FormData();
+            if (state.tagMode === 'bulk') {
+                fd.append('action', 'bulk_add_tags');
+                fd.append('client_ids', JSON.stringify(state.tagClientIds));
+            } else {
+                fd.append('action', 'save_tags');
+                fd.append('client_id', state.tagClientId);
+            }
+            fd.append('tag_ids', JSON.stringify(state.selectedTags));
+            request(fd).then(function (data) {
+                closeTags();
+                showToast('success', data.message);
+                clearSelection();
+                load();
+            }).catch(function (e) {
+                showToast('error', e.message);
+            }).finally(function () { button.disabled = false; });
+        }
+
+        function createTag() {
+            var name = window.prompt('New tag name');
+            if (name === null) return;
+            name = name.trim();
+            if (!name) {
+                showToast('warning', 'Enter a tag name.');
+                return;
+            }
+            var fd = new FormData();
+            fd.append('action', 'create_tag');
+            fd.append('name', name);
+            request(fd).then(function (data) {
+                var tag = data.tag || {};
+                if (!state.tags.some(function (x) { return Number(x.id) === Number(tag.id); })) state.tags.push(tag);
+                state.tags.sort(function (a, b) { return String(a.name).localeCompare(String(b.name)); });
+                if (state.selectedTags.indexOf(Number(tag.id)) === -1) state.selectedTags.push(Number(tag.id));
+                renderSelectedTags();
+                renderTagPickerList('');
+                renderTagFilter();
+                showToast('success', data.message);
+            }).catch(function (e) { showToast('error', e.message); });
+        }
+
+        function openConfirm(action, id, name) {
+            state.confirmAction = action;
+            state.confirmClientId = Number(id);
+            state.confirmClientName = name || 'this client';
+            state.confirmClientIds = [];
+            document.getElementById('cmConfirmTitle').textContent = action === 'delete' ? 'Delete client?' : 'Archive client?';
+            document.getElementById('cmConfirmCopy').textContent = action === 'delete'
+                ? 'Delete ' + state.confirmClientName + '? The client will be removed from the active client list. Existing operational history is preserved through soft delete.'
+                : 'Archive ' + state.confirmClientName + '? You can include archived clients again using the Status filter.';
+            document.getElementById('cmConfirmAction').textContent = action === 'delete' ? 'Delete Client' : 'Archive Client';
+            confirmModal.classList.add('show');
+            confirmModal.setAttribute('aria-hidden', 'false');
+        }
+
+        function closeConfirm() {
+            confirmModal.classList.remove('show');
+            confirmModal.setAttribute('aria-hidden', 'true');
+            state.confirmAction = '';
+            state.confirmClientId = 0;
+            state.confirmClientIds = [];
+        }
+
+        function runConfirm() {
+            if (!state.confirmAction) return;
+            if (state.confirmAction !== 'bulk_delete' && state.confirmClientId <= 0) return;
+            if (state.confirmAction === 'bulk_delete' && !state.confirmClientIds.length) return;
+            var button = document.getElementById('cmConfirmAction');
+            button.disabled = true;
+            var fd = new FormData();
+            fd.append('action', state.confirmAction);
+            if (state.confirmAction === 'bulk_delete') fd.append('client_ids', JSON.stringify(state.confirmClientIds));
+            else fd.append('client_id', state.confirmClientId);
+            request(fd).then(function (data) {
+                closeConfirm();
+                clearSelection();
+                showToast('success', data.message);
+                state.page = 1;
+                load();
+            }).catch(function (e) {
+                showToast('error', e.message);
+            }).finally(function () { button.disabled = false; });
+        }
+
+
+        function emailTotalBytes() {
+            return state.emailFiles.reduce(function (sum, file) { return sum + Number(file.size || 0); }, 0);
+        }
+
+        function formatBytes(bytes) {
+            if (!bytes) return '0 Bytes';
+            if (bytes < 1024) return bytes + ' Bytes';
+            if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+            return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+        }
+
+        function renderEmailFiles() {
+            var total = emailTotalBytes();
+            var mb = total / (1024 * 1024);
+            document.getElementById('cmEmailSizeText').textContent = "You've attached " + mb.toFixed(2) + ' MB of the 10.00 MB limit.';
+            document.getElementById('cmEmailProgress').style.width = Math.min(100, (total / (10 * 1024 * 1024)) * 100) + '%';
+            document.getElementById('cmEmailFileList').innerHTML = state.emailFiles.map(function (file, index) {
+                return '<div class="cm-email-file"><span><strong>' + esc(file.name) + '</strong><small>' + esc(formatBytes(file.size)) + '</small></span><button type="button" data-remove-email-file="' + index + '" aria-label="Remove attachment"><i class="bi bi-x-lg"></i></button></div>';
+            }).join('');
+        }
+
+        function addEmailFiles(fileList) {
+            var incoming = Array.prototype.slice.call(fileList || []);
+            if (!incoming.length) return;
+            var total = emailTotalBytes();
+            var accepted = [];
+            incoming.forEach(function (file) {
+                if (state.emailFiles.length + accepted.length >= 10) return;
+                if (total + file.size > 10 * 1024 * 1024) return;
+                total += file.size;
+                accepted.push(file);
+            });
+            if (accepted.length !== incoming.length) showToast('warning', 'Attachments are limited to 10 files and 10.00 MB total.');
+            state.emailFiles = state.emailFiles.concat(accepted);
+            renderEmailFiles();
+        }
+
+        function openEmail(id) {
+            var row = rowData(id);
+            if (!row || !row.email) {
+                showToast('warning', 'This client does not have an email address.');
+                return;
+            }
+            state.emailClientId = id;
+            state.emailClientName = row.display_name || 'Client';
+            state.emailClientEmail = row.email || '';
+            state.emailFiles = [];
+            document.getElementById('cmEmailTitle').textContent = 'Send email to ' + state.emailClientName;
+            document.getElementById('cmEmailTo').innerHTML = '<span class="cm-email-chip">' + esc(state.emailClientEmail) + ' <i class="bi bi-x-lg" aria-hidden="true"></i></span>';
+            document.getElementById('cmEmailSubject').value = '';
+            document.getElementById('cmEmailMessage').value = '';
+            document.getElementById('cmEmailCopy').checked = false;
+            document.getElementById('cmEmailFiles').value = '';
+            renderEmailFiles();
+            emailModal.classList.add('show');
+            emailModal.setAttribute('aria-hidden', 'false');
+            window.setTimeout(function () { document.getElementById('cmEmailSubject').focus(); }, 30);
+        }
+
+        function closeEmail() {
+            emailModal.classList.remove('show');
+            emailModal.setAttribute('aria-hidden', 'true');
+            state.emailClientId = 0;
+            state.emailClientName = '';
+            state.emailClientEmail = '';
+            state.emailFiles = [];
+            document.getElementById('cmEmailFiles').value = '';
+            renderEmailFiles();
+        }
+
+        function sendEmail(e) {
+            e.preventDefault();
+            if (state.emailClientId <= 0) return;
+            if (emailTotalBytes() > 10 * 1024 * 1024) {
+                showToast('warning', 'Attachments exceed the 10.00 MB limit.');
+                return;
+            }
+            var button = document.getElementById('cmEmailSend');
+            var original = button.textContent;
+            button.disabled = true;
+            button.textContent = 'Sending...';
+            var fd = new FormData();
+            fd.append('action', 'send_email');
+            fd.append('client_id', state.emailClientId);
+            fd.append('subject', document.getElementById('cmEmailSubject').value.trim());
+            fd.append('message', document.getElementById('cmEmailMessage').value);
+            fd.append('send_copy', document.getElementById('cmEmailCopy').checked ? '1' : '0');
+            state.emailFiles.forEach(function (file) { fd.append('attachments[]', file, file.name); });
+            request(fd).then(function (data) {
+                closeEmail();
+                showToast('success', data.message || 'Email sent successfully.');
+            }).catch(function (err) {
+                showToast('error', err.message);
+            }).finally(function () {
+                button.disabled = false;
+                button.textContent = original;
+            });
+        }
+
+        function exportClients() {
+            var button = document.getElementById('cmExportButton');
+            button.disabled = true;
+            var fd = new FormData();
+            fd.append('action', 'export');
+            fd.append('search', state.search);
+            fd.append('status_scope', state.statusScope);
+            fd.append('tag_id', state.tagId);
+            request(fd).then(function (data) {
+                var rows = data.clients || [];
+                var columns = ['Client ID','Name','Company','Email','Phone','Type','Status','Address','Tags','Last Activity'];
+                var quote = function (v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; };
+                var csvRows = rows.map(function (row) {
+                    return [
+                        row.id,
+                        row.display_name,
+                        row.company_name,
+                        row.email,
+                        row.phone,
+                        row.client_type,
+                        row.status,
+                        addressOf(row),
+                        row.tags_text,
+                        row.last_activity
+                    ].map(quote).join(',');
+                });
+                var csv = '\ufeff' + columns.map(quote).join(',') + '\r\n' + csvRows.join('\r\n');
+                var blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+                var url = URL.createObjectURL(blob);
+                var link = document.createElement('a');
+                link.href = url;
+                link.download = 'clients-' + new Date().toISOString().slice(0,10) + '.csv';
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                URL.revokeObjectURL(url);
+                showToast('success', data.message);
+                document.getElementById('cmMoreWrap').classList.remove('open');
+            }).catch(function (e) { showToast('error', e.message); })
+              .finally(function () { button.disabled = false; });
+        }
+
+        tableBody.addEventListener('click', function (e) {
+            var action = e.target.closest('[data-action]');
+            if (action) {
+                e.preventDefault();
+                e.stopPropagation();
+                var id = Number(action.dataset.id || 0);
+                if (action.dataset.action === 'tags') openTags(id);
+                if (action.dataset.action === 'email') openEmail(id);
+                if (action.dataset.action === 'more') {
+                    if (state.activeRowId === id && rowMenu.classList.contains('show')) closeRowMenu();
+                    else { closeRowMenu(); openRowMenu(action, id); }
+                }
+                return;
+            }
+            if (e.target.closest('a,button,input,label')) return;
+            var row = e.target.closest('tr[data-client-id]');
+            if (row) window.location.href = 'client-view.php?client_id=' + encodeURIComponent(row.dataset.clientId);
+        });
+
+        tableBody.addEventListener('change', function (e) {
+            var box = e.target.closest('.cm-row-check');
+            if (!box) return;
+            setSelected(Number(box.value), box.checked);
+            updateSelectionUI();
+        });
+
+        rowMenu.addEventListener('click', function (e) {
+            var action = e.target.closest('[data-row-action]');
+            if (!action) return;
+            e.preventDefault();
+            e.stopPropagation();
+            var type = action.dataset.rowAction;
+            var id = state.activeRowId;
+            var name = state.activeRowName;
+            closeRowMenu();
+            openConfirm(type, id, name);
+        });
+
+        document.getElementById('cmSelectedTags').addEventListener('click', function (e) {
+            var remove = e.target.closest('[data-remove-tag]');
+            if (remove) {
+                state.selectedTags = state.selectedTags.filter(function (id) { return id !== Number(remove.dataset.removeTag); });
+                renderSelectedTags();
+                renderTagPickerList(document.getElementById('cmTagSearch').value);
+                return;
+            }
+            var select = e.target.closest('#cmSelectTagsButton');
+            if (select) {
+                tagPicker.classList.toggle('show');
+                if (tagPicker.classList.contains('show')) {
+                    renderTagPickerList(document.getElementById('cmTagSearch').value);
+                    positionTagPicker();
+                    document.getElementById('cmTagSearch').focus();
+                }
+            }
+        });
+
+        document.getElementById('cmTagList').addEventListener('click', function (e) {
+            var pick = e.target.closest('[data-pick-tag]');
+            if (!pick) return;
+            var id = Number(pick.dataset.pickTag);
+            var index = state.selectedTags.indexOf(id);
+            if (index === -1) state.selectedTags.push(id); else state.selectedTags.splice(index, 1);
+            renderSelectedTags();
+            renderTagPickerList(document.getElementById('cmTagSearch').value);
+        });
+
+        document.getElementById('cmTagSearch').addEventListener('input', function () { renderTagPickerList(this.value); });
+        document.getElementById('cmClearTags').onclick = function () { state.selectedTags = []; renderSelectedTags(); renderTagPickerList(document.getElementById('cmTagSearch').value); };
+        document.getElementById('cmCreateTag').onclick = createTag;
+        document.getElementById('cmTagsSave').onclick = saveTags;
+        document.getElementById('cmTagsClose').onclick = closeTags;
+        document.getElementById('cmTagsCancel').onclick = closeTags;
+        tagModal.onclick = function (e) { if (e.target === tagModal) closeTags(); };
+
+        document.getElementById('cmConfirmAction').onclick = runConfirm;
+        document.getElementById('cmConfirmClose').onclick = closeConfirm;
+        document.getElementById('cmConfirmCancel').onclick = closeConfirm;
+        confirmModal.onclick = function (e) { if (e.target === confirmModal) closeConfirm(); };
+
+        document.getElementById('cmEmailForm').addEventListener('submit', sendEmail);
+        document.getElementById('cmEmailClose').onclick = closeEmail;
+        document.getElementById('cmEmailCancel').onclick = closeEmail;
+        document.getElementById('cmEmailSelect').onclick = function () { document.getElementById('cmEmailFiles').click(); };
+        document.getElementById('cmEmailFiles').onchange = function () { addEmailFiles(this.files); this.value = ''; };
+        document.getElementById('cmEmailFileList').addEventListener('click', function (e) {
+            var remove = e.target.closest('[data-remove-email-file]');
+            if (!remove) return;
+            state.emailFiles.splice(Number(remove.dataset.removeEmailFile), 1);
+            renderEmailFiles();
+        });
+        var emailDrop = document.getElementById('cmEmailDrop');
+        ['dragenter','dragover'].forEach(function (name) { emailDrop.addEventListener(name, function (e) { e.preventDefault(); e.stopPropagation(); emailDrop.classList.add('dragover'); }); });
+        ['dragleave','drop'].forEach(function (name) { emailDrop.addEventListener(name, function (e) { e.preventDefault(); e.stopPropagation(); emailDrop.classList.remove('dragover'); }); });
+        emailDrop.addEventListener('drop', function (e) { addEmailFiles(e.dataTransfer.files); });
+        emailDrop.addEventListener('click', function (e) { if (!e.target.closest('#cmEmailSelect')) document.getElementById('cmEmailFiles').click(); });
+        emailModal.onclick = function (e) { if (e.target === emailModal) closeEmail(); };
+
+        document.getElementById('cmMoreButton').onclick = function (e) {
+            e.stopPropagation();
+            var wrap = document.getElementById('cmMoreWrap');
+            var open = !wrap.classList.contains('open');
+            wrap.classList.toggle('open', open);
+            this.setAttribute('aria-expanded', open ? 'true' : 'false');
+            document.getElementById('cmMoreMenu').setAttribute('aria-hidden', open ? 'false' : 'true');
+        };
+        document.getElementById('cmExportButton').onclick = exportClients;
+
+        document.getElementById('cmTagFilterButton').onclick = function (e) {
+            e.stopPropagation();
+            document.getElementById('cmTagFilterWrap').classList.toggle('open');
+            document.getElementById('cmStatusFilterWrap').classList.remove('open');
+        };
+        document.getElementById('cmStatusFilterButton').onclick = function (e) {
+            e.stopPropagation();
+            document.getElementById('cmStatusFilterWrap').classList.toggle('open');
+            document.getElementById('cmTagFilterWrap').classList.remove('open');
+        };
+        document.getElementById('cmTagFilterMenu').addEventListener('click', function (e) {
+            var option = e.target.closest('[data-tag-filter]');
+            if (!option) return;
+            state.tagId = Number(option.dataset.tagFilter || 0);
+            state.page = 1;
+            document.getElementById('cmTagFilterWrap').classList.remove('open');
+            load();
+        });
+        document.getElementById('cmStatusFilterMenu').addEventListener('click', function (e) {
+            var option = e.target.closest('[data-scope]');
+            if (!option) return;
+            state.statusScope = option.dataset.scope;
+            state.page = 1;
+            Array.prototype.forEach.call(this.querySelectorAll('[data-scope]'), function (x) { x.classList.toggle('active', x === option); });
+            document.getElementById('cmStatusFilterLabel').textContent = option.textContent.replace('✓','').trim();
+            document.getElementById('cmStatusFilterWrap').classList.remove('open');
+            load();
+        });
+
+        document.getElementById('cmSearch').oninput = function () {
+            var value = this.value.trim();
+            if (searchTimer) clearTimeout(searchTimer);
+            searchTimer = setTimeout(function () { state.search = value; state.page = 1; load(); }, 260);
+        };
+
+        document.querySelectorAll('[data-sort]').forEach(function (button) {
+            button.addEventListener('click', function () {
+                var next = this.dataset.sort;
+                if (state.sort === next) state.direction = state.direction === 'asc' ? 'desc' : 'asc';
+                else { state.sort = next; state.direction = next === 'name' ? 'asc' : 'desc'; }
+                state.page = 1;
+                load();
+            });
+        });
+
+        document.getElementById('cmSelectAll').onchange = function () {
+            var checked = this.checked;
+            currentPageIds().forEach(function (id) { setSelected(id, checked); });
+            updateSelectionUI();
+        };
+        document.getElementById('cmBulkSelectAll').onchange = function () {
+            if (!this.checked) clearSelection();
+            else currentPageIds().forEach(function (id) { setSelected(id, true); });
+            updateSelectionUI();
+        };
+        document.getElementById('cmDeselectAll').onclick = clearSelection;
+        document.getElementById('cmBulkTagButton').onclick = openBulkTags;
+        document.getElementById('cmBulkDeleteButton').onclick = openBulkDelete;
+
+        document.getElementById('cmPrevPage').onclick = function () { if (state.page > 1) { state.page--; load(); } };
+        document.getElementById('cmNextPage').onclick = function () { state.page++; load(); };
+        document.getElementById('cmToastClose').onclick = function () { toast.classList.remove('show'); };
+
+        document.addEventListener('click', function (e) {
+            if (!e.target.closest('#cmMoreWrap')) document.getElementById('cmMoreWrap').classList.remove('open');
+            if (!e.target.closest('#cmTagFilterWrap')) document.getElementById('cmTagFilterWrap').classList.remove('open');
+            if (!e.target.closest('#cmStatusFilterWrap')) document.getElementById('cmStatusFilterWrap').classList.remove('open');
+            if (!e.target.closest('#cmRowMenu') && !e.target.closest('[data-action="more"]')) closeRowMenu();
+            if (tagPicker.classList.contains('show') && !e.target.closest('#cmTagPicker') && !e.target.closest('#cmSelectTagsButton')) tagPicker.classList.remove('show');
+        });
+
+        document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape') {
+                closeRowMenu();
+                tagPicker.classList.remove('show');
+                document.getElementById('cmMoreWrap').classList.remove('open');
+                document.getElementById('cmTagFilterWrap').classList.remove('open');
+                document.getElementById('cmStatusFilterWrap').classList.remove('open');
+                if (tagModal.classList.contains('show')) closeTags();
+                if (confirmModal.classList.contains('show')) closeConfirm();
+                if (emailModal.classList.contains('show')) closeEmail();
+            }
+        });
+
+        window.addEventListener('resize', closeRowMenu);
+        window.addEventListener('scroll', closeRowMenu, true);
+        load();
+    })();
+    </script>
 </body>
-
 </html>

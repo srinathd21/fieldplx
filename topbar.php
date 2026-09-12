@@ -540,7 +540,7 @@ body { padding-top: var(--fieldplx-navbar-height); }
           <li class="nav-item"><a class="nav-link<?= topbarActive('features.php', $currentPage) ?>" href="features.php">Features</a></li>
           <li class="nav-item"><a class="nav-link<?= topbarActive('industries.php', $currentPage) ?>" href="industries.php">Industries</a></li>
           <li class="nav-item"><a class="nav-link<?= topbarActive('pricing.php', $currentPage) ?>" href="pricing.php">Pricing</a></li>
-          <li class="nav-item"><a class="nav-link<?= topbarActive('resources.php', $currentPage) ?>" href="resources.php">Resources</a></li>
+          <!--li class="nav-item"><a class="nav-link<?= topbarActive('resources.php', $currentPage) ?>" href="resources.php">Resources</a></li-->
           <li class="nav-item"><a class="nav-link<?= topbarActive('about-us.php', $currentPage) ?>" href="about-us.php">About Us</a></li>
           <li class="nav-item"><a class="nav-link<?= topbarActive('contact.php', $currentPage) ?>" href="contact.php">Contact</a></li>
         </ul>

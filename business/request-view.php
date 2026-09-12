@@ -1,5 +1,9 @@
 <?php
-/* FieldPlx Request View Page - Version 1.0.0 - 2026-09-02 */
+/*
+ * FieldPlx Request View - Version 2.0.2 - 2026-09-08
+ * Jobber-style Request View using the Add Invoice FieldPlx visual system.
+ * All mutations use the dedicated api/request-view.php endpoint.
+ */
 require_once __DIR__ . '/includes/auth.php';
 
 $pageTitle = 'Request View';
@@ -8,134 +12,23 @@ $activePage = 'requests';
 if (session_status() === PHP_SESSION_NONE) {
     session_start();
 }
-
+if (empty($_SESSION['request_view_csrf_token'])) {
+    $_SESSION['request_view_csrf_token'] = bin2hex(random_bytes(32));
+}
+$requestViewCsrf = (string)$_SESSION['request_view_csrf_token'];
 $requestId = isset($_GET['request_id']) ? (int)$_GET['request_id'] : 0;
-$tenantId = isset($_SESSION['tenant_id']) ? (int)$_SESSION['tenant_id'] : 0;
-$requestViewPdo = null;
-if (isset($pdo) && $pdo instanceof PDO) {
-    $requestViewPdo = $pdo;
-} elseif (isset($db) && $db instanceof PDO) {
-    $requestViewPdo = $db;
-}
-
-$requestRow = null;
-$requestQuotes = array();
-$requestJobs = array();
-$requestAssessments = array();
-$requestViewError = '';
-
-function rvh($value) { return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8'); }
-function rvReadable($value) { $value = str_replace('_', ' ', (string)$value); return ucwords($value); }
-function rvDate($value, $withTime = false) {
-    if (!$value) return '-';
-    $ts = strtotime((string)$value);
-    if (!$ts) return (string)$value;
-    return date($withTime ? 'd M Y, h:i A' : 'd M Y', $ts);
-}
-function rvTime($value) {
-    if (!$value) return '-';
-    $ts = strtotime((string)$value);
-    return $ts ? date('h:i A', $ts) : (string)$value;
-}
-
-if ($requestId <= 0 || $tenantId <= 0 || !($requestViewPdo instanceof PDO)) {
-    $requestViewError = 'Invalid request or database connection.';
-} else {
-    try {
-        $stmt = $requestViewPdo->prepare(
-            "SELECT r.*,
-                    c.display_name AS client_name,
-                    c.company_name AS client_company,
-                    c.email AS client_email,
-                    c.phone AS client_phone,
-                    c.alternate_phone AS client_alternate_phone,
-                    c.client_type AS client_type,
-                    l.name AS location_name,
-                    l.location_type AS location_type,
-                    l.address_line1 AS location_address1,
-                    l.address_line2 AS location_address2,
-                    l.city AS location_city,
-                    l.state AS location_state,
-                    l.postal_code AS location_postal_code,
-                    l.contact_name AS location_contact_name,
-                    l.contact_phone AS location_contact_phone,
-                    ps.name AS service_name,
-                    ps.item_type AS service_type,
-                    b.name AS branch_name,
-                    CONCAT_WS(' ', au.first_name, au.last_name) AS assigned_name,
-                    au.email AS assigned_email,
-                    au.phone AS assigned_phone,
-                    CONCAT_WS(' ', cu.first_name, cu.last_name) AS created_by_name
-             FROM service_requests r
-             INNER JOIN clients c ON c.id = r.client_id AND c.tenant_id = r.tenant_id
-             LEFT JOIN client_locations l ON l.id = r.location_id AND l.tenant_id = r.tenant_id
-             LEFT JOIN product_services ps ON ps.id = r.product_service_id AND ps.tenant_id = r.tenant_id
-             LEFT JOIN branches b ON b.id = r.branch_id AND b.tenant_id = r.tenant_id
-             LEFT JOIN users au ON au.id = r.assigned_user_id AND au.tenant_id = r.tenant_id
-             LEFT JOIN users cu ON cu.id = r.created_by_user_id AND cu.tenant_id = r.tenant_id
-             WHERE r.id = :request_id AND r.tenant_id = :tenant_id
-             LIMIT 1"
-        );
-        $stmt->execute(array(':request_id' => $requestId, ':tenant_id' => $tenantId));
-        $requestRow = $stmt->fetch(PDO::FETCH_ASSOC);
-
-        if (!$requestRow) {
-            $requestViewError = 'Service request not found.';
-        } else {
-            $quoteStmt = $requestViewPdo->prepare(
-                "SELECT id, quote_no, title, status, total, created_at
-                 FROM quotes
-                 WHERE tenant_id = :tenant_id AND request_id = :request_id
-                 ORDER BY id DESC"
-            );
-            $quoteStmt->execute(array(':tenant_id' => $tenantId, ':request_id' => $requestId));
-            $requestQuotes = $quoteStmt->fetchAll(PDO::FETCH_ASSOC);
-
-            $jobStmt = $requestViewPdo->prepare(
-                "SELECT id, job_no, title, status, start_date, start_time, created_at
-                 FROM jobs
-                 WHERE tenant_id = :tenant_id AND request_id = :request_id AND deleted_at IS NULL
-                 ORDER BY id DESC"
-            );
-            $jobStmt->execute(array(':tenant_id' => $tenantId, ':request_id' => $requestId));
-            $requestJobs = $jobStmt->fetchAll(PDO::FETCH_ASSOC);
-
-            $assessmentStmt = $requestViewPdo->prepare(
-                "SELECT id, assessment_no, status, result, scheduled_start, scheduled_end, notes, created_at
-                 FROM assessments
-                 WHERE tenant_id = :tenant_id AND request_id = :request_id
-                 ORDER BY id DESC"
-            );
-            $assessmentStmt->execute(array(':tenant_id' => $tenantId, ':request_id' => $requestId));
-            $requestAssessments = $assessmentStmt->fetchAll(PDO::FETCH_ASSOC);
-        }
-    } catch (Throwable $e) {
-        $requestViewError = 'Unable to load service request details.';
-        error_log('Request view error: ' . $e->getMessage());
-    }
-}
-
-$convertQuoteUrl = '';
-$convertJobUrl = '';
-if (is_array($requestRow)) {
-    $query = array(
-        'request_id' => (int)$requestRow['id'],
-        'client_id' => (int)$requestRow['client_id']
-    );
-    if (!empty($requestRow['location_id'])) $query['location_id'] = (int)$requestRow['location_id'];
-    if (!empty($requestRow['product_service_id'])) $query['product_service_id'] = (int)$requestRow['product_service_id'];
-    $convertQuoteUrl = 'add-quotation.php?' . http_build_query($query);
-    $convertJobUrl = 'job-form.php?' . http_build_query($query);
-}
 ?>
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="utf-8" />
-    <meta content="width=device-width, initial-scale=1" name="viewport" />
-    <title>Request View - FieldPlx</title>
-    <?php require_once __DIR__ . '/includes/links.php'; ?>
-    <style>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Request View - FieldPlx</title>
+<?php require_once __DIR__ . '/includes/links.php'; ?>
+<link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet">
+<style>
+/* Canonical FieldPlx tenant shell copied from Add Request/Add Invoice reference */
+
         :root {
   --fieldplx-primary: #6d28d9;
   --fieldplx-primary-dark: #5b21b6;
@@ -4174,228 +4067,1350 @@ a:active{
   }
 }
 
-/* Separate Edit Request action */
-.fd-rq-icon[href]{text-decoration:none!important}
-
-
 /* ==========================================================
-   Service Requests v2.1 - same compact stats cards as Quotations
+   Add Invoice reference: shared FieldPlx shell / typography
    ========================================================== */
-.fd-rq-summary-v2{margin-bottom:17px}
-.fd-rq-summary-v2 > div{display:flex}
-.fd-rq-metric-card{
-  width:100%;height:100%;min-height:134px;padding:15px 18px;position:relative;
-  overflow:visible;border:1px solid #dfe6ef;border-radius:12px;background:#fff;
-  box-shadow:0 3px 12px rgba(24,45,76,.035)
-}
-.fd-rq-metric-title{
-  margin:0;color:#15233a;font-size:15px;font-weight:700;line-height:1.2
-}
-.fd-rq-metric-title-row{display:flex;align-items:center;gap:7px}
-.fd-rq-metric-info{color:#8b9bb0;font-size:12px;line-height:1}
-.fd-rq-card-arrow{
-  position:absolute;top:14px;right:15px;color:#7f90a8;font-size:15px;line-height:1
-}
-.fd-rq-metric-sub{
-  margin:4px 24px 0 0;max-width:315px;color:#738197;font-size:9.5px;line-height:1.35
-}
-.fd-rq-overview-list{margin-top:8px;display:flex;flex-direction:column;gap:4px}
-.fd-rq-overview-item{
-  min-height:14px;display:grid;grid-template-columns:8px minmax(0,1fr) auto;
-  align-items:center;gap:6px;color:#4f6078;font-size:9px;line-height:1.15;
-  text-decoration:none!important
-}
-.fd-rq-overview-item:hover{color:var(--fd-green-dark)}
-.fd-rq-overview-dot{width:6px;height:6px;border-radius:50%;background:#aab5c5}
-.fd-rq-overview-dot.approval{background:#d7aa25}
-.fd-rq-overview-dot.new{background:#94a8c1}
-.fd-rq-overview-dot.assessment{background:#5d9f2f}
-.fd-rq-overview-dot.overdue{background:#e45b66}
-.fd-rq-overview-dot.unscheduled{background:#7e91a8}
-.fd-rq-overview-count{color:#253750;font-size:9px;font-weight:700;text-align:right}
-.fd-rq-metric-period{margin-top:3px;color:#7c8a9e;font-size:9px;line-height:1.2}
-.fd-rq-metric-value-row{margin-top:18px;display:flex;align-items:center;gap:9px}
-.fd-rq-metric-value{
-  color:#071426;font-size:30px;line-height:1;font-weight:700;letter-spacing:-.5px
-}
-.fd-rq-metric-change{
-  min-height:22px;padding:0 8px;display:inline-flex;align-items:center;justify-content:center;
-  border-radius:999px;font-size:9px;font-weight:700;white-space:nowrap
-}
-.fd-rq-metric-change.up{color:#5d971b;background:#edf7e4}
-.fd-rq-metric-change.down{color:#b9444d;background:#fff0f1}
-.fd-rq-metric-change.flat{color:#718096;background:#eef2f6}
-.fd-rq-trend-wrap{position:relative;display:inline-flex}
-.fd-rq-trend-popup{
-  min-width:190px;padding:11px 12px;position:absolute;right:-8px;bottom:calc(100% + 12px);z-index:30;
-  visibility:hidden;opacity:0;transform:translateY(5px);pointer-events:none;
-  border:1px solid #dfe6ef;border-radius:10px;background:#fff;
-  box-shadow:0 12px 28px rgba(20,42,75,.14);transition:.15s ease
-}
-.fd-rq-trend-popup:after{
-  width:10px;height:10px;position:absolute;right:22px;bottom:-6px;content:"";
-  border-right:1px solid #dfe6ef;border-bottom:1px solid #dfe6ef;background:#fff;
-  transform:rotate(45deg)
-}
-.fd-rq-trend-wrap:hover .fd-rq-trend-popup,
-.fd-rq-trend-wrap:focus-within .fd-rq-trend-popup{visibility:visible;opacity:1;transform:translateY(0)}
-.fd-rq-trend-popup-title{margin-bottom:7px;color:#62738a;font-size:9px;font-weight:700}
-.fd-rq-trend-popup-row{
-  display:flex;align-items:center;justify-content:space-between;gap:15px;padding:3px 0;
-  color:#607086;font-size:9px
-}
-.fd-rq-trend-popup-row strong{color:#243650;font-size:9px}
-@media(max-width:1199.98px){.fd-rq-metric-card{min-height:136px}}
-@media(max-width:767.98px){.fd-rq-metric-card{min-height:132px}.fd-rq-summary-v2{row-gap:12px}}
-@media(max-width:575.98px){.fd-rq-metric-card{min-height:128px;padding:14px 16px}.fd-rq-metric-value{font-size:28px}}
+        :root{
+            --fieldplx-primary:#74b824;
+            --fieldplx-primary-dark:#5d971b;
+            --fieldplx-text:#0b1933;
+            --fieldplx-muted:#6f7b90;
+            --fieldplx-border:#e5eaf1;
+            --fieldplx-surface:#ffffff;
+            --fieldplx-background:#f6f8fb;
+            --fieldplx-topbar-height:70px;
+            --fieldplx-sidebar-width:250px;
+            --fieldplx-sidebar-collapsed-width:78px;
 
-/* ==========================================================
-   Request View - Version 1.0.0
-   ========================================================== */
-.fd-rv-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:18px}
-.fd-rv-title{margin:0 0 6px;color:var(--fd-text);font-size:21px;line-height:1.2;font-weight:700}
-.fd-rv-sub{margin:0;color:var(--fd-muted);font-size:11px;line-height:1.5}
-.fd-rv-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
-.fd-rv-btn{min-height:39px;padding:0 13px;display:inline-flex;align-items:center;justify-content:center;gap:7px;border:1px solid var(--fd-border);border-radius:8px;color:#43546c;background:#fff;box-shadow:0 4px 12px rgba(31,43,88,.04);font-size:10px;font-weight:700;text-decoration:none!important}
-.fd-rv-btn:hover{border-color:#cfe3ae;color:var(--fd-green-dark);background:#f9fcf4}
-.fd-rv-btn.primary{border-color:var(--fd-green);color:#fff;background:linear-gradient(90deg,#7fc92d,#68aa1d);box-shadow:0 7px 16px rgba(104,170,29,.18)}
-.fd-rv-btn.primary:hover{color:#fff;background:linear-gradient(90deg,#74b824,#5d971b)}
-.fd-rv-btn.navy{border-color:#123f73;color:#fff;background:#123f73}.fd-rv-btn.navy:hover{color:#fff;background:#0c315b}
-.fd-rv-summary{display:grid;grid-template-columns:1.35fr .85fr;gap:14px;margin-bottom:14px}
-.fd-rv-card{border:1px solid #dfe6ef;border-radius:12px;background:#fff;box-shadow:0 3px 12px rgba(24,45,76,.035);overflow:hidden}
-.fd-rv-hero{padding:18px 20px;display:flex;gap:14px;align-items:flex-start}
-.fd-rv-hero-icon{width:48px;height:48px;flex:0 0 48px;display:grid;place-items:center;border-radius:12px;color:#fff;background:#123f73;font-size:20px}
-.fd-rv-hero-main{min-width:0;flex:1}.fd-rv-request-no{display:block;margin-bottom:4px;color:#5d971b;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.03em}
-.fd-rv-hero h2{margin:0;color:#0b1933;font-size:17px;line-height:1.35;font-weight:700}.fd-rv-hero p{margin:7px 0 0;color:#6f7b90;font-size:10px;line-height:1.55}
-.fd-rv-badges{margin-top:11px;display:flex;gap:6px;flex-wrap:wrap}.fd-rv-badge{display:inline-flex;align-items:center;padding:5px 8px;border-radius:6px;font-size:8.5px;font-weight:700;text-transform:capitalize}.fd-rv-badge.status{color:#123d70;background:#edf2f7}.fd-rv-badge.priority{color:#5d971b;background:#f0f8e5}.fd-rv-badge.urgent,.fd-rv-badge.high{color:#b9444d;background:#fff0f1}
-.fd-rv-customer{padding:18px 20px}.fd-rv-card-title{margin:0 0 13px;color:#0b1933;font-size:12px;font-weight:700}.fd-rv-customer-name{color:#0b1933;font-size:13px;font-weight:700}.fd-rv-customer-company{margin-top:2px;color:#6f7b90;font-size:9px}.fd-rv-contact-row{margin-top:11px;display:flex;gap:12px;flex-wrap:wrap;color:#52627a;font-size:9px}.fd-rv-contact-row a{color:inherit!important}.fd-rv-contact-row i{margin-right:4px;color:#7695ba}
-.fd-rv-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
-.fd-rv-section-head{padding:12px 15px;border-bottom:1px solid #edf1f5;background:#fbfcfd}.fd-rv-section-head h3{margin:0;color:#0b1933;font-size:11px;font-weight:700}.fd-rv-section-head p{margin:3px 0 0;color:#8a96a7;font-size:8.5px}
-.fd-rv-section-body{padding:4px 15px 12px}.fd-rv-detail{min-height:43px;padding:9px 0;display:grid;grid-template-columns:145px minmax(0,1fr);gap:12px;border-bottom:1px solid #f1f3f6}.fd-rv-detail:last-child{border-bottom:0}.fd-rv-label{color:#8390a3;font-size:8.5px;font-weight:600}.fd-rv-value{min-width:0;color:#31425b;font-size:9.5px;line-height:1.5;overflow-wrap:anywhere}.fd-rv-value strong{color:#0b1933}
-.fd-rv-description{white-space:pre-wrap;line-height:1.65}.fd-rv-address{line-height:1.6}
-.fd-rv-related{margin-top:14px}.fd-rv-related-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;padding:14px}.fd-rv-related-item{min-height:94px;padding:12px;border:1px solid #e5eaf1;border-radius:9px;background:#fbfcfd}.fd-rv-related-icon{width:31px;height:31px;margin-bottom:9px;display:grid;place-items:center;border-radius:8px;color:#123d70;background:#edf2f7}.fd-rv-related-item strong{display:block;color:#17233b;font-size:10px}.fd-rv-related-item small{display:block;margin-top:3px;color:#8793a5;font-size:8.5px;line-height:1.45}.fd-rv-related-item a{margin-top:8px;display:inline-flex;color:#5d971b!important;font-size:8.5px;font-weight:700}
-.fd-rv-empty{padding:18px;color:#8b96a6;font-size:9px;text-align:center}
-.fd-rv-error{max-width:650px;margin:50px auto;padding:24px;text-align:center}.fd-rv-error i{font-size:30px;color:#e45b66}.fd-rv-error h2{margin:10px 0 6px;font-size:17px}.fd-rv-error p{color:#6f7b90;font-size:10px}
-@media(max-width:991.98px){.fd-rv-summary,.fd-rv-grid{grid-template-columns:1fr}.fd-rv-related-grid{grid-template-columns:1fr 1fr}}
-@media(max-width:767.98px){.fd-rv-head{flex-direction:column}.fd-rv-actions{width:100%;justify-content:flex-start}.fd-rv-related-grid{grid-template-columns:1fr}.fd-rv-detail{grid-template-columns:110px minmax(0,1fr)}}
-@media(max-width:575.98px){.fd-rv-actions .fd-rv-btn{flex:1}.fd-rv-detail{grid-template-columns:1fr;gap:4px}.fd-rv-hero{padding:15px}.fd-rv-customer{padding:15px}}
+            --fd-navy:#001131;
+            --fd-navy-light:#071f49;
+            --fd-blue:#123d70;
+            --fd-green:#74b824;
+            --fd-green-dark:#5d971b;
+            --fd-green-soft:#f0f8e5;
+            --fd-red:#e45b66;
+            --fd-bg:#f6f8fb;
+            --fd-text:#0b1933;
+            --fd-muted:#6f7b90;
+            --fd-border:#e5eaf1;
+        }
+
+        *{
+            box-sizing:border-box;
+        }
+
+        html,
+        body{
+            margin:0;
+            min-height:100%;
+            overflow-x:hidden;
+        }
+
+        body{
+            min-height:100vh;
+            background:var(--fd-bg)!important;
+            color:var(--fd-text);
+            font-family:Arial,Helvetica,sans-serif!important;
+            font-size:14px;
+        }
+
+        a,
+        a:link,
+        a:visited,
+        a:hover,
+        a:focus,
+        a:active{
+            text-decoration:none!important;
+        }
+
+        /* ---------- Topbar ---------- */
+        .fieldplx-topbar{
+            min-height:70px!important;
+            position:sticky!important;
+            top:0!important;
+            z-index:1030!important;
+            margin-left:var(--fieldplx-sidebar-width);
+            width:calc(100% - var(--fieldplx-sidebar-width));
+            background:#fff!important;
+            border-bottom:1px solid var(--fd-border)!important;
+            box-shadow:0 3px 14px rgba(0,17,49,.035)!important;
+            backdrop-filter:none!important;
+            transition:margin-left .25s ease,width .25s ease;
+        }
+
+        body.fieldplx-sidebar-collapsed .fieldplx-topbar{
+            margin-left:var(--fieldplx-sidebar-collapsed-width);
+            width:calc(100% - var(--fieldplx-sidebar-collapsed-width));
+        }
+
+        .fieldplx-topbar-inner{
+            min-height:70px!important;
+            padding:0 27px!important;
+            display:flex!important;
+            align-items:center!important;
+            gap:13px!important;
+        }
+
+        .fieldplx-brand-mobile{
+            display:none!important;
+            align-items:center!important;
+            gap:9px!important;
+            min-width:0!important;
+            color:var(--fd-text)!important;
+        }
+
+        .fieldplx-brand-logo{
+            width:38px!important;
+            height:38px!important;
+            flex:0 0 38px!important;
+            border-radius:10px!important;
+            object-fit:contain!important;
+        }
+
+        .fieldplx-brand-placeholder{
+            width:38px!important;
+            height:38px!important;
+            flex:0 0 38px!important;
+            display:inline-flex!important;
+            align-items:center!important;
+            justify-content:center!important;
+            border-radius:10px!important;
+            color:#fff!important;
+            background:linear-gradient(135deg,#8fd236,#68aa1d)!important;
+            font-weight:700!important;
+        }
+
+        .fieldplx-brand-name{
+            max-width:170px!important;
+            overflow:hidden!important;
+            white-space:nowrap!important;
+            text-overflow:ellipsis!important;
+            color:var(--fd-text)!important;
+            font-size:14px!important;
+            font-weight:700!important;
+        }
+
+        .fieldplx-page-heading{
+            display:none!important;
+        }
+
+        .fieldplx-menu-toggle,
+        .fieldplx-topbar-action{
+            width:41px!important;
+            height:41px!important;
+            min-width:41px!important;
+            padding:0!important;
+            display:inline-flex!important;
+            align-items:center!important;
+            justify-content:center!important;
+            position:relative!important;
+            border:0!important;
+            border-radius:9px!important;
+            color:var(--fd-navy)!important;
+            background:transparent!important;
+            font-size:18px!important;
+            box-shadow:none!important;
+        }
+
+        .fieldplx-menu-toggle:hover,
+        .fieldplx-topbar-action:hover{
+            color:var(--fd-navy)!important;
+            background:var(--fd-green-soft)!important;
+        }
+
+        .fieldplx-search-wrap{
+            width:280px!important;
+            margin-left:auto!important;
+            position:relative!important;
+        }
+
+        .fieldplx-search-icon{
+            position:absolute!important;
+            top:50%!important;
+            left:13px!important;
+            z-index:2!important;
+            transform:translateY(-50%)!important;
+            color:#98a3b2!important;
+            font-size:14px!important;
+            pointer-events:none!important;
+        }
+
+        .fieldplx-search-input{
+            width:100%!important;
+            height:41px!important;
+            padding:8px 13px 8px 38px!important;
+            border:0!important;
+            border-radius:8px!important;
+            outline:0!important;
+            background:#f5f8fb!important;
+            color:var(--fd-text)!important;
+            font-size:12px!important;
+            box-shadow:none!important;
+        }
+
+        .fieldplx-search-input:focus{
+            background:#f5f8fb!important;
+            box-shadow:0 0 0 3px rgba(116,184,36,.14)!important;
+        }
+
+        .fieldplx-notification-count{
+            position:absolute!important;
+            top:-5px!important;
+            right:-5px!important;
+            min-width:18px!important;
+            height:18px!important;
+            padding:0 5px!important;
+            display:inline-flex!important;
+            align-items:center!important;
+            justify-content:center!important;
+            border:2px solid #fff!important;
+            border-radius:999px!important;
+            color:#fff!important;
+            background:var(--fd-red)!important;
+            font-size:9px!important;
+            font-weight:700!important;
+        }
+
+        .fieldplx-profile-button{
+            min-width:0!important;
+            padding:2px!important;
+            display:flex!important;
+            align-items:center!important;
+            gap:9px!important;
+            border:0!important;
+            border-radius:9px!important;
+            background:transparent!important;
+            color:var(--fd-text)!important;
+            text-align:left!important;
+            box-shadow:none!important;
+        }
+
+        .fieldplx-profile-button:hover{
+            background:var(--fd-green-soft)!important;
+        }
+
+        .fieldplx-avatar{
+            width:38px!important;
+            height:38px!important;
+            flex:0 0 38px!important;
+            overflow:hidden!important;
+            display:inline-flex!important;
+            align-items:center!important;
+            justify-content:center!important;
+            border:0!important;
+            border-radius:50%!important;
+            color:var(--fd-navy)!important;
+            background:linear-gradient(135deg,#fff,#e8f3d9)!important;
+            font-size:12px!important;
+            font-weight:800!important;
+        }
+
+        .fieldplx-avatar img{
+            width:100%!important;
+            height:100%!important;
+            object-fit:cover!important;
+        }
+
+        .fieldplx-profile-details{
+            max-width:145px!important;
+            min-width:0!important;
+        }
+
+        .fieldplx-profile-name,
+        .fieldplx-profile-role{
+            display:block!important;
+            overflow:hidden!important;
+            white-space:nowrap!important;
+            text-overflow:ellipsis!important;
+        }
+
+        .fieldplx-profile-name{
+            color:#111827!important;
+            font-size:12px!important;
+            font-weight:700!important;
+        }
+
+        .fieldplx-profile-role{
+            margin-top:1px!important;
+            color:var(--fd-muted)!important;
+            font-size:10px!important;
+        }
+
+        /* ---------- Dropdowns ---------- */
+        .fieldplx-dropdown{
+            width:340px!important;
+            max-width:calc(100vw - 24px)!important;
+            padding:0!important;
+            margin-top:10px!important;
+            overflow:hidden!important;
+            border:1px solid var(--fd-border)!important;
+            border-radius:14px!important;
+            background:#fff!important;
+            box-shadow:0 18px 45px rgba(29,38,74,.14)!important;
+        }
+
+        .fieldplx-dropdown-header{
+            min-height:48px!important;
+            padding:11px 16px!important;
+            display:flex!important;
+            align-items:center!important;
+            justify-content:space-between!important;
+            border-bottom:1px solid var(--fd-border)!important;
+            background:#fff!important;
+        }
+
+        .fieldplx-dropdown-title{
+            margin:0!important;
+            color:#111827!important;
+            font-size:14px!important;
+            font-weight:700!important;
+        }
+
+        #topbarNotificationList{
+            max-height:300px!important;
+            overflow-y:auto!important;
+            background:#fff!important;
+        }
+
+        .fieldplx-notification-item{
+            padding:11px 14px!important;
+            display:flex!important;
+            gap:10px!important;
+            border-bottom:1px solid #f1f2f4!important;
+            color:inherit!important;
+            text-decoration:none!important;
+        }
+
+        .fieldplx-notification-item:hover,
+        .fieldplx-notification-item.is-unread{
+            background:#f8fbf3!important;
+        }
+
+        .fieldplx-notification-icon{
+            width:32px!important;
+            height:32px!important;
+            flex:0 0 32px!important;
+            display:inline-flex!important;
+            align-items:center!important;
+            justify-content:center!important;
+            border-radius:9px!important;
+            color:var(--fd-green-dark)!important;
+            background:var(--fd-green-soft)!important;
+            font-size:14px!important;
+        }
+
+        .fieldplx-notification-content{
+            min-width:0!important;
+        }
+
+        .fieldplx-notification-title{
+            margin:0!important;
+            color:#111827!important;
+            font-size:11px!important;
+            font-weight:700!important;
+        }
+
+        .fieldplx-notification-message{
+            margin-top:3px!important;
+            overflow:hidden!important;
+            display:-webkit-box!important;
+            color:var(--fd-muted)!important;
+            font-size:10px!important;
+            line-height:1.45!important;
+            -webkit-line-clamp:2!important;
+            -webkit-box-orient:vertical!important;
+        }
+
+        .fieldplx-notification-time{
+            margin-top:4px!important;
+            color:#9ca3af!important;
+            font-size:9px!important;
+        }
+
+        .fieldplx-empty-notifications{
+            min-height:155px!important;
+            padding:28px 18px 24px!important;
+            display:flex!important;
+            flex-direction:column!important;
+            align-items:center!important;
+            justify-content:center!important;
+            color:#718096!important;
+            background:#fff!important;
+            text-align:center!important;
+            font-size:13px!important;
+        }
+
+        .fieldplx-empty-notifications i{
+            margin-bottom:10px!important;
+            color:#a9cf75!important;
+            font-size:30px!important;
+        }
+
+        .fieldplx-dropdown-footer{
+            min-height:44px!important;
+            padding:10px 14px!important;
+            display:flex!important;
+            align-items:center!important;
+            justify-content:center!important;
+            border-top:1px solid var(--fd-border)!important;
+            background:#fff!important;
+        }
+
+        .fieldplx-dropdown-footer a{
+            color:var(--fd-green-dark)!important;
+            font-size:11px!important;
+            font-weight:700!important;
+        }
+
+        .fieldplx-profile-menu{
+            width:230px!important;
+            padding:7px!important;
+            border:1px solid var(--fd-border)!important;
+            border-radius:12px!important;
+            background:#fff!important;
+            box-shadow:0 18px 45px rgba(29,38,74,.14)!important;
+        }
+
+        .fieldplx-profile-menu-header{
+            padding:9px 10px 11px!important;
+            border-bottom:1px solid #f0f1f3!important;
+        }
+
+        .fieldplx-profile-menu-name{
+            overflow:hidden!important;
+            white-space:nowrap!important;
+            text-overflow:ellipsis!important;
+            color:#111827!important;
+            font-size:12px!important;
+            font-weight:700!important;
+        }
+
+        .fieldplx-profile-menu-email{
+            margin-top:2px!important;
+            overflow:hidden!important;
+            white-space:nowrap!important;
+            text-overflow:ellipsis!important;
+            color:var(--fd-muted)!important;
+            font-size:10px!important;
+        }
+
+        .fieldplx-profile-menu .dropdown-item{
+            padding:9px 10px!important;
+            display:flex!important;
+            align-items:center!important;
+            gap:9px!important;
+            border-radius:8px!important;
+            color:#374151!important;
+            background:transparent!important;
+            font-size:11px!important;
+        }
+
+        .fieldplx-profile-menu .dropdown-item:hover{
+            color:var(--fd-green-dark)!important;
+            background:var(--fd-green-soft)!important;
+        }
+
+        /* ---------- Sidebar ---------- */
+        .fieldplx-sidebar{
+            width:var(--fieldplx-sidebar-width)!important;
+            min-width:var(--fieldplx-sidebar-width)!important;
+            height:100vh!important;
+            position:fixed!important;
+            top:0!important;
+            left:0!important;
+            z-index:1045!important;
+            display:flex!important;
+            flex-direction:column!important;
+            color:#fff!important;
+            background:linear-gradient(180deg,var(--fd-navy-light),var(--fd-navy))!important;
+            border-right:0!important;
+            transition:width .25s ease,min-width .25s ease,transform .25s ease!important;
+        }
+
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar{
+            width:var(--fieldplx-sidebar-collapsed-width)!important;
+            min-width:var(--fieldplx-sidebar-collapsed-width)!important;
+        }
+
+        .fieldplx-sidebar-header{
+            min-height:68px!important;
+            padding:9px 14px 10px!important;
+            display:flex!important;
+            align-items:center!important;
+            border-bottom:1px solid rgba(255,255,255,.08)!important;
+        }
+
+        .fieldplx-sidebar-brand{
+            min-width:0!important;
+            display:flex!important;
+            align-items:center!important;
+            gap:10px!important;
+            color:#fff!important;
+        }
+
+        .fieldplx-sidebar-logo,
+        .fieldplx-sidebar-logo-placeholder{
+            width:40px!important;
+            height:40px!important;
+            flex:0 0 40px!important;
+            border-radius:10px!important;
+        }
+
+        .fieldplx-sidebar-logo{
+            object-fit:contain!important;
+        }
+
+        .fieldplx-sidebar-logo-placeholder{
+            display:inline-flex!important;
+            align-items:center!important;
+            justify-content:center!important;
+            color:#fff!important;
+            background:linear-gradient(135deg,#8fd236,#68aa1d)!important;
+            font-size:18px!important;
+            font-weight:700!important;
+        }
+
+        .fieldplx-sidebar-brand-text{
+            min-width:0!important;
+            display:block!important;
+        }
+
+        .fieldplx-sidebar-company-name{
+            max-width:155px!important;
+            display:block!important;
+            overflow:hidden!important;
+            white-space:nowrap!important;
+            text-overflow:ellipsis!important;
+            color:#fff!important;
+            font-size:16px!important;
+            font-weight:700!important;
+        }
+
+        .fieldplx-sidebar-product-name{
+            margin-top:1px!important;
+            display:block!important;
+            color:#9fda55!important;
+            font-size:9px!important;
+            font-weight:600!important;
+            letter-spacing:.4px!important;
+            text-transform:uppercase!important;
+        }
+
+        .fieldplx-sidebar-close{
+            width:32px!important;
+            height:32px!important;
+            margin-left:auto!important;
+            padding:0!important;
+            display:none!important;
+            align-items:center!important;
+            justify-content:center!important;
+            border:0!important;
+            border-radius:8px!important;
+            color:rgba(255,255,255,.82)!important;
+            background:rgba(255,255,255,.08)!important;
+        }
+
+        .fieldplx-sidebar-body{
+            min-height:0!important;
+            flex:1 1 auto!important;
+            overflow-y:auto!important;
+            overflow-x:hidden!important;
+            padding:12px 14px!important;
+            scrollbar-width:none!important;
+        }
+
+        .fieldplx-sidebar-body::-webkit-scrollbar{
+            display:none!important;
+        }
+
+        .fieldplx-sidebar-section-label{
+            margin:7px 12px!important;
+            color:rgba(255,255,255,.5)!important;
+            font-size:9px!important;
+            font-weight:700!important;
+            letter-spacing:.65px!important;
+            text-transform:uppercase!important;
+        }
+
+        .fieldplx-sidebar-nav{
+            display:flex!important;
+            flex-direction:column!important;
+            gap:3px!important;
+        }
+
+        .fieldplx-sidebar-link{
+            width:100%!important;
+            min-height:46px!important;
+            margin-bottom:3px!important;
+            padding:0 14px!important;
+            display:flex!important;
+            align-items:center!important;
+            gap:15px!important;
+            border:0!important;
+            border-radius:9px!important;
+            color:rgba(255,255,255,.94)!important;
+            background:transparent!important;
+            text-align:left!important;
+            font-family:inherit!important;
+            font-size:14px!important;
+            font-weight:600!important;
+        }
+
+        .fieldplx-sidebar-link:hover{
+            color:#fff!important;
+            background:rgba(255,255,255,.08)!important;
+        }
+
+        .fieldplx-sidebar-link.active,
+        .fieldplx-sidebar-menu.menu-open > .fieldplx-sidebar-link{
+            color:#fff!important;
+            background:linear-gradient(90deg,#7fc92d,#68aa1d)!important;
+            box-shadow:0 6px 18px rgba(0,17,49,.28)!important;
+        }
+
+        .fieldplx-sidebar-link-icon{
+            width:21px!important;
+            height:21px!important;
+            flex:0 0 21px!important;
+            display:inline-flex!important;
+            align-items:center!important;
+            justify-content:center!important;
+            font-size:19px!important;
+        }
+
+        .fieldplx-sidebar-link-text{
+            min-width:0!important;
+            flex:1!important;
+            overflow:hidden!important;
+            white-space:nowrap!important;
+            text-overflow:ellipsis!important;
+        }
+
+        .fieldplx-sidebar-arrow{
+            margin-left:auto!important;
+            color:rgba(255,255,255,.65)!important;
+            font-size:10px!important;
+            transition:transform .2s ease!important;
+        }
+
+        .fieldplx-sidebar-menu.menu-open .fieldplx-sidebar-arrow{
+            transform:rotate(180deg)!important;
+        }
+
+        .fieldplx-sidebar-submenu{
+            max-height:0!important;
+            overflow:hidden!important;
+            padding-left:36px!important;
+            transition:max-height .25s ease,padding-top .25s ease,padding-bottom .25s ease!important;
+        }
+
+        .fieldplx-sidebar-menu.menu-open > .fieldplx-sidebar-submenu{
+            max-height:680px!important;
+            padding-top:4px!important;
+            padding-bottom:5px!important;
+        }
+
+        .fieldplx-sidebar-sublink{
+            min-height:34px!important;
+            padding:7px 9px!important;
+            display:flex!important;
+            align-items:center!important;
+            border-radius:7px!important;
+            color:rgba(255,255,255,.72)!important;
+            background:transparent!important;
+            font-size:11px!important;
+            font-weight:500!important;
+        }
+
+        .fieldplx-sidebar-sublink::before{
+            width:5px!important;
+            height:5px!important;
+            margin-right:9px!important;
+            flex:0 0 5px!important;
+            content:""!important;
+            border-radius:50%!important;
+            background:rgba(255,255,255,.35)!important;
+        }
+
+        .fieldplx-sidebar-sublink:hover,
+        .fieldplx-sidebar-sublink.active{
+            color:#fff!important;
+            background:rgba(255,255,255,.08)!important;
+        }
+
+        .fieldplx-sidebar-sublink.active::before{
+            background:#9fda55!important;
+        }
+
+        .fieldplx-sidebar-footer{
+            flex:0 0 auto!important;
+            padding:10px 14px 14px!important;
+            border-top:1px solid rgba(255,255,255,.08)!important;
+        }
+
+        .fieldplx-sidebar-user{
+            min-height:62px!important;
+            padding:8px!important;
+            display:flex!important;
+            align-items:center!important;
+            gap:9px!important;
+            border-radius:10px!important;
+            background:rgba(255,255,255,.08)!important;
+        }
+
+        .fieldplx-sidebar-user-avatar{
+            width:38px!important;
+            height:38px!important;
+            flex:0 0 38px!important;
+            display:inline-flex!important;
+            align-items:center!important;
+            justify-content:center!important;
+            border-radius:50%!important;
+            color:var(--fd-navy)!important;
+            background:linear-gradient(135deg,#fff,#e8f3d9)!important;
+            font-size:11px!important;
+            font-weight:700!important;
+        }
+
+        .fieldplx-sidebar-user-details{
+            min-width:0!important;
+            flex:1!important;
+        }
+
+        .fieldplx-sidebar-user-name,
+        .fieldplx-sidebar-user-role{
+            display:block!important;
+            overflow:hidden!important;
+            white-space:nowrap!important;
+            text-overflow:ellipsis!important;
+        }
+
+        .fieldplx-sidebar-user-name{
+            color:#fff!important;
+            font-size:12px!important;
+            font-weight:700!important;
+        }
+
+        .fieldplx-sidebar-user-role{
+            margin-top:1px!important;
+            color:rgba(255,255,255,.6)!important;
+            font-size:9px!important;
+        }
+
+        .fieldplx-sidebar-logout{
+            width:29px!important;
+            height:29px!important;
+            flex:0 0 29px!important;
+            display:inline-flex!important;
+            align-items:center!important;
+            justify-content:center!important;
+            border-radius:8px!important;
+            color:rgba(255,255,255,.7)!important;
+            font-size:14px!important;
+        }
+
+        .fieldplx-sidebar-logout:hover{
+            color:#fff!important;
+            background:rgba(228,91,102,.3)!important;
+        }
+
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-brand-text,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-section-label,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-link-text,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-arrow,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-submenu,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-user-details,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-logout{
+            display:none!important;
+        }
+
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-header,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-link,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-user{
+            justify-content:center!important;
+        }
+
+        /* ---------- Main content ---------- */
+        .fieldplx-main-layout{
+            display:block!important;
+            min-height:calc(100vh - 70px)!important;
+        }
+
+        .fieldplx-main-content{
+            margin-left:var(--fieldplx-sidebar-width)!important;
+            min-width:0!important;
+            transition:margin-left .25s ease!important;
+        }
+
+        body.fieldplx-sidebar-collapsed .fieldplx-main-content{
+            margin-left:var(--fieldplx-sidebar-collapsed-width)!important;
+        }
+
+        .fieldplx-content-wrapper{
+            padding:0!important;
+        }
+
+        /* ---------- Footer ---------- */
+        .fieldplx-footer{
+            min-height:52px!important;
+            margin-left:var(--fieldplx-sidebar-width)!important;
+            display:block!important;
+            border-top:1px solid var(--fd-border)!important;
+            background:#fff!important;
+            transition:margin-left .22s ease!important;
+        }
+
+        body.fieldplx-sidebar-collapsed .fieldplx-footer{
+            margin-left:var(--fieldplx-sidebar-collapsed-width)!important;
+        }
+
+        .fieldplx-footer-inner{
+            min-height:52px!important;
+            padding:10px 18px!important;
+            display:flex!important;
+            align-items:center!important;
+            gap:18px!important;
+            color:#6b7280!important;
+            font-size:10px!important;
+        }
+
+        .fieldplx-footer-links{
+            display:flex!important;
+            align-items:center!important;
+            gap:8px!important;
+        }
+
+        .fieldplx-footer-links a{
+            color:#6b7280!important;
+        }
+
+        .fieldplx-footer-links a:hover,
+        .fieldplx-footer-product strong{
+            color:var(--fd-green-dark)!important;
+        }
+
+        .fieldplx-footer-separator{
+            color:#d1d5db!important;
+            font-size:8px!important;
+        }
+
+        .fieldplx-footer-product{
+            margin-left:auto!important;
+            white-space:nowrap!important;
+            color:#9ca3af!important;
+        }
+
+        /* ---------- Mobile sidebar ---------- */
+        .fieldplx-sidebar-overlay{
+            display:none;
+        }
+
+        @media(max-width:991.98px){
+            html,
+            body{
+                overflow-x:hidden!important;
+            }
+
+            body.fieldplx-sidebar-mobile-open{
+                overflow:hidden!important;
+            }
+
+            .fieldplx-topbar,
+            body.fieldplx-sidebar-collapsed .fieldplx-topbar{
+                margin-left:0!important;
+                width:100%!important;
+            }
+
+            .fieldplx-brand-mobile{
+                display:flex!important;
+            }
+
+            .fieldplx-main-content,
+            body.fieldplx-sidebar-collapsed .fieldplx-main-content{
+                width:100%!important;
+                margin-left:0!important;
+            }
+
+            .fieldplx-footer,
+            body.fieldplx-sidebar-collapsed .fieldplx-footer{
+                margin-left:0!important;
+            }
+
+            .fieldplx-sidebar,
+            body.fieldplx-sidebar-collapsed .fieldplx-sidebar{
+                width:min(300px,calc(100vw - 52px))!important;
+                min-width:0!important;
+                max-width:300px!important;
+                height:100vh!important;
+                height:100dvh!important;
+                position:fixed!important;
+                top:0!important;
+                bottom:0!important;
+                left:0!important;
+                z-index:1060!important;
+                display:flex!important;
+                flex-direction:column!important;
+                overflow:hidden!important;
+                visibility:hidden!important;
+                transform:translate3d(-100%,0,0)!important;
+                box-shadow:none!important;
+                transition:transform .25s ease,visibility .25s ease!important;
+            }
+
+            body.fieldplx-sidebar-mobile-open .fieldplx-sidebar,
+            body.fieldplx-sidebar-mobile-open.fieldplx-sidebar-collapsed .fieldplx-sidebar{
+                visibility:visible!important;
+                transform:translate3d(0,0,0)!important;
+            }
+
+            .fieldplx-sidebar-close{
+                display:inline-flex!important;
+            }
+
+            .fieldplx-sidebar-brand-text,
+            body.fieldplx-sidebar-collapsed .fieldplx-sidebar-brand-text,
+            .fieldplx-sidebar-section-label,
+            body.fieldplx-sidebar-collapsed .fieldplx-sidebar-section-label,
+            .fieldplx-sidebar-link-text,
+            body.fieldplx-sidebar-collapsed .fieldplx-sidebar-link-text,
+            .fieldplx-sidebar-user-details,
+            body.fieldplx-sidebar-collapsed .fieldplx-sidebar-user-details{
+                display:block!important;
+            }
+
+            .fieldplx-sidebar-arrow,
+            body.fieldplx-sidebar-collapsed .fieldplx-sidebar-arrow,
+            .fieldplx-sidebar-logout,
+            body.fieldplx-sidebar-collapsed .fieldplx-sidebar-logout{
+                display:inline-flex!important;
+            }
+
+            body.fieldplx-sidebar-collapsed .fieldplx-sidebar-header,
+            body.fieldplx-sidebar-collapsed .fieldplx-sidebar-link,
+            body.fieldplx-sidebar-collapsed .fieldplx-sidebar-user{
+                justify-content:flex-start!important;
+            }
+
+            .fieldplx-sidebar-submenu,
+            body.fieldplx-sidebar-collapsed .fieldplx-sidebar-submenu{
+                display:block!important;
+                max-height:0!important;
+                overflow:hidden!important;
+                padding-top:0!important;
+                padding-bottom:0!important;
+            }
+
+            .fieldplx-sidebar-menu.menu-open > .fieldplx-sidebar-submenu,
+            body.fieldplx-sidebar-collapsed .fieldplx-sidebar-menu.menu-open > .fieldplx-sidebar-submenu{
+                max-height:680px!important;
+                padding-top:4px!important;
+                padding-bottom:5px!important;
+            }
+
+            .fieldplx-sidebar-overlay{
+                position:fixed!important;
+                inset:0!important;
+                z-index:1055!important;
+                display:block!important;
+                visibility:hidden!important;
+                opacity:0!important;
+                pointer-events:none!important;
+                background:rgba(0,17,49,.48)!important;
+                transition:opacity .25s ease,visibility .25s ease!important;
+            }
+
+            body.fieldplx-sidebar-mobile-open .fieldplx-sidebar-overlay{
+                visibility:visible!important;
+                opacity:1!important;
+                pointer-events:auto!important;
+            }
+        }
+
+        @media(max-width:767.98px){
+            :root{
+                --fieldplx-topbar-height:64px;
+            }
+
+            .fieldplx-topbar,
+            .fieldplx-topbar-inner{
+                min-height:64px!important;
+            }
+
+            .fieldplx-topbar-inner{
+                padding:0 13px!important;
+            }
+
+            .fieldplx-search-wrap{
+                display:none!important;
+            }
+
+            .fieldplx-profile-details{
+                display:none!important;
+            }
+
+            .fieldplx-footer-inner{
+                padding:12px!important;
+                flex-wrap:wrap!important;
+                justify-content:center!important;
+                gap:7px 14px!important;
+                text-align:center!important;
+            }
+
+            .fieldplx-footer-product{
+                width:100%!important;
+                margin-left:0!important;
+            }
+        }
+
+        @media(max-width:575.98px){
+            .fieldplx-sidebar,
+            body.fieldplx-sidebar-collapsed .fieldplx-sidebar{
+                width:min(288px,calc(100vw - 44px))!important;
+            }
+
+            .fieldplx-sidebar-body{
+                padding-left:10px!important;
+                padding-right:10px!important;
+            }
+
+            .fieldplx-sidebar-link{
+                min-height:43px!important;
+                padding-left:12px!important;
+                padding-right:12px!important;
+                gap:12px!important;
+                font-size:13px!important;
+            }
+
+            .fieldplx-sidebar-submenu{
+                padding-left:31px!important;
+            }
+        }
+
+
+
+/* Request View v2 page styles */
+:root{
+  --rv-green:#2f8d25;--rv-green-dark:#27781f;--rv-green-soft:#edf6e8;
+  --rv-navy:#001131;--rv-text:#0b3142;--rv-body:#314f5d;--rv-muted:#6c818d;
+  --rv-line:#dbe3e7;--rv-line-soft:#e9eef0;--rv-surface:#fff;--rv-soft:#f8fafb;
+  --rv-danger:#dc4c55;--rv-blue:#2f83c6;--rv-orange:#c66e06;
+}
+*{box-sizing:border-box}
+body{margin:0;background:#fff;color:var(--rv-body);font-family:Arial,Helvetica,sans-serif!important;font-size:14px!important}
+a{text-decoration:none}
+button,input,select,textarea{font-family:Arial,Helvetica,sans-serif}
+.fieldplx-content-wrapper{padding:0!important}
+.rv-page{width:100%;min-height:calc(100vh - 70px);background:#fff}
+.rv-layout{display:grid;grid-template-columns:minmax(0,1fr) 330px;min-height:calc(100vh - 70px)}
+.rv-main{min-width:0;border-right:1px solid var(--rv-line-soft)}
+.rv-main-inner{max-width:1160px;margin:0 auto;padding:27px 31px 55px}
+.rv-side{min-width:0;padding:28px 25px;background:#fff}
+.rv-side-inner{position:sticky;top:86px}
+
+/* Header */
+.rv-top{display:flex;align-items:center;gap:12px;margin-bottom:18px}
+.rv-request-icon{width:28px;height:28px;display:grid;place-items:center;color:#c96d00;font-size:22px}
+.rv-status{display:inline-flex;align-items:center;gap:7px;min-height:27px;padding:4px 11px;border-radius:999px;background:#e8f4ff;color:#32668b;font-size:13px}
+.rv-status:before{width:8px;height:8px;border-radius:50%;background:#36a2eb;content:""}
+.rv-top-spacer{flex:1}
+.rv-icon-btn,.rv-action-btn{height:41px;border:1px solid var(--rv-line);border-radius:8px;background:#fff;color:#2e4b59;font-size:14px;font-weight:700;cursor:pointer}
+.rv-icon-btn{width:42px;display:grid;place-items:center;font-size:19px;border-color:transparent}
+.rv-icon-btn:hover{background:#f4f8f2;color:var(--rv-green)}
+.rv-action-btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:0 15px}
+.rv-action-btn:hover{border-color:#b8d9ac;color:var(--rv-green-dark);background:#fbfef9}
+.rv-action-btn.primary{border-color:var(--rv-green);background:var(--rv-green);color:#fff}
+.rv-action-btn.primary:hover{background:var(--rv-green-dark);color:#fff}
+.rv-more-wrap{position:relative}
+.rv-more-menu{width:205px;position:absolute;right:0;top:48px;z-index:2000;display:none;padding:7px;border:1px solid var(--rv-line);border-radius:9px;background:#fff;box-shadow:0 10px 26px rgba(0,17,49,.15)}
+.rv-more-menu.show{display:block}
+.rv-more-item{width:100%;min-height:40px;padding:8px 10px;display:flex;align-items:center;gap:10px;border:0;border-radius:7px;background:#fff;color:#334f5d;font-size:14px;font-weight:600;text-align:left;cursor:pointer}
+.rv-more-item:hover{background:#f5f8f5;color:var(--rv-green-dark)}
+.rv-more-item i{width:20px;font-size:17px}.rv-more-item.danger{color:#c9444e}.rv-more-sep{height:1px;margin:6px 5px;background:var(--rv-line-soft)}
+
+.rv-title-row{display:flex;align-items:center;gap:10px;margin-bottom:15px}
+.rv-title{margin:0;color:#052f40;font-size:30px;line-height:1.16;font-weight:700;letter-spacing:-.3px}
+.rv-title-edit{width:36px;height:36px;margin-left:auto;border:0;border-radius:8px;background:transparent;color:#2b4b59;font-size:19px;cursor:pointer}
+.rv-title-edit:hover{background:#f4f8f2;color:var(--rv-green)}
+.rv-request-no{display:none;color:#758894;font-size:12px}
+
+.rv-header-info{display:grid;grid-template-columns:minmax(310px,450px) minmax(300px,1fr);gap:17px;align-items:start;margin-bottom:30px}
+.rv-customer-card{min-height:177px;padding:24px;border:1px solid var(--rv-line);border-radius:8px;background:#fff;position:relative}
+.rv-customer-name{display:flex;align-items:center;gap:7px;margin:0 34px 12px 0;color:#0b3142;font-size:17px;font-weight:700}
+.rv-customer-dot{width:8px;height:8px;border-radius:50%;background:#37a3e6}
+.rv-customer-more{position:absolute;right:18px;top:18px;width:34px;height:34px;border:0;background:transparent;color:#36525f;font-size:20px;cursor:pointer;border-radius:7px}
+.rv-customer-more:hover{background:#f5f8f5}
+.rv-address{margin-bottom:12px;color:#2f4e5d;line-height:1.35;white-space:pre-line}
+.rv-customer-links{display:grid;gap:5px}.rv-customer-links a{width:max-content;max-width:100%;color:#3b8d26;text-decoration:underline!important;overflow-wrap:anywhere}
+.rv-requested{display:grid;grid-template-columns:130px 1fr;gap:24px;padding:17px 0;border-bottom:1px solid var(--rv-line);color:#526d79}
+.rv-requested strong{color:#173d4d;font-weight:400}
+
+/* Sections */
+.rv-section{padding:29px 0;border-top:1px solid var(--rv-line-soft)}
+.rv-section:first-of-type{border-top:0}
+.rv-card{border:1px solid var(--rv-line);border-radius:8px;background:#fff;overflow:hidden}
+.rv-card-inner{padding:27px 24px}
+.rv-section-head{display:flex;align-items:center;gap:12px;margin-bottom:20px}
+.rv-section-head h2,.rv-side-title{margin:0;color:#073247;font-size:22px;line-height:1.2;font-weight:700}
+.rv-section-head .rv-edit{margin-left:auto}
+.rv-edit{width:36px;height:36px;border:0;border-radius:8px;background:transparent;color:#2d4b58;font-size:18px;cursor:pointer}
+.rv-edit:hover{background:#f4f8f2;color:var(--rv-green)}
+.rv-subtitle{margin:0 0 7px;color:#0e3446;font-size:16px;font-weight:700}.rv-helper{margin:0 0 5px;color:#6d838f}
+.rv-copy{color:#2f4e5c;line-height:1.55;white-space:pre-wrap}
+.rv-info-block{margin-bottom:18px}.rv-info-block:last-child{margin-bottom:0}
+.rv-placeholder{color:#6f828e}.rv-work-images{display:flex;gap:9px;flex-wrap:wrap;margin-top:10px}.rv-work-image{width:74px;height:74px;overflow:hidden;border:1px solid var(--rv-line);border-radius:7px;background:#f7f9fa}.rv-work-image img{width:100%;height:100%;object-fit:cover}
+.rv-form-field{margin-bottom:13px}.rv-form-field label{display:block;margin-bottom:6px;color:#274553;font-size:13px;font-weight:600}
+.rv-input,.rv-select,.rv-textarea{width:100%;height:43px;padding:9px 12px;border:1px solid var(--rv-line);border-radius:7px;background:#fff;color:#183845;font-size:14px;outline:0}
+.rv-textarea{height:auto;min-height:92px;resize:vertical;line-height:1.5}.rv-input:focus,.rv-select:focus,.rv-textarea:focus{border-color:#8fbe79;box-shadow:0 0 0 2px rgba(47,141,37,.08)}
+.rv-editor-actions{display:flex;justify-content:flex-end;gap:8px;padding-top:7px}
+.rv-small-btn{height:38px;padding:0 14px;border:1px solid var(--rv-line);border-radius:7px;background:#fff;color:#31505d;font-size:14px;font-weight:700;cursor:pointer}.rv-small-btn.primary{border-color:var(--rv-green);background:var(--rv-green);color:#fff}.rv-small-btn:hover{border-color:#b8d9ac}.rv-small-btn.primary:hover{background:var(--rv-green-dark)}
+
+/* Assessment */
+.rv-assessment-title{margin:0 0 17px;color:#073247;font-size:22px;font-weight:700}
+.rv-assessment-empty{min-height:225px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:14px;border:1px dashed #cad5da;border-radius:8px;background:#f4f2ee;color:#244655;cursor:pointer;text-align:center}
+.rv-assessment-empty:hover{border-color:#9cc18a;background:#f6f9f2}
+.rv-plus{width:58px;height:58px;display:grid;place-items:center;border-radius:50%;background:var(--rv-green);color:#fff;font-size:28px;font-weight:300}
+.rv-assessment-card{border:1px solid var(--rv-line);border-radius:8px;background:#fff;overflow:hidden}
+.rv-assessment-display{padding:24px}.rv-assessment-meta{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:15px;margin-top:18px}.rv-meta-box{padding:12px;border:1px solid var(--rv-line-soft);border-radius:7px;background:#fbfcfc}.rv-meta-box small{display:block;color:#7b8e98;font-size:12px}.rv-meta-box strong{display:block;margin-top:5px;color:#173d4c;font-size:14px;font-weight:600}
+.rv-assessment-editor{padding:24px}.rv-assessment-editor .rv-section-head{margin-bottom:18px}.rv-assessment-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px 26px;margin-top:20px;align-items:start}.rv-assessment-col{min-width:0}.rv-assessment-col h3{margin:0 0 12px;color:#0b3142;font-size:16px}.rv-date-pair,.rv-time-pair{display:grid;grid-template-columns:1fr 1fr}.rv-date-pair input:first-child,.rv-time-pair input:first-child{border-radius:7px 0 0 7px}.rv-date-pair input:last-child,.rv-time-pair input:last-child{border-left:0;border-radius:0 7px 7px 0}.rv-check-row{display:flex;align-items:center;gap:8px;margin:12px 0;color:#395965;line-height:1.35}.rv-check-row input{width:19px;height:19px;flex:0 0 19px;accent-color:var(--rv-green)}.rv-assessment-checklists{grid-column:1/-1;padding-top:18px;border-top:1px solid var(--rv-line-soft)}.rv-checklist-box{display:flex;align-items:flex-start;gap:14px;padding:14px 16px;border:1px dashed #d2dce0;border-radius:8px;background:#fbfcfb}.rv-checklist-icon{width:46px;height:46px;flex:0 0 46px;display:grid;place-items:center;border-radius:50%;background:#eef2f0;color:#214b5b;font-size:22px}.rv-checklist-copy{min-width:0;flex:1;display:grid;grid-template-columns:minmax(230px,1fr) auto;gap:8px 18px;align-items:center}.rv-checklist-text strong{display:block;margin-bottom:4px;color:#0d3344}.rv-checklist-text p{margin:0;color:#54707d;line-height:1.35}.rv-checklist-items{grid-column:1/-1;display:flex;align-items:center;gap:8px;flex-wrap:wrap}.rv-link-btn{padding:0;border:0;background:transparent;color:#3b8d26;font-size:14px;font-weight:700;text-decoration:underline;cursor:pointer;white-space:nowrap}.rv-checklist-chip{display:inline-flex;align-items:center;gap:7px;margin:0;padding:6px 9px;border-radius:6px;background:#edf6e8;color:#347525;font-size:12px}.rv-assessment-team .select2-container{width:100%!important}.rv-assessment-team .select2-container--default .select2-selection--multiple{width:100%!important;min-height:43px!important}.rv-assessment-team .select2-container--default .select2-selection--multiple .select2-search--inline{float:none!important;display:inline-block!important;vertical-align:middle!important}.rv-assessment-team .select2-container--default .select2-selection--multiple .select2-search__field{width:auto!important;min-width:135px!important;height:29px!important;margin:3px 0 0 3px!important;padding:0 4px!important;border:0!important;border-radius:0!important;box-shadow:none!important}.rv-assessment-team .rv-form-field{max-width:100%}
+
+/* Select2 */
+.select2-container{width:100%!important}.select2-container .select2-selection--single{height:43px!important;border:1px solid var(--rv-line)!important;border-radius:7px!important;background:#fff!important}.select2-container .select2-selection--single .select2-selection__rendered{height:41px!important;line-height:41px!important;padding-left:12px!important;padding-right:34px!important;color:#183845!important;font-size:14px!important}.select2-container .select2-selection--single .select2-selection__arrow{height:41px!important;right:5px!important}.select2-container--focus .select2-selection--single,.select2-container--open .select2-selection--single{border-color:#8fbe79!important;box-shadow:0 0 0 2px rgba(47,141,37,.08)!important}.select2-dropdown{border:1px solid #d5dee2!important;border-radius:7px!important;overflow:hidden;box-shadow:0 10px 24px rgba(0,17,49,.12)}.select2-search--dropdown{padding:8px!important}.select2-search__field{height:38px!important;padding:8px 10px!important;border:1px solid #d7e0e4!important;border-radius:6px!important;font-size:14px!important;outline:0}.select2-results__option{padding:10px 12px!important;font-size:13.5px!important}.select2-results__option--highlighted[aria-selected]{background:#f1f0ed!important;color:#173d4c!important}.select2-container--default .select2-selection--multiple{min-height:43px!important;padding:3px 32px 3px 5px!important;border:1px solid var(--rv-line)!important;border-radius:7px!important}.select2-container--default.select2-container--focus .select2-selection--multiple{border-color:#8fbe79!important;box-shadow:0 0 0 2px rgba(47,141,37,.08)!important}.select2-container--default .select2-selection--multiple .select2-selection__choice{margin-top:4px!important;padding:4px 8px 4px 22px!important;border:0!important;border-radius:999px!important;background:#eef3ef!important;color:#244857!important;font-size:12px!important}.select2-container--default .select2-selection--multiple .select2-selection__choice__remove{height:100%!important;left:5px!important;border:0!important}.rv-catalog-result{display:flex;align-items:flex-start;gap:8px}.rv-catalog-main{min-width:0;flex:1}.rv-catalog-name{display:flex;align-items:center;gap:7px;color:#294957}.rv-catalog-desc{margin-top:3px;color:#6a808b;font-size:12px;line-height:1.35}.rv-catalog-price{margin-left:auto;color:#294957;white-space:nowrap}.rv-badge{display:inline-flex;padding:2px 7px;border-radius:999px;font-size:11px;font-weight:700}.rv-badge.service{color:#28701f;background:#edf7e9;border:1px solid #cae6c2}.rv-badge.product{color:#245d83;background:#eef6fb;border:1px solid #c9deeb}.rv-create-option{display:flex;align-items:center;gap:7px;color:var(--rv-green-dark);font-weight:700}
+
+/* Product Service */
+.rv-lines-card{border:1px solid var(--rv-line);border-radius:8px;background:#fff;overflow:hidden}.rv-lines-head{padding:27px 24px 18px}.rv-lines-head h2{margin:0 0 18px;color:#073247;font-size:22px}.rv-lines-head p{margin:0 0 15px}.rv-line-list{padding:0 24px}.rv-line{display:grid;grid-template-columns:minmax(250px,1fr) 125px 160px 160px 40px;gap:9px;padding:16px 0;border-top:1px solid var(--rv-line-soft);align-items:start}.rv-line:first-child{border-top:0}.rv-money{height:48px;padding:6px 10px;border:1px solid var(--rv-line);border-radius:7px;background:#fff}.rv-money small{display:block;color:#718692;font-size:11px}.rv-money input{width:100%;padding:0;border:0;outline:0;background:transparent;color:#183845;font-size:14px}.rv-money strong{display:block;margin-top:2px;color:#183845;font-size:14px}.rv-line .select2-container .select2-selection--single{height:48px!important}.rv-line .select2-container .select2-selection--single .select2-selection__rendered{height:46px!important;line-height:46px!important}.rv-line-desc{grid-column:1/5;min-height:86px}.rv-line-image{height:86px;display:grid;place-items:center;border:1px dashed #ccd7dc;border-radius:7px;color:var(--rv-green);font-size:19px;background:#fff}.rv-remove-line{width:40px;height:48px;border:0;border-radius:7px;background:transparent;color:#647d89;font-size:19px;cursor:pointer}.rv-remove-line:hover{background:#fff0f1;color:#c9444e}.rv-totals{display:grid;grid-template-columns:1fr minmax(360px,50%);padding:19px 24px 24px;border-top:4px solid #e4e9eb}.rv-total-box{grid-column:2}.rv-total-row{min-height:44px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--rv-line-soft);color:#405e6b}.rv-total-row.grand{font-size:16px;font-weight:700;color:#0d3445;border-bottom:4px solid #e4e9eb}.rv-total-row.grand span:last-child{font-size:18px}.rv-line-editor-actions{padding:14px 24px;display:flex;justify-content:flex-end;gap:8px;border-top:1px solid var(--rv-line-soft)}
+.rv-lines-display{padding:0 24px 18px}.rv-display-line{display:grid;grid-template-columns:minmax(0,1fr) 90px 130px 130px;gap:10px;padding:13px 0;border-top:1px solid var(--rv-line-soft);align-items:center}.rv-display-line:first-child{border-top:0}.rv-display-line-name strong{display:block;color:#183845}.rv-display-line-name small{display:block;margin-top:4px;color:#71828b}.rv-display-right{text-align:right}.rv-empty-lines{padding:0 24px 24px;color:#55707d}
+
+/* Notes */
+.rv-side-title{font-size:20px;margin-bottom:18px}.rv-notes-card{padding:17px;border:1px solid var(--rv-line);border-radius:8px;background:#fff}.rv-note-empty{min-height:245px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:15px;border:1px dashed #cbd6dc;border-radius:8px;text-align:center;color:#244655;cursor:pointer;padding:20px}.rv-note-empty:hover{border-color:#9cc18a;background:#fbfdf9}.rv-note-empty-icon{width:58px;height:58px;display:grid;place-items:center;border-radius:50%;background:#f5f5f3;color:#244a58;font-size:24px}.rv-note-list{display:grid;gap:10px;margin-bottom:12px}.rv-note-item{padding:11px;border:1px solid var(--rv-line-soft);border-radius:7px;background:#fbfcfc}.rv-note-item-top{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}.rv-note-item strong{font-size:12px;color:#173d4c}.rv-note-item time{font-size:10px;color:#8a9aa2}.rv-note-item p{margin:0;color:#4e6975;font-size:12px;line-height:1.45;white-space:pre-wrap}.rv-note-editor{position:relative}.rv-note-editor textarea{min-height:95px;border-color:#79ad64}.rv-mention-menu{display:none;position:absolute;left:8px;right:8px;top:102px;z-index:2400;max-height:210px;overflow:auto;padding:4px 0;border:1px solid var(--rv-line);border-radius:7px;background:#fff;box-shadow:0 10px 24px rgba(0,17,49,.14)}.rv-mention-menu.show{display:block}.rv-mention-option{width:100%;padding:8px 10px;display:flex;align-items:center;gap:9px;border:0;background:#fff;color:#294957;text-align:left;cursor:pointer}.rv-mention-option:hover{background:#f1f0ed}.rv-avatar{width:27px;height:27px;display:grid;place-items:center;border-radius:50%;background:#edf6e8;color:#2f8d25;font-size:10px;font-weight:700}.rv-mention-option small{display:block;color:#81919a;font-size:10px}.rv-note-drop{margin-top:10px;min-height:72px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:5px;border:1px dashed #d0dbe0;border-radius:7px;color:#6b818d;font-size:11px;cursor:pointer}.rv-note-drop button{height:32px;padding:0 11px;border:1px solid var(--rv-line);border-radius:6px;background:#fff;color:var(--rv-green-dark);font-weight:700}.rv-note-file-list{display:grid;gap:5px;margin-top:7px}.rv-note-file{padding:6px 8px;border:1px solid var(--rv-line-soft);border-radius:6px;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.rv-add-note-btn{width:100%;height:37px;border:1px solid var(--rv-line);border-radius:7px;background:#fff;color:var(--rv-green-dark);font-weight:700;cursor:pointer}
+
+/* History drawer */
+.rv-drawer-backdrop{position:fixed;inset:0;z-index:11990;display:none;background:rgba(0,17,49,.18)}.rv-drawer-backdrop.show{display:block}.rv-history{width:min(420px,92vw);position:fixed;top:0;right:0;bottom:0;z-index:12000;transform:translateX(100%);background:#fff;box-shadow:-12px 0 36px rgba(0,17,49,.15);transition:transform .22s ease;display:flex;flex-direction:column}.rv-history.show{transform:translateX(0)}.rv-history-head{padding:22px 21px 12px;display:flex;align-items:center;gap:12px}.rv-history-head h2{margin:0;color:#073247;font-size:24px}.rv-history-close{margin-left:auto;width:36px;height:36px;border:0;background:transparent;color:#284957;font-size:21px;cursor:pointer}.rv-history-filters{padding:8px 18px 13px;display:flex;gap:7px;flex-wrap:wrap;border-bottom:1px solid var(--rv-line-soft)}.rv-history-filter{height:34px;padding:0 11px;border:0;border-radius:999px;background:#ecebe8;color:#294957;font-size:12px}.rv-history-list{flex:1;overflow:auto;padding:15px 18px}.rv-history-item{display:grid;grid-template-columns:28px 1fr;gap:10px;padding:12px 0;border-bottom:1px solid var(--rv-line-soft)}.rv-history-avatar{width:26px;height:26px;display:grid;place-items:center;border-radius:50%;background:#173d4c;color:#fff;font-size:10px}.rv-history-item strong{display:block;color:#294957;font-size:13px}.rv-history-item small{display:block;margin-top:3px;color:#83949d;font-size:11px}.rv-history-detail{margin-top:7px;color:#526d79;font-size:12px;line-height:1.45}.rv-history-detail em{color:#85949b}.rv-history-empty{padding:28px 8px;text-align:center;color:#80919b}
+
+/* Modals */
+.rv-modal-bg{position:fixed;inset:0;z-index:20000;display:none;align-items:center;justify-content:center;padding:18px;background:rgba(0,17,49,.4)}.rv-modal-bg.show{display:flex}.rv-modal{width:min(720px,100%);max-height:calc(100vh - 36px);overflow:auto;border-radius:10px;background:#fff;box-shadow:0 22px 60px rgba(0,17,49,.22)}.rv-modal.wide{width:min(1450px,100%)}.rv-modal.small{width:min(460px,100%)}.rv-modal-head{padding:20px 23px 12px;display:flex;align-items:center;gap:12px}.rv-modal-head h2{margin:0;color:#073247;font-size:23px}.rv-modal-close{margin-left:auto;width:34px;height:34px;border:0;border-radius:7px;background:transparent;color:#607783;font-size:19px;cursor:pointer}.rv-modal-body{padding:8px 23px 13px}.rv-modal-foot{padding:12px 23px 20px;display:flex;justify-content:flex-end;gap:8px}.rv-modal-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.rv-modal-grid .full{grid-column:1/-1}.rv-cost-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:0}.rv-cost-grid .rv-input{border-radius:0}.rv-cost-grid .rv-form-field:first-child .rv-input{border-radius:7px 0 0 7px}.rv-cost-grid .rv-form-field:last-child .rv-input{border-radius:0 7px 7px 0}
+
+/* Checklist builder */
+.rv-check-builder{display:grid;grid-template-columns:minmax(0,1fr) 310px;min-height:650px;border-top:1px solid var(--rv-line-soft)}.rv-check-canvas{padding:20px;overflow:auto;background:#f8fafb}.rv-check-manage{padding:18px;border-left:1px solid var(--rv-line);background:#fff}.rv-check-manage h3{margin:0 0 14px;color:#0b3142;font-size:17px}.rv-check-palette{display:grid;gap:7px}.rv-check-palette button{min-height:39px;padding:8px 10px;display:flex;align-items:center;gap:9px;border:1px solid var(--rv-line);border-radius:7px;background:#fff;color:#31505d;text-align:left;cursor:pointer}.rv-check-palette button:hover{border-color:#a9cf75;background:#f8fcf6;color:var(--rv-green-dark)}.rv-check-section{margin-bottom:14px;border:1px solid var(--rv-line);border-radius:8px;background:#fff;overflow:hidden}.rv-check-section-head{padding:10px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--rv-line-soft)}.rv-check-section-head input{flex:1;height:39px;border:0;font-size:16px;font-weight:700;outline:0;color:#173d4c}.rv-check-question{padding:13px;border-top:1px solid var(--rv-line-soft)}.rv-check-question:first-child{border-top:0}.rv-check-q-grid{display:grid;grid-template-columns:minmax(0,1fr) 210px 36px;gap:8px}.rv-check-options{display:grid;gap:6px;margin-top:8px;padding-left:8px}.rv-check-option-row{display:flex;gap:6px}.rv-check-option-row .rv-input{height:37px}.rv-check-required{margin-top:8px;display:flex;align-items:center;gap:7px;color:#536e7a}.rv-check-required input{width:17px;height:17px;accent-color:var(--rv-green)}
+
+.rv-loading{min-height:420px;display:grid;place-items:center;color:#7c8e98}.rv-spinner{width:26px;height:26px;border:3px solid #dce6d8;border-top-color:var(--rv-green);border-radius:50%;animation:rvSpin .8s linear infinite}@keyframes rvSpin{to{transform:rotate(360deg)}}
+.rv-error{max-width:620px;margin:70px auto;padding:25px;border:1px solid #f2d0d3;border-radius:9px;background:#fff7f7;text-align:center}.rv-error h2{color:#a73942}.rv-error p{color:#7c5a5f}
+
+@media(max-width:1199.98px){.rv-layout{grid-template-columns:minmax(0,1fr) 290px}.rv-assessment-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.rv-assessment-checklists{grid-column:1/-1}.rv-line{grid-template-columns:minmax(210px,1fr) 110px 140px 140px 38px}}
+@media(max-width:991.98px){.rv-layout{grid-template-columns:1fr}.rv-main{border-right:0}.rv-side{border-top:1px solid var(--rv-line-soft);padding:24px 22px}.rv-side-inner{position:static}.rv-header-info{grid-template-columns:1fr}.rv-assessment-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.rv-assessment-checklists{grid-column:1/-1}.rv-check-builder{grid-template-columns:1fr}.rv-check-manage{border-left:0;border-top:1px solid var(--rv-line)}}
+@media(max-width:767.98px){.rv-main-inner{padding:20px 16px 42px}.rv-side{padding:20px 16px}.rv-top{flex-wrap:wrap}.rv-top-spacer{display:none}.rv-title{font-size:25px}.rv-header-info{grid-template-columns:1fr}.rv-customer-card{min-height:auto}.rv-requested{grid-template-columns:105px 1fr}.rv-card-inner,.rv-assessment-editor,.rv-assessment-display,.rv-lines-head{padding-left:17px;padding-right:17px}.rv-line-list{padding:0 17px}.rv-line{grid-template-columns:1fr 1fr}.rv-line-item,.rv-line-desc{grid-column:1/-1}.rv-line-image{grid-column:1/-1}.rv-remove-line{position:absolute;right:17px}.rv-line{position:relative;padding-right:44px}.rv-totals{grid-template-columns:1fr;padding-left:17px;padding-right:17px}.rv-total-box{grid-column:1}.rv-display-line{grid-template-columns:1fr 80px}.rv-display-line .rv-display-right:nth-child(n+4){display:none}.rv-modal-grid,.rv-cost-grid{grid-template-columns:1fr}.rv-modal-grid .full{grid-column:auto}.rv-cost-grid{gap:12px}.rv-cost-grid .rv-input,.rv-cost-grid .rv-form-field:first-child .rv-input,.rv-cost-grid .rv-form-field:last-child .rv-input{border-radius:7px}.rv-check-q-grid{grid-template-columns:1fr}.rv-check-q-grid button{justify-self:end}}
+@media(max-width:767.98px){.rv-assessment-grid{grid-template-columns:1fr;gap:18px}.rv-assessment-checklists{grid-column:auto}.rv-checklist-copy{grid-template-columns:1fr}.rv-checklist-items{grid-column:auto}.rv-checklist-box{padding:13px}.rv-check-row{white-space:normal}}
+@media(max-width:520px){.rv-action-btn span{display:none}.rv-action-btn{width:42px;padding:0}.rv-history-filters{gap:5px}.rv-history-filter{padding:0 8px}.rv-requested{grid-template-columns:1fr;gap:5px}.rv-section-head h2,.rv-side-title,.rv-assessment-title,.rv-lines-head h2{font-size:20px}}
+@media print{.fieldplx-topbar,.fieldplx-sidebar,.fieldplx-footer,.rv-side,.rv-top,.rv-edit,.rv-title-edit,.rv-more-wrap{display:none!important}.fieldplx-main-content{margin-left:0!important}.rv-layout{display:block}.rv-main-inner{max-width:none;padding:15px}.rv-card{break-inside:avoid}.rv-section{break-inside:avoid}}
 </style>
 </head>
 <body>
 <?php require_once __DIR__ . '/includes/nav.php'; ?>
 <div class="fieldplx-main-layout">
-    <?php require_once __DIR__ . '/includes/sidebar.php'; ?>
-    <main class="fieldplx-main-content">
-        <div class="fieldplx-content-wrapper">
-            <div class="fd-dashboard">
-
-<?php if ($requestViewError !== ''): ?>
-                <section class="fd-rv-card fd-rv-error">
-                    <i class="bi bi-exclamation-circle"></i>
-                    <h2>Request unavailable</h2>
-                    <p><?= rvh($requestViewError) ?></p>
-                    <a href="requests.php" class="fd-rv-btn"><i class="bi bi-arrow-left"></i> Back to Requests</a>
-                </section>
-<?php else: ?>
-                <section class="fd-rv-head">
-                    <div>
-                        <h1 class="fd-rv-title">Request View</h1>
-                        <p class="fd-rv-sub">Review the complete customer request and continue it into quotation or job workflow.</p>
-                    </div>
-                    <div class="fd-rv-actions">
-                        <a href="requests.php" class="fd-rv-btn"><i class="bi bi-arrow-left"></i> Back</a>
-                        <a href="edit-request.php?request_id=<?= (int)$requestRow['id'] ?>" class="fd-rv-btn"><i class="bi bi-pencil"></i> Edit</a>
-                        <a href="<?= rvh($convertQuoteUrl) ?>" class="fd-rv-btn navy"><i class="bi bi-file-earmark-text"></i> Convert to Quote</a>
-                        <a href="<?= rvh($convertJobUrl) ?>" class="fd-rv-btn primary"><i class="bi bi-briefcase"></i> Convert to Job</a>
-                    </div>
-                </section>
-
-                <section class="fd-rv-summary">
-                    <article class="fd-rv-card fd-rv-hero">
-                        <span class="fd-rv-hero-icon"><i class="bi bi-inbox"></i></span>
-                        <div class="fd-rv-hero-main">
-                            <span class="fd-rv-request-no"><?= rvh($requestRow['request_no']) ?></span>
-                            <h2><?= rvh($requestRow['title']) ?></h2>
-                            <p><?= rvh($requestRow['description'] ?: 'No requirement notes were entered for this request.') ?></p>
-                            <div class="fd-rv-badges">
-                                <span class="fd-rv-badge status"><?= rvh(rvReadable($requestRow['status'])) ?></span>
-                                <span class="fd-rv-badge priority <?= rvh($requestRow['priority']) ?>"><?= rvh(rvReadable($requestRow['priority'])) ?> priority</span>
-                                <span class="fd-rv-badge status"><?= rvh(rvReadable($requestRow['source'])) ?></span>
-                            </div>
-                        </div>
-                    </article>
-
-                    <article class="fd-rv-card fd-rv-customer">
-                        <h3 class="fd-rv-card-title">Customer</h3>
-                        <div class="fd-rv-customer-name"><?= rvh($requestRow['client_name']) ?></div>
-                        <div class="fd-rv-customer-company"><?= rvh($requestRow['client_company'] ?: rvReadable($requestRow['client_type'])) ?></div>
-                        <div class="fd-rv-contact-row">
-                            <?php if (!empty($requestRow['client_phone'])): ?><a href="tel:<?= rvh($requestRow['client_phone']) ?>"><i class="bi bi-telephone"></i><?= rvh($requestRow['client_phone']) ?></a><?php endif; ?>
-                            <?php if (!empty($requestRow['client_email'])): ?><a href="mailto:<?= rvh($requestRow['client_email']) ?>"><i class="bi bi-envelope"></i><?= rvh($requestRow['client_email']) ?></a><?php endif; ?>
-                        </div>
-                        <div style="margin-top:12px"><a class="fd-rv-btn" href="client-view.php?client_id=<?= (int)$requestRow['client_id'] ?>"><i class="bi bi-person"></i> View Customer</a></div>
-                    </article>
-                </section>
-
-                <section class="fd-rv-grid">
-                    <article class="fd-rv-card">
-                        <div class="fd-rv-section-head"><h3>Request Details</h3><p>Requirement, service and ownership</p></div>
-                        <div class="fd-rv-section-body">
-                            <div class="fd-rv-detail"><div class="fd-rv-label">Request Number</div><div class="fd-rv-value"><strong><?= rvh($requestRow['request_no']) ?></strong></div></div>
-                            <div class="fd-rv-detail"><div class="fd-rv-label">Service</div><div class="fd-rv-value"><?= rvh($requestRow['service_name'] ?: '-') ?></div></div>
-                            <div class="fd-rv-detail"><div class="fd-rv-label">Branch</div><div class="fd-rv-value"><?= rvh($requestRow['branch_name'] ?: '-') ?></div></div>
-                            <div class="fd-rv-detail"><div class="fd-rv-label">Assigned To</div><div class="fd-rv-value"><?= rvh(trim((string)$requestRow['assigned_name']) ?: 'Unassigned') ?></div></div>
-                            <div class="fd-rv-detail"><div class="fd-rv-label">Created By</div><div class="fd-rv-value"><?= rvh(trim((string)$requestRow['created_by_name']) ?: 'System / Portal') ?></div></div>
-                            <div class="fd-rv-detail"><div class="fd-rv-label">Created</div><div class="fd-rv-value"><?= rvh(rvDate($requestRow['created_at'], true)) ?></div></div>
-                            <div class="fd-rv-detail"><div class="fd-rv-label">Last Updated</div><div class="fd-rv-value"><?= rvh(rvDate($requestRow['updated_at'] ?: $requestRow['created_at'], true)) ?></div></div>
-                        </div>
-                    </article>
-
-                    <article class="fd-rv-card">
-                        <div class="fd-rv-section-head"><h3>Schedule & Location</h3><p>Preferred service timing and customer site</p></div>
-                        <div class="fd-rv-section-body">
-                            <div class="fd-rv-detail"><div class="fd-rv-label">Preferred Date</div><div class="fd-rv-value"><?= rvh(rvDate($requestRow['preferred_date'])) ?></div></div>
-                            <div class="fd-rv-detail"><div class="fd-rv-label">Preferred Time</div><div class="fd-rv-value"><?php if ($requestRow['preferred_time_from']): ?><?= rvh(rvTime($requestRow['preferred_time_from'])) ?><?= $requestRow['preferred_time_to'] ? ' - '.rvh(rvTime($requestRow['preferred_time_to'])) : '' ?><?php else: ?>-<?php endif; ?></div></div>
-                            <div class="fd-rv-detail"><div class="fd-rv-label">Location</div><div class="fd-rv-value"><strong><?= rvh($requestRow['location_name'] ?: 'Not confirmed') ?></strong></div></div>
-                            <div class="fd-rv-detail"><div class="fd-rv-label">Location Type</div><div class="fd-rv-value"><?= rvh($requestRow['location_type'] ? rvReadable($requestRow['location_type']) : '-') ?></div></div>
-                            <div class="fd-rv-detail"><div class="fd-rv-label">Address</div><div class="fd-rv-value fd-rv-address"><?php $addressParts=array_filter(array($requestRow['location_address1'],$requestRow['location_address2'],$requestRow['location_city'],$requestRow['location_state'],$requestRow['location_postal_code'])); echo rvh($addressParts ? implode(', ', $addressParts) : '-'); ?></div></div>
-                            <div class="fd-rv-detail"><div class="fd-rv-label">Site Contact</div><div class="fd-rv-value"><?= rvh($requestRow['location_contact_name'] ?: '-') ?><?= !empty($requestRow['location_contact_phone']) ? ' · '.rvh($requestRow['location_contact_phone']) : '' ?></div></div>
-                        </div>
-                    </article>
-
-                    <article class="fd-rv-card" style="grid-column:1/-1">
-                        <div class="fd-rv-section-head"><h3>Requirement / Initial Notes</h3><p>Customer requirement captured when the request was created</p></div>
-                        <div class="fd-rv-section-body"><div class="fd-rv-detail" style="grid-template-columns:1fr"><div class="fd-rv-value fd-rv-description"><?= rvh($requestRow['description'] ?: 'No notes entered.') ?></div></div></div>
-                    </article>
-                </section>
-
-                <section class="fd-rv-card fd-rv-related">
-                    <div class="fd-rv-section-head"><h3>Related Workflow</h3><p>Assessments, quotations and jobs already linked to this request</p></div>
-                    <div class="fd-rv-related-grid">
-                        <div class="fd-rv-related-item">
-                            <span class="fd-rv-related-icon"><i class="bi bi-clipboard-check"></i></span>
-                            <strong>Assessments (<?= count($requestAssessments) ?>)</strong>
-                            <?php if ($requestAssessments): $a=$requestAssessments[0]; ?><small><?= rvh($a['assessment_no']) ?> · <?= rvh(rvReadable($a['status'])) ?><?= $a['result'] ? ' · '.rvh(rvReadable($a['result'])) : '' ?></small><?php else: ?><small>No assessment linked.</small><?php endif; ?>
-                        </div>
-                        <div class="fd-rv-related-item">
-                            <span class="fd-rv-related-icon"><i class="bi bi-file-earmark-text"></i></span>
-                            <strong>Quotations (<?= count($requestQuotes) ?>)</strong>
-                            <?php if ($requestQuotes): $q=$requestQuotes[0]; ?><small><?= rvh($q['quote_no']) ?> · <?= rvh(rvReadable($q['status'])) ?></small><a href="quotations.php">Open quotation <i class="bi bi-arrow-up-right"></i></a><?php else: ?><small>No quotation created yet.</small><a href="<?= rvh($convertQuoteUrl) ?>">Convert to Quote <i class="bi bi-arrow-up-right"></i></a><?php endif; ?>
-                        </div>
-                        <div class="fd-rv-related-item">
-                            <span class="fd-rv-related-icon"><i class="bi bi-briefcase"></i></span>
-                            <strong>Jobs (<?= count($requestJobs) ?>)</strong>
-                            <?php if ($requestJobs): $j=$requestJobs[0]; ?><small><?= rvh($j['job_no']) ?> · <?= rvh(rvReadable($j['status'])) ?></small><a href="jobs.php">Open job <i class="bi bi-arrow-up-right"></i></a><?php else: ?><small>No job created yet.</small><a href="<?= rvh($convertJobUrl) ?>">Convert to Job <i class="bi bi-arrow-up-right"></i></a><?php endif; ?>
-                        </div>
-                    </div>
-                </section>
-<?php endif; ?>
-
-            </div>
-        </div>
-    </main>
+<?php require_once __DIR__ . '/includes/sidebar.php'; ?>
+<main class="fieldplx-main-content">
+<div class="fieldplx-content-wrapper">
+<div class="rv-page" id="requestViewPage">
+  <div class="rv-layout">
+    <div class="rv-main">
+      <div class="rv-main-inner" id="rvMainContent">
+        <div class="rv-loading"><div><div class="rv-spinner" style="margin:auto"></div><div style="margin-top:12px">Loading request...</div></div></div>
+      </div>
+    </div>
+    <aside class="rv-side">
+      <div class="rv-side-inner">
+        <h2 class="rv-side-title">Notes</h2>
+        <div class="rv-notes-card" id="rvNotesCard"><div class="rv-loading" style="min-height:260px"><div class="rv-spinner"></div></div></div>
+      </div>
+    </aside>
+  </div>
+</div>
+</div>
+</main>
 </div>
 <?php require_once __DIR__ . '/includes/footer.php'; ?>
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<?php require_once __DIR__ . '/includes/toast.php'; ?>
+
+<!-- Request History -->
+<div class="rv-drawer-backdrop" id="historyBackdrop"></div>
+<aside class="rv-history" id="historyDrawer" aria-hidden="true">
+  <div class="rv-history-head"><h2>Request History</h2><button class="rv-history-close" type="button" id="historyClose"><i class="bi bi-x-lg"></i></button></div>
+  <div class="rv-history-filters">
+    <select class="rv-history-filter" id="historyTeam"><option value="">Team | All</option></select>
+    <select class="rv-history-filter" id="historyType"><option value="">Type | All</option></select>
+    <select class="rv-history-filter" id="historyDate"><option value="">Date | All</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option></select>
+  </div>
+  <div class="rv-history-list" id="historyList"></div>
+</aside>
+
+<!-- Product / Service quick create -->
+<div class="rv-modal-bg" id="catalogModal">
+  <div class="rv-modal" role="dialog" aria-modal="true">
+    <div class="rv-modal-head"><h2>Add Product / Service</h2><button class="rv-modal-close" type="button" data-close-modal="catalogModal"><i class="bi bi-x-lg"></i></button></div>
+    <div class="rv-modal-body">
+      <div class="rv-modal-grid">
+        <div class="rv-form-field full"><label>Item type</label><select class="rv-select" id="newItemType"><option value="service">Service</option><option value="product">Product</option></select></div>
+        <div class="rv-form-field full"><label>Name</label><input class="rv-input" id="newItemName" maxlength="190"></div>
+        <div class="rv-form-field full"><label>Description</label><textarea class="rv-textarea" id="newItemDescription"></textarea></div>
+      </div>
+      <div class="rv-cost-grid">
+        <div class="rv-form-field"><label>Unit cost</label><input class="rv-input" type="number" min="0" step="0.01" id="newItemCost" value="0.00"></div>
+        <div class="rv-form-field"><label>Markup %</label><input class="rv-input" type="number" min="0" step="0.01" id="newItemMarkup" value="0.00"></div>
+        <div class="rv-form-field"><label>Unit price</label><input class="rv-input" type="number" min="0" step="0.01" id="newItemPrice" value="0.00"></div>
+      </div>
+      <div class="rv-form-field" style="max-width:190px"><label>Tax %</label><input class="rv-input" type="number" min="0" max="100" step="0.01" id="newItemTax" value="0.00"></div>
+    </div>
+    <div class="rv-modal-foot"><button class="rv-small-btn" type="button" data-close-modal="catalogModal">Cancel</button><button class="rv-small-btn primary" type="button" id="createCatalogBtn">Create</button></div>
+  </div>
+</div>
+
+<!-- Checklist builder -->
+<div class="rv-modal-bg" id="checklistModal">
+  <div class="rv-modal wide" role="dialog" aria-modal="true">
+    <div class="rv-modal-head"><h2>Edit New Checklist</h2><button class="rv-modal-close" type="button" data-close-modal="checklistModal"><i class="bi bi-x-lg"></i></button></div>
+    <div class="rv-modal-body" style="padding:0">
+      <div style="padding:15px 20px;border-top:1px solid var(--rv-line-soft)"><div class="rv-form-field" style="margin:0"><label>Form title</label><input class="rv-input" id="checklistName" value="New checklist"></div></div>
+      <div class="rv-check-builder">
+        <div class="rv-check-canvas" id="checklistCanvas"></div>
+        <aside class="rv-check-manage"><h3>Manage checklist</h3><div class="rv-check-palette">
+          <button type="button" data-check-add="section"><i class="bi bi-plus-square"></i> Add section</button>
+          <button type="button" data-check-add="short_answer"><i class="bi bi-text-left"></i> Short answer</button>
+          <button type="button" data-check-add="long_answer"><i class="bi bi-text-paragraph"></i> Long answer</button>
+          <button type="button" data-check-add="dropdown"><i class="bi bi-menu-button-wide"></i> Dropdown - single choice</button>
+          <button type="button" data-check-add="checkbox"><i class="bi bi-check2-square"></i> Checkbox</button>
+          <button type="button" data-check-add="number"><i class="bi bi-123"></i> Numerical answer</button>
+          <button type="button" data-check-add="image"><i class="bi bi-image"></i> Upload images</button>
+          <button type="button" data-check-add="date"><i class="bi bi-calendar3"></i> Date picker</button>
+          <button type="button" data-check-add="signature"><i class="bi bi-pen"></i> Signature</button>
+        </div></aside>
+      </div>
+    </div>
+    <div class="rv-modal-foot"><button class="rv-small-btn" type="button" data-close-modal="checklistModal">Cancel</button><button class="rv-small-btn primary" type="button" id="saveChecklistBtn">Save Checklist</button></div>
+  </div>
+</div>
+
+<!-- Confirm modal -->
+<div class="rv-modal-bg" id="confirmModal">
+  <div class="rv-modal small" role="dialog" aria-modal="true">
+    <div class="rv-modal-head"><h2 id="confirmTitle">Confirm</h2><button class="rv-modal-close" type="button" data-close-modal="confirmModal"><i class="bi bi-x-lg"></i></button></div>
+    <div class="rv-modal-body"><p id="confirmText" style="margin:0;color:#536e7a;line-height:1.55"></p></div>
+    <div class="rv-modal-foot"><button class="rv-small-btn" type="button" data-close-modal="confirmModal">Cancel</button><button class="rv-small-btn primary" type="button" id="confirmActionBtn">Continue</button></div>
+  </div>
+</div>
+
+<script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+<script>
+(function(){
+'use strict';
+var requestId = <?= (int)$requestId ?>;
+var csrfToken = <?= json_encode($requestViewCsrf, JSON_UNESCAPED_SLASHES) ?>;
+var apiUrl = 'api/request-view.php';
+var state = {data:null,catalog:[],users:[],currency:{},lines:[],assessment:null,checklistDraft:null,lineEdit:false,assessmentEdit:false,noteEdit:false,catalogTarget:null,history:[]};
+
+function esc(v){return String(v==null?'':v).replace(/[&<>'"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]})}
+function readable(v){return String(v||'').replace(/_/g,' ').replace(/\b\w/g,function(m){return m.toUpperCase()})}
+function toast(type,msg,duration){if(typeof window.fieldplxToast==='function'){window.fieldplxToast(type,msg,duration||4200)}else{console.log(type,msg)}}
+function api(action,fields,files){var fd=new FormData();fd.append('action',action);fd.append('csrf_token',csrfToken);if(action!=='create_catalog_item')fd.append('request_id',requestId);Object.keys(fields||{}).forEach(function(k){fd.append(k,fields[k])});if(files){Object.keys(files).forEach(function(k){(files[k]||[]).forEach(function(file){fd.append(k+'[]',file)})})}return fetch(apiUrl,{method:'POST',body:fd,credentials:'same-origin'}).then(function(r){return r.json().catch(function(){throw new Error('Invalid server response.')}).then(function(j){if(!r.ok||!j.success)throw new Error(j.message||'Request failed.');return j})})}
+function money(n){n=Number(n||0);var c=state.currency||{},d=Number(c.decimal_places==null?2:c.decimal_places);var formatted=n.toLocaleString(undefined,{minimumFractionDigits:d,maximumFractionDigits:d});var symbol=c.symbol||'';return c.symbol_position==='after'?formatted+(symbol?' '+symbol:''):(symbol||'')+formatted}
+function formatDate(v,withTime){if(!v)return '-';var d=new Date(String(v).replace(' ','T'));if(isNaN(d.getTime()))return v;var opts={day:'2-digit',month:'short',year:'numeric'};if(withTime){opts.hour='2-digit';opts.minute='2-digit'}return d.toLocaleString('en-IN',opts)}
+function initials(name){var p=String(name||'').trim().split(/\s+/).filter(Boolean);return ((p[0]?p[0][0]:'')+(p.length>1?p[p.length-1][0]:'')).toUpperCase()||'U'}
+function address(r){return [r.location_address1,r.location_address2,[r.location_city,r.location_state,r.location_postal_code].filter(Boolean).join(', ')].filter(Boolean).join('\n')}
+function openModal(id){document.getElementById(id).classList.add('show');document.body.style.overflow='hidden'}
+function closeModal(id){document.getElementById(id).classList.remove('show');if(!document.querySelector('.rv-modal-bg.show')&&!document.getElementById('historyDrawer').classList.contains('show'))document.body.style.overflow=''}
+document.addEventListener('click',function(e){var b=e.target.closest('[data-close-modal]');if(b)closeModal(b.getAttribute('data-close-modal'))});
+
+function load(){if(requestId<=0){renderError('Invalid request.');return}api('load',{}).then(function(j){state.data=j.data;state.catalog=j.data.catalog||[];state.users=j.data.users||[];state.currency=j.data.currency||{};state.lines=j.data.line_items||[];state.assessment=j.data.assessment||null;state.history=j.data.history||[];renderAll()}).catch(function(e){renderError(e.message)})}
+function renderError(msg){document.getElementById('rvMainContent').innerHTML='<div class="rv-error"><h2>Request unavailable</h2><p>'+esc(msg)+'</p><a class="rv-small-btn" style="display:inline-flex;align-items:center" href="requests.php">Back to Requests</a></div>';document.getElementById('rvNotesCard').innerHTML='<div class="rv-history-empty">Request unavailable.</div>'}
+
+function renderAll(){renderMain();renderNotes();renderHistoryFilters();renderHistory()}
+function renderMain(){var d=state.data,r=d.request||{},hasAssessment=!!state.assessment;var html='';
+html+='<div class="rv-top"><span class="rv-request-icon"><i class="bi bi-inbox"></i></span><span class="rv-status">'+esc(readable(r.status||'new'))+'</span><span class="rv-request-no">'+esc(r.request_no||'')+'</span><span class="rv-top-spacer"></span><button class="rv-icon-btn" id="historyOpen" type="button" title="Request history"><i class="bi bi-clock-history"></i></button><div class="rv-more-wrap"><button class="rv-action-btn" id="moreBtn" type="button"><i class="bi bi-three-dots"></i> <span>More</span></button><div class="rv-more-menu" id="moreMenu"><a class="rv-more-item" id="convertQuoteLink" href="#"><i class="bi bi-cash-coin"></i> Convert to Quote</a><a class="rv-more-item" id="convertJobLink" href="#"><i class="bi bi-hammer"></i> Convert to Job</a><div class="rv-more-sep"></div><button class="rv-more-item" type="button" id="archiveBtn"><i class="bi bi-archive"></i> Archive</button><button class="rv-more-item" type="button" id="printBtn"><i class="bi bi-printer"></i> Print</button><button class="rv-more-item danger" type="button" id="deleteBtn"><i class="bi bi-trash"></i> Delete</button></div></div>'+(hasAssessment?'':'<button class="rv-action-btn primary" type="button" id="assessmentTopBtn"><i class="bi bi-calendar3"></i> <span>Schedule Assessment</span></button>')+'</div>';
+html+='<div class="rv-title-row"><h1 class="rv-title">'+esc(r.title||'Service Request')+'</h1><button class="rv-title-edit" type="button" id="titleEditBtn"><i class="bi bi-pencil"></i></button></div>';
+html+='<div class="rv-header-info"><div class="rv-customer-card"><button class="rv-customer-more" type="button" id="customerMore"><i class="bi bi-three-dots"></i></button><div class="rv-customer-name">'+esc(r.client_name||'Customer')+' <span class="rv-customer-dot"></span></div><div class="rv-address">'+esc(address(r)||r.location_name||'')+'</div><div class="rv-customer-links">'+(r.client_phone?'<a href="tel:'+esc(r.client_phone)+'">'+esc(r.client_phone)+'</a>':'')+(r.client_email?'<a href="mailto:'+esc(r.client_email)+'">'+esc(r.client_email)+'</a>':'')+'</div></div><div class="rv-requested"><span>Requested</span><strong>'+esc(formatDate(r.created_at,false))+'</strong></div></div>';
+html+=renderOverview();
+html+=renderAssessment();
+html+=renderLines();
+document.getElementById('rvMainContent').innerHTML=html;bindMain();}
+
+function renderOverview(){var r=state.data.request||{},imgs=(state.data.attachments||[]).filter(function(a){return String(a.attachment_type||'').indexOf('before_photo')>=0||String(a.file_mime||'').indexOf('image/')===0});if(state.overviewEdit){return '<section class="rv-section"><div class="rv-card"><div class="rv-card-inner"><div class="rv-section-head"><h2>Overview</h2></div><div class="rv-form-field"><label>Title</label><input class="rv-input" id="overviewTitle" value="'+esc(r.title||'')+'"></div><div class="rv-form-field"><label>Service details</label><textarea class="rv-textarea" id="overviewDescription">'+esc(r.description||'')+'</textarea></div><div class="rv-form-field"><label>How did you hear about us?</label><select class="rv-select" id="overviewSource">'+['office','website','portal','phone','sms','email','ai','other'].map(function(v){return '<option value="'+v+'" '+(r.source===v?'selected':'')+'>'+readable(v)+'</option>'}).join('')+'</select></div><div class="rv-editor-actions"><button class="rv-small-btn" id="overviewCancel" type="button">Cancel</button><button class="rv-small-btn primary" id="overviewSave" type="button">Save</button></div></div></div></section>'}
+var imageHtml=imgs.length?'<div class="rv-work-images">'+imgs.slice(0,10).map(function(a){return '<a class="rv-work-image" href="'+esc(a.file_path||'#')+'" target="_blank"><img src="'+esc(a.file_path||'')+'" alt=""></a>'}).join('')+'</div>':'<div class="rv-placeholder">—</div>';
+return '<section class="rv-section"><div class="rv-card"><div class="rv-card-inner"><div class="rv-section-head"><h2>Overview</h2><button class="rv-edit" id="overviewEdit" type="button"><i class="bi bi-pencil"></i></button></div><div class="rv-info-block"><div class="rv-subtitle">Service details</div><div class="rv-helper">Please provide as much information as you can</div><div class="rv-copy">'+esc(r.description||'—')+'</div></div><div class="rv-info-block"><div class="rv-helper">Share images of the work to be done</div>'+imageHtml+'</div><div class="rv-info-block"><div class="rv-helper">How did you hear about us?</div><div class="rv-copy">'+esc(r.source?readable(r.source):'—')+'</div></div></div></div></section>'}
+
+function assignedNames(){var ids=(state.assessment&&state.assessment.assigned_user_ids)||[];return ids.map(function(id){var u=state.users.find(function(x){return Number(x.id)===Number(id)});return u?u.name:null}).filter(Boolean)}
+function assessmentSchedule(a){if(!a)return '';if(!a.scheduled_start)return 'Schedule later';return formatDate(a.scheduled_start,true)+(a.scheduled_end?' - '+formatDate(a.scheduled_end,true):'')}
+function renderAssessment(){
+var a=state.assessment,checklists=state.data.checklists||[];
+if(!a&&!state.assessmentEdit){return '<section class="rv-section"><h2 class="rv-assessment-title">On-site assessment</h2><div class="rv-assessment-empty" id="assessmentEmpty"><div class="rv-plus">+</div><div>Visit the property to assess the job before you do the work</div></div></section>'}
+var startDate='',endDate='',startTime='',endTime='',scheduleLater=true,anytime=false;
+if(a&&a.scheduled_start){var sd=String(a.scheduled_start).replace(' ','T');var ed=String(a.scheduled_end||a.scheduled_start).replace(' ','T');startDate=sd.slice(0,10);startTime=sd.slice(11,16);endDate=ed.slice(0,10);endTime=ed.slice(11,16);scheduleLater=(a.schedule_later!=null?Number(a.schedule_later)===1:false);anytime=(a.anytime!=null?Number(a.anytime)===1:(startTime==='00:00'&&endTime==='23:59'))}
+else if(a){scheduleLater=(a.schedule_later!=null?Number(a.schedule_later)===1:true);anytime=(a.anytime!=null?Number(a.anytime)===1:false)}
+var closeBtn=!a?'<button class="rv-edit" id="assessmentClose" type="button" aria-label="Close assessment"><i class="bi bi-x-lg"></i></button>':'';
+var draftChip=state.checklistDraft?'<span class="rv-checklist-chip"><i class="bi bi-check-circle"></i> '+esc(state.checklistDraft.name)+'</span>':'';
+var savedChips=checklists.map(function(c){return '<span class="rv-checklist-chip"><i class="bi bi-clipboard-check"></i> '+esc(c.name)+' ('+Number(c.item_count||0)+')</span>'}).join('');
+return '<section class="rv-section"><div class="rv-assessment-card"><div class="rv-assessment-editor"><div class="rv-section-head"><h2>On-site assessment</h2>'+closeBtn+'</div><textarea class="rv-textarea" id="assessmentInstructions" placeholder="Instructions">'+esc(a&&a.notes?a.notes:'')+'</textarea><div class="rv-assessment-grid"><div class="rv-assessment-col"><h3>Schedule</h3><div class="rv-date-pair"><input class="rv-input" type="date" id="assessmentStartDate" value="'+esc(startDate)+'"><input class="rv-input" type="date" id="assessmentEndDate" value="'+esc(endDate)+'"></div><label class="rv-check-row"><input type="checkbox" id="scheduleLater" '+(scheduleLater?'checked':'')+'> Schedule later</label><div class="rv-time-pair"><input class="rv-input" type="time" id="assessmentStartTime" value="'+esc(startTime)+'"><input class="rv-input" type="time" id="assessmentEndTime" value="'+esc(endTime)+'"></div><label class="rv-check-row"><input type="checkbox" id="assessmentAnytime" '+(anytime?'checked':'')+'> Anytime</label></div><div class="rv-assessment-col rv-assessment-team"><h3>Team</h3><select id="assessmentTeam" multiple></select><label class="rv-check-row"><input type="checkbox" id="emailTeam"> Email team when assigned</label><div class="rv-form-field"><label>Team reminder</label><select class="rv-select" id="teamReminder"><option value="none" '+((a&&a.team_reminder==='none')||!a||!a.team_reminder?'selected':'')+'>No reminder set</option><option value="15_minutes" '+(a&&a.team_reminder==='15_minutes'?'selected':'')+'>15 minutes before</option><option value="1_hour" '+(a&&a.team_reminder==='1_hour'?'selected':'')+'>1 hour before</option><option value="1_day" '+(a&&a.team_reminder==='1_day'?'selected':'')+'>1 day before</option></select></div></div><div class="rv-assessment-col rv-assessment-checklists"><h3>Checklists</h3><div class="rv-checklist-box"><div class="rv-checklist-icon"><i class="bi bi-clipboard2-check"></i></div><div class="rv-checklist-copy"><div class="rv-checklist-text"><strong>CAPTURE ON-SITE DETAILS</strong><p>Attach custom-built checklists so that nothing gets missed</p></div><button class="rv-link-btn" id="createChecklistBtn" type="button">Create a Checklist</button><div class="rv-checklist-items" id="checklistDraftSummary">'+draftChip+savedChips+'</div></div></div></div></div><div class="rv-editor-actions" style="margin-top:18px"><button class="rv-small-btn" id="assessmentCancel" type="button">Cancel</button><button class="rv-small-btn primary" id="assessmentSave" type="button">Save</button></div></div></div></section>'}
+
+function renderLines(){var lines=state.lines||[];if(state.lineEdit){return '<section class="rv-section"><div class="rv-lines-card"><div class="rv-lines-head"><h2>Product / Service</h2><p>Keep everything on track by adding products and services.</p><button class="rv-small-btn primary" id="addLineBtn" type="button">Add Line Item</button></div><div class="rv-line-list" id="lineEditorList">'+lines.map(function(l,i){return lineEditorRow(l,i)}).join('')+'</div>'+totalsHtml(lines)+'<div class="rv-line-editor-actions"><button class="rv-small-btn" id="lineCancel" type="button">Cancel</button><button class="rv-small-btn primary" id="lineSave" type="button">Save</button></div></div></section>'}
+if(!lines.length){return '<section class="rv-section"><div class="rv-lines-card"><div class="rv-lines-head"><h2>Product / Service</h2><p>Keep everything on track by adding products and services.</p><button class="rv-small-btn primary" id="addLineFromEmpty" type="button">Add Line Item</button></div>'+totalsHtml([])+'</div></section>'}
+return '<section class="rv-section"><div class="rv-lines-card"><div class="rv-lines-head" style="display:flex;align-items:flex-start;gap:12px"><div><h2>Product / Service</h2><p style="margin-bottom:0">Keep everything on track by adding products and services.</p></div><button class="rv-edit" id="lineEdit" style="margin-left:auto" type="button"><i class="bi bi-pencil"></i></button></div><div class="rv-lines-display">'+lines.map(function(l){return '<div class="rv-display-line"><div class="rv-display-line-name"><strong>'+esc(l.item_name)+'</strong><small>'+esc(l.description||readable(l.item_type))+'</small></div><div class="rv-display-right">'+Number(l.quantity||0).toFixed(2)+'</div><div class="rv-display-right">'+money(l.unit_price)+'</div><div class="rv-display-right"><strong>'+money(l.line_total)+'</strong></div></div>'}).join('')+'</div>'+totalsHtml(lines)+'</div></section>'}
+function lineEditorRow(l,i){return '<div class="rv-line" data-line-index="'+i+'"><div class="rv-line-item"><select class="rv-catalog-select" data-i="'+i+'"></select></div><div class="rv-money"><small>Quantity</small><input class="rv-line-qty" data-i="'+i+'" type="number" min="0.001" step="0.001" value="'+esc(Number(l.quantity||1))+'"></div><div class="rv-money"><small>Unit price</small><input class="rv-line-price" data-i="'+i+'" type="number" min="0" step="0.01" value="'+esc(Number(l.unit_price||0).toFixed(2))+'"></div><div class="rv-money"><small>Total</small><strong class="rv-line-total" data-i="'+i+'">'+money(l.line_total||0)+'</strong></div><button class="rv-remove-line" type="button" data-remove-line="'+i+'"><i class="bi bi-three-dots"></i></button><textarea class="rv-textarea rv-line-desc" data-i="'+i+'" placeholder="Description">'+esc(l.description||'')+'</textarea><label class="rv-line-image" title="Attach image"><i class="bi bi-image"></i><input class="rv-line-image-input" data-i="'+i+'" type="file" accept="image/*" hidden></label></div>'}
+function totalsHtml(lines){var sub=0,total=0;(lines||[]).forEach(function(l){sub+=Number(l.quantity||0)*Number(l.unit_price||0);total+=Number(l.line_total!=null?l.line_total:(Number(l.quantity||0)*Number(l.unit_price||0)))});return '<div class="rv-totals"><div class="rv-total-box"><div class="rv-total-row"><span>Subtotal</span><span>'+money(sub)+'</span></div><div class="rv-total-row grand"><span>Total</span><span>'+money(total)+'</span></div></div></div>'}
+
+function bindMain(){var r=state.data.request||{};var q={request_id:requestId,client_id:r.client_id};if(r.location_id)q.location_id=r.location_id;if(r.product_service_id)q.product_service_id=r.product_service_id;var qs=new URLSearchParams(q).toString();document.getElementById('convertQuoteLink').href='add-quotation.php?'+qs;document.getElementById('convertJobLink').href='job-form.php?'+qs;
+document.getElementById('historyOpen').onclick=openHistory;document.getElementById('moreBtn').onclick=function(e){e.stopPropagation();document.getElementById('moreMenu').classList.toggle('show')};document.getElementById('printBtn').onclick=function(){window.print()};document.getElementById('archiveBtn').onclick=function(){confirmAction('Archive Request','Archive this service request? It will remain in your records.',function(){api('archive',{}).then(function(j){toast('success',j.message);load()}).catch(function(e){toast('error',e.message)})})};document.getElementById('deleteBtn').onclick=function(){confirmAction('Delete Request','Delete this service request? This action uses the available soft-delete/cancel behavior.',function(){api('delete',{}).then(function(j){toast('success',j.message);setTimeout(function(){location.href='requests.php'},500)}).catch(function(e){toast('error',e.message)})})};document.getElementById('customerMore').onclick=function(){location.href='client-view.php?client_id='+encodeURIComponent(r.client_id)};document.getElementById('titleEditBtn').onclick=function(){state.overviewEdit=true;renderMain()};var assessmentTopBtn=document.getElementById('assessmentTopBtn');if(assessmentTopBtn)assessmentTopBtn.onclick=function(){state.assessmentEdit=true;renderMain()};
+if(document.getElementById('overviewEdit'))document.getElementById('overviewEdit').onclick=function(){state.overviewEdit=true;renderMain()};if(document.getElementById('overviewCancel'))document.getElementById('overviewCancel').onclick=function(){state.overviewEdit=false;renderMain()};if(document.getElementById('overviewSave'))document.getElementById('overviewSave').onclick=saveOverview;
+if(document.getElementById('assessmentEmpty'))document.getElementById('assessmentEmpty').onclick=function(){state.assessmentEdit=true;renderMain()};if(document.getElementById('assessmentClose'))document.getElementById('assessmentClose').onclick=function(){state.assessmentEdit=false;state.checklistDraft=null;renderMain()};if(document.getElementById('assessmentCancel'))document.getElementById('assessmentCancel').onclick=function(){state.assessmentEdit=false;state.checklistDraft=null;renderMain()};if(document.getElementById('assessmentSave')){initAssessmentSelect();bindScheduleSwitches();document.getElementById('assessmentSave').onclick=saveAssessment;document.getElementById('createChecklistBtn').onclick=openChecklist}
+if(document.getElementById('addLineFromEmpty'))document.getElementById('addLineFromEmpty').onclick=function(){state.lineEdit=true;state.lines=[blankLine()];renderMain()};if(document.getElementById('lineEdit'))document.getElementById('lineEdit').onclick=function(){state.lineEdit=true;renderMain()};if(document.getElementById('addLineBtn')){initLineEditors();document.getElementById('addLineBtn').onclick=function(){state.lines.push(blankLine());renderMain();setTimeout(function(){var selects=document.querySelectorAll('.rv-catalog-select');if(selects.length)$(selects[selects.length-1]).select2('open')},20)};document.getElementById('lineCancel').onclick=function(){state.lineEdit=false;load()};document.getElementById('lineSave').onclick=saveLines;document.querySelectorAll('[data-remove-line]').forEach(function(b){b.onclick=function(){state.lines.splice(Number(b.getAttribute('data-remove-line')),1);renderMain()}})} }
+document.addEventListener('click',function(){var m=document.getElementById('moreMenu');if(m)m.classList.remove('show')});
+
+function saveOverview(){var btn=document.getElementById('overviewSave');btn.disabled=true;api('save_overview',{title:document.getElementById('overviewTitle').value,description:document.getElementById('overviewDescription').value,source:document.getElementById('overviewSource').value}).then(function(j){state.data.request=j.request;state.overviewEdit=false;toast('success',j.message);renderMain();state.history.unshift({event_type:'service_request_overview_updated',title:'Request overview updated',created_at:new Date().toISOString(),actor_name:'You',details:{}});renderHistory()}).catch(function(e){toast('error',e.message)}).finally(function(){btn.disabled=false})}
+function initAssessmentSelect(){var el=$('#assessmentTeam');el.empty();state.users.forEach(function(u){el.append(new Option(u.name,u.id,false,(state.assessment&&state.assessment.assigned_user_ids||[]).map(Number).indexOf(Number(u.id))>=0))});el.select2({placeholder:'Assign team members',closeOnSelect:false,width:'100%'}).trigger('change')}
+function bindScheduleSwitches(){function sync(){var later=document.getElementById('scheduleLater').checked,any=document.getElementById('assessmentAnytime').checked;['assessmentStartDate','assessmentEndDate'].forEach(function(id){document.getElementById(id).disabled=later});['assessmentStartTime','assessmentEndTime'].forEach(function(id){document.getElementById(id).disabled=later||any})}document.getElementById('scheduleLater').onchange=sync;document.getElementById('assessmentAnytime').onchange=sync;sync()}
+function saveAssessment(){var btn=document.getElementById('assessmentSave');btn.disabled=true;var ids=$('#assessmentTeam').val()||[];api('save_assessment',{assessment_id:state.assessment?state.assessment.id:0,instructions:document.getElementById('assessmentInstructions').value,schedule_later:document.getElementById('scheduleLater').checked?1:0,start_date:document.getElementById('assessmentStartDate').value,end_date:document.getElementById('assessmentEndDate').value,anytime:document.getElementById('assessmentAnytime').checked?1:0,start_time:document.getElementById('assessmentStartTime').value,end_time:document.getElementById('assessmentEndTime').value,assigned_user_ids:JSON.stringify(ids),email_team_when_assigned:document.getElementById('emailTeam').checked?1:0,team_reminder:document.getElementById('teamReminder').value,new_checklist_json:state.checklistDraft?JSON.stringify(state.checklistDraft):''}).then(function(j){state.assessment=j.assessment;state.data.checklists=j.checklists||state.data.checklists;state.assessmentEdit=false;state.checklistDraft=null;toast('success',j.message);renderMain();if(j.team_email&&j.team_email.email_failed)toast('warning',j.team_email.email_failed+' team email(s) failed.')}).catch(function(e){toast('error',e.message)}).finally(function(){btn.disabled=false})}
+
+function blankLine(){return {catalog_key:'',item_name:'',item_type:'service',description:'',quantity:1,unit_cost:0,unit_price:0,tax_percent:0,tax_amount:0,line_total:0}}
+function catalogById(id){return state.catalog.find(function(x){return String(x.id)===String(id)})}
+function initLineEditors(){document.querySelectorAll('.rv-catalog-select').forEach(function(sel){var i=Number(sel.getAttribute('data-i')),line=state.lines[i]||blankLine();var $s=$(sel);$s.empty();$s.append(new Option('', '', false, false));state.catalog.forEach(function(c){$s.append(new Option(c.name,c.id,false,String(line.catalog_key||'')===String(c.id)))});$s.select2({placeholder:'Name',width:'100%',tags:true,createTag:function(params){var term=$.trim(params.term);if(!term)return null;return {id:'__create__:'+term,text:'+ Create new item',term:term,isNew:true}},templateResult:catalogResult,templateSelection:function(item){var c=catalogById(item.id);return c?c.name:(item.text||'')}}).on('select2:select',function(e){var d=e.params.data;if(String(d.id).indexOf('__create__:')===0){state.catalogTarget=i;document.getElementById('newItemName').value=d.term||String(d.id).replace('__create__:','');$s.val(null).trigger('change');openModal('catalogModal');return}var c=catalogById(d.id);if(c){state.lines[i].catalog_key=c.id;state.lines[i].item_name=c.name;state.lines[i].item_type=c.item_type;state.lines[i].description=c.description||'';state.lines[i].unit_cost=Number(c.unit_cost||0);state.lines[i].unit_price=Number(c.unit_price||0);state.lines[i].tax_percent=Number(c.tax_percent||0);recalcLine(i);renderMain()}})});document.querySelectorAll('.rv-line-qty').forEach(function(el){el.oninput=function(){var i=Number(el.dataset.i);state.lines[i].quantity=Number(el.value||0);recalcLine(i);updateLineTotal(i)}});document.querySelectorAll('.rv-line-price').forEach(function(el){el.oninput=function(){var i=Number(el.dataset.i);state.lines[i].unit_price=Number(el.value||0);recalcLine(i);updateLineTotal(i)}});document.querySelectorAll('.rv-line-desc').forEach(function(el){el.oninput=function(){state.lines[Number(el.dataset.i)].description=el.value}})}
+function catalogResult(item){if(!item.id)return item.text;if(item.isNew||String(item.id).indexOf('__create__:')===0)return $('<div class="rv-create-option"><i class="bi bi-plus-circle"></i><span>'+esc(item.text)+'</span></div>');var c=catalogById(item.id);if(!c)return item.text;return $('<div class="rv-catalog-result"><div class="rv-catalog-main"><div class="rv-catalog-name"><span>'+esc(c.name)+'</span><span class="rv-badge '+esc(c.item_type)+'">'+esc(readable(c.item_type))+'</span></div><div class="rv-catalog-desc">'+esc(c.description||'')+'</div></div><div class="rv-catalog-price">'+esc(money(c.unit_price))+'</div></div>')}
+function recalcLine(i){var l=state.lines[i];var base=Number(l.quantity||0)*Number(l.unit_price||0);l.tax_amount=base*Number(l.tax_percent||0)/100;l.line_total=base+l.tax_amount}
+function updateLineTotal(i){var el=document.querySelector('.rv-line-total[data-i="'+i+'"]');if(el)el.textContent=money(state.lines[i].line_total);var card=el&&el.closest('.rv-lines-card');if(card){var t=card.querySelector('.rv-totals');if(t)t.outerHTML=totalsHtml(state.lines)}}
+function saveLines(){document.querySelectorAll('.rv-line-desc').forEach(function(el){state.lines[Number(el.dataset.i)].description=el.value});var images=[];document.querySelectorAll('.rv-line-image-input').forEach(function(el){Array.from(el.files||[]).forEach(function(f){images.push(f)})});var btn=document.getElementById('lineSave');btn.disabled=true;api('save_lines',{line_items_json:JSON.stringify(state.lines)},{line_item_images:images}).then(function(j){state.lines=j.line_items||[];state.lineEdit=false;toast('success',j.message);if(j.line_images&&j.line_images.failed)toast('warning',j.line_images.failed+' line image(s) could not be saved.');renderMain()}).catch(function(e){toast('error',e.message)}).finally(function(){btn.disabled=false})}
+
+/* Quick create catalog */
+var priceManuallyEdited=false;function recalcNewPrice(){if(priceManuallyEdited)return;var c=Number(document.getElementById('newItemCost').value||0),m=Number(document.getElementById('newItemMarkup').value||0);document.getElementById('newItemPrice').value=(c*(1+m/100)).toFixed(2)}
+document.getElementById('newItemCost').addEventListener('input',recalcNewPrice);document.getElementById('newItemMarkup').addEventListener('input',recalcNewPrice);document.getElementById('newItemPrice').addEventListener('input',function(){priceManuallyEdited=true});
+document.getElementById('createCatalogBtn').onclick=function(){var btn=this;btn.disabled=true;api('create_catalog_item',{item_type:document.getElementById('newItemType').value,name:document.getElementById('newItemName').value,description:document.getElementById('newItemDescription').value,unit_cost:document.getElementById('newItemCost').value,markup_percent:document.getElementById('newItemMarkup').value,unit_price:document.getElementById('newItemPrice').value,tax_percent:document.getElementById('newItemTax').value}).then(function(j){var item=j.item;state.catalog.push(item);state.catalog.sort(function(a,b){return String(a.name).localeCompare(String(b.name))});if(state.catalogTarget!=null&&state.lines[state.catalogTarget]){state.lines[state.catalogTarget].catalog_key=item.id;state.lines[state.catalogTarget].item_name=item.name;state.lines[state.catalogTarget].item_type=item.item_type;state.lines[state.catalogTarget].description=item.description||'';state.lines[state.catalogTarget].unit_cost=Number(item.unit_cost||0);state.lines[state.catalogTarget].unit_price=Number(item.unit_price||0);state.lines[state.catalogTarget].tax_percent=Number(item.tax_percent||0);recalcLine(state.catalogTarget)}closeModal('catalogModal');toast('success',j.message);state.catalogTarget=null;priceManuallyEdited=false;renderMain()}).catch(function(e){toast('error',e.message)}).finally(function(){btn.disabled=false})};
+
+/* Notes */
+function renderNotes(){var notes=state.data.notes||[];var html='';if(!state.noteEdit){if(notes.length){html+='<div class="rv-note-list">'+notes.slice(0,4).map(function(n){return '<div class="rv-note-item"><div class="rv-note-item-top"><strong>'+esc(n.actor_name||'Team member')+'</strong><time>'+esc(formatDate(n.created_at,true))+'</time></div><p>'+esc(n.note||'')+'</p></div>'}).join('')+'</div><button class="rv-add-note-btn" id="openNoteEditor" type="button">Add internal note</button>'}else{html='<div class="rv-note-empty" id="openNoteEditor"><div class="rv-note-empty-icon"><i class="bi bi-journal-plus"></i></div><div>Leave an internal note for<br>yourself or a team member</div></div>'}}else{html='<div class="rv-note-editor"><textarea class="rv-textarea" id="noteText" placeholder="Use @ in notes to mention your team"></textarea><div class="rv-mention-menu" id="mentionMenu"></div></div><label class="rv-note-drop"><button type="button" onclick="document.getElementById(\'noteFiles\').click();return false">Attach files & photos</button><span>Select or drag files here to upload</span><input type="file" multiple hidden id="noteFiles"></label><div class="rv-note-file-list" id="noteFileList"></div><div class="rv-editor-actions"><button class="rv-small-btn" id="noteCancel" type="button">Cancel</button><button class="rv-small-btn primary" id="noteSave" type="button">Save Note</button></div>'}document.getElementById('rvNotesCard').innerHTML=html;var open=document.getElementById('openNoteEditor');if(open)open.onclick=function(){state.noteEdit=true;state.noteMentions=[];renderNotes();setTimeout(bindNoteEditor,0)};if(state.noteEdit)bindNoteEditor()}
+function bindNoteEditor(){var tx=document.getElementById('noteText');if(!tx)return;state.noteMentions=state.noteMentions||[];tx.oninput=function(){showMentionMenu(tx)};document.getElementById('noteCancel').onclick=function(){state.noteEdit=false;renderNotes()};var input=document.getElementById('noteFiles');input.onchange=renderNoteFiles;var drop=document.querySelector('.rv-note-drop');if(drop){drop.ondragover=function(e){e.preventDefault();drop.style.background='#f8fcf6'};drop.ondragleave=function(){drop.style.background=''};drop.ondrop=function(e){e.preventDefault();drop.style.background='';if(e.dataTransfer&&e.dataTransfer.files){try{input.files=e.dataTransfer.files}catch(err){state.noteDroppedFiles=Array.from(e.dataTransfer.files)}renderNoteFiles()}}}document.getElementById('noteSave').onclick=saveNote}
+function showMentionMenu(tx){var val=tx.value,pos=tx.selectionStart||0,before=val.slice(0,pos),m=before.match(/@([A-Za-z0-9._ -]*)$/),menu=document.getElementById('mentionMenu');if(!m){menu.classList.remove('show');return}var q=String(m[1]||'').toLowerCase();var users=state.users.filter(function(u){return String(u.name||'').toLowerCase().indexOf(q)>=0}).slice(0,8);menu.innerHTML=users.map(function(u){return '<button class="rv-mention-option" type="button" data-mention="'+u.id+'"><span class="rv-avatar">'+esc(initials(u.name))+'</span><span>'+esc(u.name)+'<small>'+esc(u.job_title||'Team member')+'</small></span></button>'}).join('');menu.classList.toggle('show',users.length>0);menu.querySelectorAll('[data-mention]').forEach(function(b){b.onclick=function(){var uid=Number(b.dataset.mention),u=state.users.find(function(x){return Number(x.id)===uid});var start=before.lastIndexOf('@');tx.value=val.slice(0,start)+'@'+String(u.name).replace(/\s+/g,'_')+' '+val.slice(pos);tx.focus();tx.selectionStart=tx.selectionEnd=start+String(u.name).replace(/\s+/g,'_').length+2;if(state.noteMentions.indexOf(uid)<0)state.noteMentions.push(uid);menu.classList.remove('show')}})}
+function renderNoteFiles(){var files=(state.noteDroppedFiles&&state.noteDroppedFiles.length)?state.noteDroppedFiles:Array.from(document.getElementById('noteFiles').files||[]);document.getElementById('noteFileList').innerHTML=files.map(function(f){return '<div class="rv-note-file"><i class="bi bi-paperclip"></i> '+esc(f.name)+'</div>'}).join('')}
+function saveNote(){var btn=document.getElementById('noteSave'),files=(state.noteDroppedFiles&&state.noteDroppedFiles.length)?state.noteDroppedFiles:Array.from(document.getElementById('noteFiles').files||[]);btn.disabled=true;api('add_note',{note:document.getElementById('noteText').value,mention_user_ids:JSON.stringify(state.noteMentions||[])},{note_files:files}).then(function(j){state.data.notes=j.notes||[];state.noteEdit=false;state.noteDroppedFiles=[];toast('success',j.message);renderNotes();loadHistoryOnly()}).catch(function(e){toast('error',e.message)}).finally(function(){btn.disabled=false})}
+
+/* History */
+function openHistory(){document.getElementById('historyDrawer').classList.add('show');document.getElementById('historyBackdrop').classList.add('show');document.body.style.overflow='hidden';renderHistory()}
+function closeHistory(){document.getElementById('historyDrawer').classList.remove('show');document.getElementById('historyBackdrop').classList.remove('show');document.body.style.overflow=''}
+document.getElementById('historyClose').onclick=closeHistory;document.getElementById('historyBackdrop').onclick=closeHistory;
+function renderHistoryFilters(){var team=document.getElementById('historyTeam'),type=document.getElementById('historyType');var actors={},types={};state.history.forEach(function(h){if(h.actor_user_id)actors[h.actor_user_id]=h.actor_name||'Team member';if(h.event_type)types[h.event_type]=readable(h.event_type)});team.innerHTML='<option value="">Team | All</option>'+Object.keys(actors).map(function(k){return '<option value="'+esc(k)+'">'+esc(actors[k])+'</option>'}).join('');type.innerHTML='<option value="">Type | All</option>'+Object.keys(types).map(function(k){return '<option value="'+esc(k)+'">'+esc(types[k])+'</option>'}).join('');team.onchange=renderHistory;type.onchange=renderHistory;document.getElementById('historyDate').onchange=renderHistory}
+function historyDetail(h){var d=h.details||{};if(h.event_type==='request_status_changed')return '<em>'+esc(readable(d.old_status||'empty'))+'</em> → <strong>'+esc(readable(d.new_status||''))+'</strong>'+(d.notes?'<div>'+esc(d.notes)+'</div>':'');if(d.note)return esc(d.note);if(d.old&&d.new&&d.old.description!==d.new.description)return '<em>Service details updated</em>';return ''}
+function renderHistory(){var team=document.getElementById('historyTeam').value,type=document.getElementById('historyType').value,days=Number(document.getElementById('historyDate').value||0),cut=days?Date.now()-days*86400000:0;var rows=state.history.filter(function(h){if(team&&String(h.actor_user_id)!==String(team))return false;if(type&&h.event_type!==type)return false;if(cut&&new Date(String(h.created_at).replace(' ','T')).getTime()<cut)return false;return true});document.getElementById('historyList').innerHTML=rows.length?rows.map(function(h){return '<div class="rv-history-item"><div class="rv-history-avatar">'+esc(initials(h.actor_name||'System'))+'</div><div><strong>'+esc(h.title||readable(h.event_type))+'</strong><small>'+esc((h.actor_name||'System')+' · '+formatDate(h.created_at,true))+'</small><div class="rv-history-detail">'+historyDetail(h)+'</div></div></div>'}).join(''):'<div class="rv-history-empty">No matching request activity.</div>'}
+function loadHistoryOnly(){api('load',{}).then(function(j){state.history=j.data.history||[];state.data.notes=j.data.notes||state.data.notes;renderHistoryFilters();renderHistory()}).catch(function(){})}
+
+/* Checklist */
+function newChecklistModel(){return {name:'New checklist',description:'',sections:[{title:'Section 1',questions:[{title:'Question',question_type:'short_answer',options:[],is_required:0}]}]}}
+function openChecklist(){if(!state.checklistBuilder)state.checklistBuilder=newChecklistModel();document.getElementById('checklistName').value=state.checklistBuilder.name||'New checklist';renderChecklist();openModal('checklistModal')}
+function renderChecklist(){var m=state.checklistBuilder||newChecklistModel();document.getElementById('checklistCanvas').innerHTML=m.sections.map(function(s,si){return '<div class="rv-check-section" data-section="'+si+'"><div class="rv-check-section-head"><input value="'+esc(s.title)+'" data-section-title="'+si+'"><button class="rv-remove-line" type="button" data-section-delete="'+si+'"><i class="bi bi-trash"></i></button></div><div>'+s.questions.map(function(q,qi){return checklistQuestion(q,si,qi)}).join('')+'</div><div style="padding:10px"><button class="rv-link-btn" type="button" data-add-question="'+si+'">+ Add Question</button></div></div>'}).join('');bindChecklist()}
+function checklistQuestion(q,si,qi){var opts='';if(q.question_type==='dropdown'||q.question_type==='checkbox'){opts='<div class="rv-check-options">'+(q.options||[]).map(function(o,oi){return '<div class="rv-check-option-row"><input class="rv-input" value="'+esc(o)+'" data-option="'+si+','+qi+','+oi+'"><button class="rv-remove-line" style="height:37px" type="button" data-remove-option="'+si+','+qi+','+oi+'"><i class="bi bi-x"></i></button></div>'}).join('')+'<button class="rv-link-btn" type="button" data-add-option="'+si+','+qi+'">+ Add option</button></div>'}return '<div class="rv-check-question"><div class="rv-check-q-grid"><input class="rv-input" value="'+esc(q.title)+'" data-q-title="'+si+','+qi+'"><select class="rv-select" data-q-type="'+si+','+qi+'">'+[['short_answer','Short answer'],['long_answer','Long answer'],['dropdown','Dropdown'],['checkbox','Checkbox'],['number','Numerical answer'],['image','Upload images'],['date','Date picker'],['signature','Signature']].map(function(x){return '<option value="'+x[0]+'" '+(q.question_type===x[0]?'selected':'')+'>'+x[1]+'</option>'}).join('')+'</select><button class="rv-remove-line" style="height:43px" type="button" data-q-delete="'+si+','+qi+'"><i class="bi bi-trash"></i></button></div>'+opts+'<label class="rv-check-required"><input type="checkbox" data-q-required="'+si+','+qi+'" '+(q.is_required?'checked':'')+'> Required</label></div>'}
+function parsePair(v){return String(v).split(',').map(Number)}
+function bindChecklist(){document.querySelectorAll('[data-section-title]').forEach(function(e){e.oninput=function(){state.checklistBuilder.sections[Number(e.dataset.sectionTitle)].title=e.value}});document.querySelectorAll('[data-section-delete]').forEach(function(e){e.onclick=function(){state.checklistBuilder.sections.splice(Number(e.dataset.sectionDelete),1);if(!state.checklistBuilder.sections.length)state.checklistBuilder.sections.push({title:'Section 1',questions:[]});renderChecklist()}});document.querySelectorAll('[data-add-question]').forEach(function(e){e.onclick=function(){state.checklistBuilder.sections[Number(e.dataset.addQuestion)].questions.push({title:'Question',question_type:'short_answer',options:[],is_required:0});renderChecklist()}});document.querySelectorAll('[data-q-title]').forEach(function(e){e.oninput=function(){var p=parsePair(e.dataset.qTitle);state.checklistBuilder.sections[p[0]].questions[p[1]].title=e.value}});document.querySelectorAll('[data-q-type]').forEach(function(e){e.onchange=function(){var p=parsePair(e.dataset.qType),q=state.checklistBuilder.sections[p[0]].questions[p[1]];q.question_type=e.value;if((e.value==='dropdown'||e.value==='checkbox')&&!q.options.length)q.options=['Option 1'];renderChecklist()}});document.querySelectorAll('[data-q-delete]').forEach(function(e){e.onclick=function(){var p=parsePair(e.dataset.qDelete);state.checklistBuilder.sections[p[0]].questions.splice(p[1],1);renderChecklist()}});document.querySelectorAll('[data-q-required]').forEach(function(e){e.onchange=function(){var p=parsePair(e.dataset.qRequired);state.checklistBuilder.sections[p[0]].questions[p[1]].is_required=e.checked?1:0}});document.querySelectorAll('[data-option]').forEach(function(e){e.oninput=function(){var p=String(e.dataset.option).split(',').map(Number);state.checklistBuilder.sections[p[0]].questions[p[1]].options[p[2]]=e.value}});document.querySelectorAll('[data-add-option]').forEach(function(e){e.onclick=function(){var p=parsePair(e.dataset.addOption);state.checklistBuilder.sections[p[0]].questions[p[1]].options.push('Option '+(state.checklistBuilder.sections[p[0]].questions[p[1]].options.length+1));renderChecklist()}});document.querySelectorAll('[data-remove-option]').forEach(function(e){e.onclick=function(){var p=String(e.dataset.removeOption).split(',').map(Number);state.checklistBuilder.sections[p[0]].questions[p[1]].options.splice(p[2],1);renderChecklist()}})}
+document.querySelectorAll('[data-check-add]').forEach(function(b){b.onclick=function(){var type=b.dataset.checkAdd;if(!state.checklistBuilder)state.checklistBuilder=newChecklistModel();if(type==='section'){state.checklistBuilder.sections.push({title:'Section '+(state.checklistBuilder.sections.length+1),questions:[]})}else{var s=state.checklistBuilder.sections[state.checklistBuilder.sections.length-1];s.questions.push({title:'Question',question_type:type,options:(type==='dropdown'||type==='checkbox')?['Option 1']:[],is_required:0})}renderChecklist()}});
+document.getElementById('saveChecklistBtn').onclick=function(){var name=document.getElementById('checklistName').value.trim();if(!name){toast('warning','Enter a checklist title.');return}state.checklistBuilder.name=name;var items=[];state.checklistBuilder.sections.forEach(function(s){s.questions.forEach(function(q){if(String(q.title||'').trim())items.push({section_title:s.title,title:q.title,question_type:q.question_type,options:q.options||[],is_required:q.is_required?1:0})})});if(!items.length){toast('warning','Add at least one checklist question.');return}state.checklistDraft={name:name,description:'',items:items};closeModal('checklistModal');var sum=document.getElementById('checklistDraftSummary');if(sum)sum.innerHTML='<span class="rv-checklist-chip"><i class="bi bi-check-circle"></i> '+esc(name)+'</span>';toast('success','Checklist added.')};
+
+/* Confirm */
+var pendingConfirm=null;function confirmAction(title,text,fn){pendingConfirm=fn;document.getElementById('confirmTitle').textContent=title;document.getElementById('confirmText').textContent=text;openModal('confirmModal')}document.getElementById('confirmActionBtn').onclick=function(){var fn=pendingConfirm;pendingConfirm=null;closeModal('confirmModal');if(fn)fn()};
+
+load();
+})();
+</script>
 </body>
 </html>

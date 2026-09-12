@@ -698,7 +698,7 @@ body.fp-sidebar-collapsed .fp-main{
 
 .sm-table th:nth-child(1),
 .sm-table td:nth-child(1){
-    width:58px;
+    width:88px;
     text-align:center
 }
 
@@ -755,6 +755,20 @@ body.fp-sidebar-collapsed .fp-main{
     color:#928aa5;
     font-size:10px
 }
+
+/* Bulk selection */
+.sm-bulkbar{display:none;padding:10px 13px;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid #e8e2f2;background:#f8f5ff}
+.sm-bulkbar.show{display:flex}
+.sm-bulk-left,.sm-bulk-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.sm-bulk-count{color:#433d54;font-size:10px;font-weight:700}
+.sm-check{width:16px;height:16px;accent-color:#7c3aed;cursor:pointer}
+.sm-bulk-btn{min-height:34px;padding:7px 10px;display:inline-flex;align-items:center;gap:6px;border:1px solid #dcd5ef;border-radius:8px;background:#fff;color:#5f5870;font-size:9px;font-weight:700;cursor:pointer}
+.sm-bulk-btn:hover{border-color:#bda9ff;background:#f7f3ff;color:#6d28d9}
+.sm-bulk-btn.danger{border-color:#fecaca;color:#b91c1c}
+.sm-bulk-btn.danger:hover{background:#fff1f2;border-color:#fca5a5;color:#991b1b}
+.sm-icon-btn.danger{border-color:#fecaca;color:#dc2626}
+.sm-icon-btn.danger:hover{background:#fff1f2;border-color:#fca5a5;color:#b91c1c}
+@media(max-width:700px){.sm-bulkbar{align-items:flex-start;flex-direction:column}.sm-bulk-actions{width:100%}.sm-bulk-btn{flex:1;justify-content:center}}
 
 /* Modal */
 .sm-modal-backdrop{
@@ -1180,11 +1194,23 @@ foreach ($cards as $card):
     <button type="submit" class="sm-secondary"><i class="bi bi-funnel"></i> Filter</button>
 </form>
 
+<div class="sm-bulkbar" id="bulkBar">
+    <div class="sm-bulk-left">
+        <span class="sm-bulk-count"><span id="bulkCount">0</span> selected</span>
+        <button type="button" class="sm-bulk-btn" id="bulkClear"><i class="bi bi-x-lg"></i> Deselect all</button>
+    </div>
+    <div class="sm-bulk-actions">
+        <button type="button" class="sm-bulk-btn" data-bulk="enable"><i class="bi bi-check-circle"></i> Enable</button>
+        <button type="button" class="sm-bulk-btn" data-bulk="disable"><i class="bi bi-slash-circle"></i> Disable</button>
+        <button type="button" class="sm-bulk-btn danger" data-bulk="delete"><i class="bi bi-trash"></i> Delete</button>
+    </div>
+</div>
+
 <div class="sm-table-wrap">
 <table class="sm-table">
 <thead>
 <tr>
-    <th>S/No</th>
+    <th><input type="checkbox" class="sm-check" id="selectAllModules" aria-label="Select all modules"> <span style="margin-left:5px">S/No</span></th>
     <th>Module</th>
     <th>Parent</th>
     <th>Menu URL</th>
@@ -1201,7 +1227,7 @@ foreach ($cards as $card):
 <?php else: ?>
 <?php foreach ($modules as $index => $module): ?>
 <tr class="<?= $module['parent_id'] ? 'sm-child-row' : 'sm-parent-row' ?>">
-    <td><?= $index + 1 ?></td>
+    <td><input type="checkbox" class="sm-check module-select" value="<?= (int)$module['id'] ?>" data-core="<?= (int)$module['is_core'] ?>" aria-label="Select <?= sm_h($module['module_name']) ?>"> <span style="margin-left:5px"><?= $index + 1 ?></span></td>
     <td>
         <div class="<?= $module['parent_id'] ? 'sm-submodule' : '' ?>">
             <div class="sm-module-name">
@@ -1246,6 +1272,9 @@ foreach ($cards as $card):
             <button type="button" class="sm-icon-btn module-edit" title="Edit" data-row='<?= sm_h(json_encode($module, JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES)) ?>'><i class="bi bi-pencil"></i></button>
             <button type="button" class="sm-icon-btn module-sidebar" title="<?= (int)$module['is_sidebar_item'] === 1 ? 'Hide from sidebar' : 'Show in sidebar' ?>" data-id="<?= (int)$module['id'] ?>" data-value="<?= (int)$module['is_sidebar_item'] ?>"><i class="bi <?= (int)$module['is_sidebar_item'] === 1 ? 'bi-eye' : 'bi-eye-slash' ?>"></i></button>
             <button type="button" class="sm-icon-btn module-status" title="<?= (int)$module['is_active'] === 1 ? 'Deactivate' : 'Activate' ?>" data-id="<?= (int)$module['id'] ?>" data-value="<?= (int)$module['is_active'] ?>"><i class="bi <?= (int)$module['is_active'] === 1 ? 'bi-toggle-on' : 'bi-toggle-off' ?>"></i></button>
+            <?php if ((int)$module['is_core'] !== 1): ?>
+            <button type="button" class="sm-icon-btn danger module-delete" title="Delete" data-id="<?= (int)$module['id'] ?>" data-name="<?= sm_h($module['module_name']) ?>"><i class="bi bi-trash"></i></button>
+            <?php endif; ?>
         </div>
     </td>
 </tr>
@@ -1467,6 +1496,72 @@ function apiRequest(formData){
         });
     });
 }
+
+var selectAll=document.getElementById('selectAllModules');
+var bulkBar=document.getElementById('bulkBar');
+var bulkCount=document.getElementById('bulkCount');
+var bulkClear=document.getElementById('bulkClear');
+var moduleChecks=Array.prototype.slice.call(document.querySelectorAll('.module-select'));
+
+function selectedModuleIds(){
+    return moduleChecks.filter(function(c){return c.checked;}).map(function(c){return c.value;});
+}
+
+function refreshBulkState(){
+    var ids=selectedModuleIds();
+    bulkCount.textContent=String(ids.length);
+    bulkBar.classList.toggle('show',ids.length>0);
+    if(selectAll){
+        selectAll.checked=moduleChecks.length>0&&ids.length===moduleChecks.length;
+        selectAll.indeterminate=ids.length>0&&ids.length<moduleChecks.length;
+    }
+}
+
+if(selectAll){
+    selectAll.addEventListener('change',function(){
+        moduleChecks.forEach(function(c){c.checked=selectAll.checked;});
+        refreshBulkState();
+    });
+}
+moduleChecks.forEach(function(c){c.addEventListener('change',refreshBulkState);});
+if(bulkClear){bulkClear.addEventListener('click',function(){moduleChecks.forEach(function(c){c.checked=false;});refreshBulkState();});}
+
+function runBulkAction(action){
+    var ids=selectedModuleIds();
+    if(!ids.length){showToast('warning','Select at least one module.',2500);return;}
+    var label=action==='enable'?'enable':(action==='disable'?'disable':'delete');
+    if(action==='delete'&&!window.confirm('Delete '+ids.length+' selected module(s)? This cannot be undone.')){return;}
+    var fd=new FormData();
+    fd.append('csrf_token','<?= sm_h($csrfToken) ?>');
+    fd.append('action','bulk_action');
+    fd.append('bulk_action',action);
+    ids.forEach(function(id){fd.append('ids[]',id);});
+    apiRequest(fd).then(function(result){
+        if(!result.ok||!result.data.success){throw new Error(result.data.message||'Unable to update selected modules.');}
+        showToast('success',result.data.message,3000);
+        setTimeout(function(){window.location.reload();},500);
+    }).catch(function(error){showToast('error',error.message||'Unable to update selected modules.',4000);});
+}
+
+document.querySelectorAll('[data-bulk]').forEach(function(btn){
+    btn.addEventListener('click',function(){runBulkAction(btn.getAttribute('data-bulk'));});
+});
+
+document.querySelectorAll('.module-delete').forEach(function(btn){
+    btn.addEventListener('click',function(){
+        var name=btn.getAttribute('data-name')||'this module';
+        if(!window.confirm('Delete '+name+'? This cannot be undone.')){return;}
+        var fd=new FormData();
+        fd.append('csrf_token','<?= sm_h($csrfToken) ?>');
+        fd.append('action','delete_module');
+        fd.append('id',btn.getAttribute('data-id'));
+        apiRequest(fd).then(function(result){
+            if(!result.ok||!result.data.success){throw new Error(result.data.message||'Unable to delete module.');}
+            showToast('success',result.data.message,3000);
+            setTimeout(function(){window.location.reload();},500);
+        }).catch(function(error){showToast('error',error.message||'Unable to delete module.',4000);});
+    });
+});
 
 var modal=document.getElementById('moduleModal');
 var form=document.getElementById('moduleForm');

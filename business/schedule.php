@@ -1,1770 +1,2080 @@
 <?php
-/* FieldPlx Schedule Calendar - Version 2.0.0 - 2026-09-06 - Month / Week / Day resource schedule */
 require_once __DIR__ . '/includes/auth.php';
-if ((!isset($pdo) || !($pdo instanceof PDO)) && (!isset($db) || !($db instanceof PDO)) && file_exists(__DIR__ . '/includes/db.php')) {
-    require_once __DIR__ . '/includes/db.php';
-}
-
 $pageTitle = 'Schedule';
 $activePage = 'schedule';
-
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
-
-function schDb()
-{
-    global $pdo, $db;
-    if (isset($pdo) && $pdo instanceof PDO) return $pdo;
-    if (isset($db) && $db instanceof PDO) return $db;
-    throw new RuntimeException('Database connection is not available.');
-}
-
-function schH($value)
-{
-    return htmlspecialchars((string)$value, ENT_QUOTES, 'UTF-8');
-}
-
-function schTable(PDO $pdo, $table)
-{
-    static $cache = array();
-    if (isset($cache[$table])) return $cache[$table];
-    $q = $pdo->prepare("SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=:t");
-    $q->execute(array(':t' => $table));
-    $cache[$table] = ((int)$q->fetchColumn() > 0);
-    return $cache[$table];
-}
-
-function schColumn(PDO $pdo, $table, $column)
-{
-    static $cache = array();
-    $key = $table . '.' . $column;
-    if (isset($cache[$key])) return $cache[$key];
-    $q = $pdo->prepare("SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=:t AND COLUMN_NAME=:c");
-    $q->execute(array(':t' => $table, ':c' => $column));
-    $cache[$key] = ((int)$q->fetchColumn() > 0);
-    return $cache[$key];
-}
-
-function schRows(PDO $pdo, $sql, array $params)
-{
-    $q = $pdo->prepare($sql);
-    $q->execute($params);
-    return $q->fetchAll(PDO::FETCH_ASSOC);
-}
-
-function schValidDate($value)
-{
-    $value = trim((string)$value);
-    if ($value === '') return '';
-    $d = DateTime::createFromFormat('Y-m-d', $value);
-    return ($d && $d->format('Y-m-d') === $value) ? $value : '';
-}
-
-function schReadable($value)
-{
-    $value = trim((string)$value);
-    if ($value === '') return '-';
-    return ucwords(str_replace('_', ' ', $value));
-}
-
-function schInitials($name)
-{
-    $name = trim((string)$name);
-    if ($name === '') return '?';
-    $parts = preg_split('/\\s+/', $name);
-    $out = '';
-    foreach ($parts as $part) {
-        if ($part === '') continue;
-        $out .= strtoupper(substr($part, 0, 1));
-        if (strlen($out) >= 2) break;
-    }
-    return $out !== '' ? $out : '?';
-}
-
-function schSplit($value, $separator)
-{
-    $value = trim((string)$value);
-    if ($value === '') return array();
-    $parts = explode($separator, $value);
-    $out = array();
-    foreach ($parts as $part) {
-        $part = trim($part);
-        if ($part !== '') $out[] = $part;
-    }
-    return $out;
-}
-
-function schCsvInts($value)
-{
-    $out = array();
-    foreach (explode(',', trim((string)$value)) as $part) {
-        $id = (int)trim($part);
-        if ($id > 0) $out[$id] = $id;
-    }
-    return array_values($out);
-}
-
-function schCsvStrings($value, array $allowed)
-{
-    $out = array();
-    foreach (explode(',', trim((string)$value)) as $part) {
-        $part = strtolower(trim($part));
-        if ($part !== '' && in_array($part, $allowed, true)) $out[$part] = $part;
-    }
-    return array_values($out);
-}
-
-function schEventClass($status)
-{
-    $status = strtolower(trim((string)$status));
-    if (in_array($status, array('completed','closed','invoiced','ready_to_invoice'), true)) return 'completed';
-    if (in_array($status, array('in_progress','travelling','arrived','paused'), true)) return 'progress';
-    if (in_array($status, array('cancelled','archived','no_access'), true)) return 'cancelled';
-    if (in_array($status, array('rescheduled','follow_up_required'), true)) return 'rescheduled';
-    return 'scheduled';
-}
-
-function schBuildUrl(array $replace)
-{
-    $query = $_GET;
-    foreach ($replace as $key => $value) {
-        if ($value === null || $value === '') {
-            unset($query[$key]);
-        } else {
-            $query[$key] = $value;
-        }
-    }
-    return 'schedule.php?' . http_build_query($query);
-}
-
-function schAssignLanes(array &$events)
-{
-    usort($events, function($a, $b) {
-        $cmp = strcmp($a['start'], $b['start']);
-        if ($cmp !== 0) return $cmp;
-        return strcmp($a['end'], $b['end']);
-    });
-    $laneEnds = array();
-    $maxLanes = 1;
-    foreach ($events as $index => $event) {
-        $startTs = strtotime($event['start']);
-        $endTs = strtotime($event['end']);
-        $lane = 0;
-        while (isset($laneEnds[$lane]) && $laneEnds[$lane] > $startTs) $lane++;
-        $laneEnds[$lane] = max($startTs + 900, $endTs);
-        $events[$index]['lane'] = $lane;
-        if (($lane + 1) > $maxLanes) $maxLanes = $lane + 1;
-    }
-    foreach ($events as $index => $event) $events[$index]['lane_count'] = $maxLanes;
-}
-
-function schMoney($value)
-{
-    return number_format((float)$value, 2, '.', ',');
-}
-
-function schLocationText(array $row)
-{
-    $parts = array();
-    foreach (array('location_name','location_address','location_address2','location_city','location_state','location_postal') as $key) {
-        if (!empty($row[$key])) $parts[] = trim((string)$row[$key]);
-    }
-    return implode(', ', $parts);
-}
-
-function schIsAnytime(array $event)
-{
-    $start = substr((string)$event['start'], 11, 8);
-    $end = substr((string)$event['end'], 11, 8);
-    return ($start === '00:00:00' && ($end === '23:59:59' || $end === '00:00:00'));
-}
-
-try {
-    $pdo = schDb();
-} catch (Throwable $e) {
-    error_log('FieldPlx schedule DB: ' . $e->getMessage());
-    http_response_code(500);
-    exit('Unable to load schedule.');
-}
-
-$tenantId = !empty($_SESSION['tenant_id']) ? (int)$_SESSION['tenant_id'] : (!empty($_SESSION['business_id']) ? (int)$_SESSION['business_id'] : 0);
-$userId = !empty($_SESSION['tenant_user_id']) ? (int)$_SESSION['tenant_user_id'] : (!empty($_SESSION['user_id']) ? (int)$_SESSION['user_id'] : (!empty($_SESSION['id']) ? (int)$_SESSION['id'] : 0));
-$sessionBranchId = !empty($_SESSION['branch_id']) ? (int)$_SESSION['branch_id'] : 0;
-if ($tenantId <= 0 || $userId <= 0) {
-    header('Location: login.php');
-    exit;
-}
-
-if (empty($_SESSION['schedule_csrf_token'])) {
-    $_SESSION['schedule_csrf_token'] = bin2hex(random_bytes(32));
-}
-$scheduleCsrfToken = (string)$_SESSION['schedule_csrf_token'];
-
-$currency = array('symbol' => '', 'symbol_position' => 'before', 'decimal_places' => 2);
-try {
-    if (schTable($pdo, 'tenants') && schTable($pdo, 'currencies')) {
-        $stmt = $pdo->prepare("SELECT c.symbol,c.symbol_position,c.decimal_places FROM tenants t LEFT JOIN currencies c ON c.id=t.currency_id WHERE t.id=:tenant_id LIMIT 1");
-        $stmt->execute(array(':tenant_id' => $tenantId));
-        $currencyRow = $stmt->fetch(PDO::FETCH_ASSOC);
-        if ($currencyRow) $currency = array_merge($currency, $currencyRow);
-    }
-} catch (Throwable $e) {
-    error_log('FieldPlx schedule currency: ' . $e->getMessage());
-}
-
-/* Lightweight schedule actions used by the preview/details UI. */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['schedule_action'])) {
-    header('Content-Type: application/json; charset=utf-8');
-    $token = isset($_POST['csrf_token']) ? (string)$_POST['csrf_token'] : '';
-    if (!hash_equals($scheduleCsrfToken, $token)) {
-        http_response_code(419);
-        echo json_encode(array('success' => false, 'message' => 'Your session token has expired. Refresh the page and try again.'));
-        exit;
-    }
-    $action = trim((string)$_POST['schedule_action']);
-    if ($action === 'mark_complete') {
-        $visitId = isset($_POST['visit_id']) ? (int)$_POST['visit_id'] : 0;
-        $jobId = isset($_POST['job_id']) ? (int)$_POST['job_id'] : 0;
-        try {
-            if ($visitId > 0 && schTable($pdo, 'visits')) {
-                $stmt = $pdo->prepare("UPDATE visits v INNER JOIN jobs j ON j.id=v.job_id AND j.tenant_id=v.tenant_id SET v.status='completed' WHERE v.id=:visit_id AND v.tenant_id=:tenant_id AND j.deleted_at IS NULL");
-                $stmt->execute(array(':visit_id' => $visitId, ':tenant_id' => $tenantId));
-                if ($stmt->rowCount() < 1) throw new RuntimeException('Visit could not be marked complete.');
-            } elseif ($jobId > 0) {
-                $stmt = $pdo->prepare("UPDATE jobs SET status='completed' WHERE id=:job_id AND tenant_id=:tenant_id AND deleted_at IS NULL");
-                $stmt->execute(array(':job_id' => $jobId, ':tenant_id' => $tenantId));
-                if ($stmt->rowCount() < 1) throw new RuntimeException('Job could not be marked complete.');
-            } else {
-                throw new RuntimeException('Invalid schedule item.');
-            }
-            echo json_encode(array('success' => true, 'message' => 'Visit marked complete.'));
-        } catch (Throwable $e) {
-            error_log('FieldPlx schedule complete: ' . $e->getMessage());
-            http_response_code(422);
-            echo json_encode(array('success' => false, 'message' => $e->getMessage()));
-        }
-        exit;
-    }
-    http_response_code(400);
-    echo json_encode(array('success' => false, 'message' => 'Unsupported schedule action.'));
-    exit;
-}
-
-$view = isset($_GET['view']) ? strtolower(trim((string)$_GET['view'])) : 'month';
-if (!in_array($view, array('day','week','month'), true)) $view = 'month';
-$selectedDate = schValidDate(isset($_GET['date']) ? $_GET['date'] : '');
-if ($selectedDate === '') $selectedDate = date('Y-m-d');
-$branchId = isset($_GET['branch_id']) ? max(0, (int)$_GET['branch_id']) : 0;
-if ($sessionBranchId > 0) $branchId = $sessionBranchId;
-
-$typeFilter = isset($_GET['type']) ? strtolower(trim((string)$_GET['type'])) : 'all';
-if (!in_array($typeFilter, array('all','visit','job'), true)) $typeFilter = 'all';
-$teamFilterActive = isset($_GET['team_filter']) && (int)$_GET['team_filter'] === 1;
-$selectedTeamIds = schCsvInts(isset($_GET['team_ids']) ? $_GET['team_ids'] : '');
-$includeUnassigned = $teamFilterActive ? (!empty($_GET['include_unassigned']) ? 1 : 0) : 1;
-$allowedStatuses = array('scheduled','accepted','travelling','arrived','in_progress','paused','rescheduled','follow_up_required','completed','cancelled','no_access');
-$statusFilterActive = isset($_GET['status_filter']) && (int)$_GET['status_filter'] === 1;
-$selectedStatuses = schCsvStrings(isset($_GET['statuses']) ? $_GET['statuses'] : '', $allowedStatuses);
-
-$selected = new DateTime($selectedDate . ' 00:00:00');
-$currentMonthKey = $selected->format('Y-m');
-$displayDays = array();
-
-/* Sunday-first calendar, matching the supplied schedule reference. */
-if ($view === 'month') {
-    $monthStart = new DateTime($selected->format('Y-m-01') . ' 00:00:00');
-    $rangeStart = clone $monthStart;
-    $dow = (int)$rangeStart->format('w');
-    if ($dow > 0) $rangeStart->modify('-' . $dow . ' days');
-    $rangeEnd = clone $rangeStart;
-    $rangeEnd->modify('+42 days');
-    for ($i = 0; $i < 42; $i++) {
-        $d = clone $rangeStart;
-        if ($i > 0) $d->modify('+' . $i . ' days');
-        $displayDays[] = $d;
-    }
-    $heading = $selected->format('F Y');
-    $prevDate = (clone $monthStart)->modify('-1 month')->format('Y-m-01');
-    $nextDate = (clone $monthStart)->modify('+1 month')->format('Y-m-01');
-} elseif ($view === 'week') {
-    $rangeStart = clone $selected;
-    $dow = (int)$rangeStart->format('w');
-    if ($dow > 0) $rangeStart->modify('-' . $dow . ' days');
-    $rangeEnd = clone $rangeStart;
-    $rangeEnd->modify('+7 days');
-    for ($i = 0; $i < 7; $i++) {
-        $d = clone $rangeStart;
-        if ($i > 0) $d->modify('+' . $i . ' days');
-        $displayDays[] = $d;
-    }
-    $heading = $selected->format('F Y');
-    $prevDate = (clone $selected)->modify('-7 days')->format('Y-m-d');
-    $nextDate = (clone $selected)->modify('+7 days')->format('Y-m-d');
-} else {
-    $rangeStart = clone $selected;
-    $rangeEnd = clone $selected;
-    $rangeEnd->modify('+1 day');
-    $displayDays = array(clone $selected);
-    $heading = $selected->format('F Y');
-    $prevDate = (clone $selected)->modify('-1 day')->format('Y-m-d');
-    $nextDate = (clone $selected)->modify('+1 day')->format('Y-m-d');
-}
-
-$employees = array();
-$userDeletedCondition = schColumn($pdo, 'users', 'deleted_at') ? " AND deleted_at IS NULL" : '';
-try {
-    $employees = schRows($pdo,
-        "SELECT id,branch_id,employee_code,first_name,last_name,email,job_title,is_field_worker,is_bookable,is_tenant_admin
-         FROM users
-         WHERE tenant_id=:t AND status='active' {$userDeletedCondition}
-         ORDER BY first_name,last_name,id",
-        array(':t' => $tenantId)
-    );
-} catch (Throwable $e) {
-    error_log('FieldPlx schedule employees: ' . $e->getMessage());
-}
-
-$employeeMap = array();
-foreach ($employees as $employee) {
-    $employeeMap[(int)$employee['id']] = $employee;
-}
-$selectedTeamIds = array_values(array_filter($selectedTeamIds, function($id) use ($employeeMap) { return isset($employeeMap[(int)$id]); }));
-
-$events = array();
-$rangeStartSql = $rangeStart->format('Y-m-d H:i:s');
-$rangeEndSql = $rangeEnd->format('Y-m-d H:i:s');
-$locationSelect = "cl.name AS location_name,cl.address_line1 AS location_address,cl.city AS location_city";
-$locationSelect .= schColumn($pdo, 'client_locations', 'address_line2') ? ",cl.address_line2 AS location_address2" : ",'' AS location_address2";
-$locationSelect .= schColumn($pdo, 'client_locations', 'state') ? ",cl.state AS location_state" : ",'' AS location_state";
-$locationSelect .= schColumn($pdo, 'client_locations', 'postal_code') ? ",cl.postal_code AS location_postal" : ",'' AS location_postal";
-
-/* Expanded visits are the primary calendar source. */
-if (schTable($pdo, 'visits') && schTable($pdo, 'jobs')) {
-    try {
-        $hasVisitAssignments = schTable($pdo, 'visit_assignments');
-        $visitJoin = '';
-        $assigneeSelect = "'' AS assignee_names,'' AS assignee_ids";
-        if ($hasVisitAssignments) {
-            $visitJoin = " LEFT JOIN visit_assignments va ON va.tenant_id=v.tenant_id AND va.visit_id=v.id AND va.status<>'removed'
-                           LEFT JOIN users au ON au.id=va.user_id AND au.tenant_id=v.tenant_id ";
-            $assigneeSelect = "GROUP_CONCAT(DISTINCT CONCAT_WS(' ',au.first_name,au.last_name) ORDER BY va.is_primary DESC,au.first_name,au.id SEPARATOR '||') AS assignee_names,
-                               GROUP_CONCAT(DISTINCT au.id ORDER BY va.is_primary DESC,au.id SEPARATOR ',') AS assignee_ids";
-        } else {
-            $visitJoin = " LEFT JOIN users au ON au.id=v.assigned_user_id AND au.tenant_id=v.tenant_id ";
-            $assigneeSelect = "COALESCE(CONCAT_WS(' ',au.first_name,au.last_name),'') AS assignee_names,COALESCE(CAST(au.id AS CHAR),'') AS assignee_ids";
-        }
-        $where = array(
-            'v.tenant_id=:tenant_id',
-            'j.deleted_at IS NULL',
-            'v.scheduled_start IS NOT NULL',
-            'v.scheduled_start < :range_end',
-            'COALESCE(v.scheduled_end,v.scheduled_start) >= :range_start'
-        );
-        $params = array(':tenant_id' => $tenantId, ':range_start' => $rangeStartSql, ':range_end' => $rangeEndSql);
-        if ($branchId > 0) {
-            $where[] = 'COALESCE(v.branch_id,j.branch_id)=:branch_id';
-            $params[':branch_id'] = $branchId;
-        }
-        $sql = "SELECT v.id AS visit_id,v.visit_no,v.visit_number,v.scheduled_start,v.scheduled_end,v.status AS event_status,v.notes AS visit_notes,
-                       j.id AS job_id,j.job_no,j.title,j.description,j.priority,j.status AS job_status,j.job_type,j.client_id,j.location_id,j.product_service_id,j.total,
-                       c.display_name AS client_name,c.phone AS client_phone,c.email AS client_email,{$locationSelect},
-                       ps.name AS service_name,b.name AS branch_name,{$assigneeSelect}
-                FROM visits v
-                INNER JOIN jobs j ON j.id=v.job_id AND j.tenant_id=v.tenant_id
-                LEFT JOIN clients c ON c.id=j.client_id AND c.tenant_id=j.tenant_id
-                LEFT JOIN client_locations cl ON cl.id=j.location_id AND cl.tenant_id=j.tenant_id
-                LEFT JOIN product_services ps ON ps.id=j.product_service_id AND ps.tenant_id=j.tenant_id
-                LEFT JOIN branches b ON b.id=COALESCE(v.branch_id,j.branch_id) AND b.tenant_id=v.tenant_id
-                {$visitJoin}
-                WHERE " . implode(' AND ', $where) . "
-                GROUP BY v.id
-                ORDER BY v.scheduled_start,v.id";
-        $visitRows = schRows($pdo, $sql, $params);
-        foreach ($visitRows as $row) {
-            $start = (string)$row['scheduled_start'];
-            $end = !empty($row['scheduled_end']) ? (string)$row['scheduled_end'] : date('Y-m-d H:i:s', strtotime($start . ' +1 hour'));
-            $events[] = array(
-                'key' => 'visit:' . (int)$row['visit_id'],
-                'source' => 'visit',
-                'visit_id' => (int)$row['visit_id'],
-                'visit_no' => (string)$row['visit_no'],
-                'visit_number' => (int)$row['visit_number'],
-                'job_id' => (int)$row['job_id'],
-                'job_no' => (string)$row['job_no'],
-                'title' => (string)$row['title'],
-                'customer' => (string)$row['client_name'],
-                'client_phone' => (string)$row['client_phone'],
-                'client_email' => (string)$row['client_email'],
-                'service' => (string)$row['service_name'],
-                'location' => schLocationText($row),
-                'branch' => (string)$row['branch_name'],
-                'priority' => (string)$row['priority'],
-                'status' => (string)$row['event_status'],
-                'job_status' => (string)$row['job_status'],
-                'job_type' => (string)$row['job_type'],
-                'instructions' => trim((string)$row['visit_notes']) !== '' ? (string)$row['visit_notes'] : (string)$row['description'],
-                'start' => $start,
-                'end' => $end,
-                'total' => (float)$row['total'],
-                'assignee_names' => schSplit($row['assignee_names'], '||'),
-                'assignee_ids' => schSplit($row['assignee_ids'], ','),
-                'line_items' => array(),
-                'lane' => 0,
-                'lane_count' => 1
-            );
-        }
-    } catch (Throwable $e) {
-        error_log('FieldPlx schedule visits query: ' . $e->getMessage());
-    }
-}
-
-/* Compatibility fallback for older jobs with no visit rows. */
-if (schTable($pdo, 'jobs') && schTable($pdo, 'job_assignments')) {
-    try {
-        $hasStartTime = schColumn($pdo, 'jobs', 'start_time');
-        $hasEndTime = schColumn($pdo, 'jobs', 'end_time');
-        $startExpr = $hasStartTime
-            ? "STR_TO_DATE(CONCAT(j.start_date,' ',COALESCE(j.start_time,'09:00:00')),'%Y-%m-%d %H:%i:%s')"
-            : "STR_TO_DATE(CONCAT(j.start_date,' 09:00:00'),'%Y-%m-%d %H:%i:%s')";
-        $endExpr = $hasEndTime
-            ? "STR_TO_DATE(CONCAT(COALESCE(j.end_date,j.start_date),' ',COALESCE(j.end_time,'10:00:00')),'%Y-%m-%d %H:%i:%s')"
-            : "STR_TO_DATE(CONCAT(COALESCE(j.end_date,j.start_date),' 10:00:00'),'%Y-%m-%d %H:%i:%s')";
-        $where = array(
-            'j.tenant_id=:tenant_id',
-            'j.deleted_at IS NULL',
-            'j.start_date IS NOT NULL',
-            "{$startExpr} < :range_end",
-            "{$endExpr} >= :range_start"
-        );
-        $params = array(':tenant_id' => $tenantId, ':range_start' => $rangeStartSql, ':range_end' => $rangeEndSql);
-        if (schTable($pdo, 'visits')) $where[] = 'NOT EXISTS(SELECT 1 FROM visits vx WHERE vx.tenant_id=j.tenant_id AND vx.job_id=j.id)';
-        if ($branchId > 0) {
-            $where[] = 'j.branch_id=:branch_id';
-            $params[':branch_id'] = $branchId;
-        }
-        $sql = "SELECT j.id AS job_id,j.job_no,j.title,j.description,j.priority,j.status AS event_status,j.job_type,j.total,
-                       {$startExpr} AS scheduled_start,{$endExpr} AS scheduled_end,
-                       c.display_name AS client_name,c.phone AS client_phone,c.email AS client_email,{$locationSelect},ps.name AS service_name,b.name AS branch_name,
-                       GROUP_CONCAT(DISTINCT CONCAT_WS(' ',au.first_name,au.last_name) ORDER BY ja.is_primary_responsible DESC,au.first_name,au.id SEPARATOR '||') AS assignee_names,
-                       GROUP_CONCAT(DISTINCT au.id ORDER BY ja.is_primary_responsible DESC,au.id SEPARATOR ',') AS assignee_ids
-                FROM jobs j
-                LEFT JOIN clients c ON c.id=j.client_id AND c.tenant_id=j.tenant_id
-                LEFT JOIN client_locations cl ON cl.id=j.location_id AND cl.tenant_id=j.tenant_id
-                LEFT JOIN product_services ps ON ps.id=j.product_service_id AND ps.tenant_id=j.tenant_id
-                LEFT JOIN branches b ON b.id=j.branch_id AND b.tenant_id=j.tenant_id
-                LEFT JOIN job_assignments ja ON ja.tenant_id=j.tenant_id AND ja.job_id=j.id AND ja.status<>'removed'
-                LEFT JOIN users au ON au.id=ja.user_id AND au.tenant_id=j.tenant_id
-                WHERE " . implode(' AND ', $where) . "
-                GROUP BY j.id
-                ORDER BY scheduled_start,j.id";
-        $jobRows = schRows($pdo, $sql, $params);
-        foreach ($jobRows as $row) {
-            $start = (string)$row['scheduled_start'];
-            $end = !empty($row['scheduled_end']) ? (string)$row['scheduled_end'] : date('Y-m-d H:i:s', strtotime($start . ' +1 hour'));
-            $events[] = array(
-                'key' => 'job:' . (int)$row['job_id'],
-                'source' => 'job',
-                'visit_id' => 0,
-                'visit_no' => '',
-                'visit_number' => 0,
-                'job_id' => (int)$row['job_id'],
-                'job_no' => (string)$row['job_no'],
-                'title' => (string)$row['title'],
-                'customer' => (string)$row['client_name'],
-                'client_phone' => (string)$row['client_phone'],
-                'client_email' => (string)$row['client_email'],
-                'service' => (string)$row['service_name'],
-                'location' => schLocationText($row),
-                'branch' => (string)$row['branch_name'],
-                'priority' => (string)$row['priority'],
-                'status' => (string)$row['event_status'],
-                'job_status' => (string)$row['event_status'],
-                'job_type' => (string)$row['job_type'],
-                'instructions' => (string)$row['description'],
-                'start' => $start,
-                'end' => $end,
-                'total' => (float)$row['total'],
-                'assignee_names' => schSplit($row['assignee_names'], '||'),
-                'assignee_ids' => schSplit($row['assignee_ids'], ','),
-                'line_items' => array(),
-                'lane' => 0,
-                'lane_count' => 1
-            );
-        }
-    } catch (Throwable $e) {
-        error_log('FieldPlx schedule fallback jobs query: ' . $e->getMessage());
-    }
-}
-
-/* Multi-team, status and type filters. */
-$events = array_values(array_filter($events, function($event) use ($typeFilter, $teamFilterActive, $selectedTeamIds, $includeUnassigned, $statusFilterActive, $selectedStatuses) {
-    if ($typeFilter !== 'all' && $event['source'] !== $typeFilter) return false;
-    if ($statusFilterActive && !in_array(strtolower((string)$event['status']), $selectedStatuses, true)) return false;
-    if ($teamFilterActive) {
-        $eventIds = array_map('intval', $event['assignee_ids']);
-        if (!$eventIds) return $includeUnassigned === 1;
-        foreach ($eventIds as $id) if (in_array($id, $selectedTeamIds, true)) return true;
-        return false;
-    }
-    return true;
-}));
-
-usort($events, function($a, $b) {
-    $cmp = strcmp($a['start'], $b['start']);
-    if ($cmp !== 0) return $cmp;
-    return (int)$a['job_id'] - (int)$b['job_id'];
-});
-
-/* Attach dynamic job line items to the preview/details panels. */
-$jobIds = array();
-foreach ($events as $event) $jobIds[(int)$event['job_id']] = (int)$event['job_id'];
-$lineItemsByJob = array();
-if ($jobIds && schTable($pdo, 'job_line_items')) {
-    try {
-        $ids = array_values($jobIds);
-        $ph = implode(',', array_fill(0, count($ids), '?'));
-        $stmt = $pdo->prepare("SELECT job_id,item_name,description,quantity,unit_price,line_total FROM job_line_items WHERE tenant_id=? AND job_id IN ({$ph}) ORDER BY job_id,sort_order,id");
-        $stmt->execute(array_merge(array($tenantId), $ids));
-        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $item) {
-            $jid = (int)$item['job_id'];
-            if (!isset($lineItemsByJob[$jid])) $lineItemsByJob[$jid] = array();
-            $lineItemsByJob[$jid][] = array(
-                'name' => (string)$item['item_name'],
-                'description' => (string)$item['description'],
-                'quantity' => (float)$item['quantity'],
-                'unit_price' => (float)$item['unit_price'],
-                'line_total' => (float)$item['line_total']
-            );
-        }
-    } catch (Throwable $e) {
-        error_log('FieldPlx schedule line items: ' . $e->getMessage());
-    }
-}
-foreach ($events as $index => $event) {
-    $events[$index]['line_items'] = isset($lineItemsByJob[(int)$event['job_id']]) ? $lineItemsByJob[(int)$event['job_id']] : array();
-    $events[$index]['anytime'] = schIsAnytime($events[$index]) ? 1 : 0;
-}
-
-$eventsByDay = array();
-$timedEventsByDay = array();
-$anytimeEventsByDay = array();
-foreach ($events as $event) {
-    $dayKey = substr($event['start'], 0, 10);
-    if (!isset($eventsByDay[$dayKey])) $eventsByDay[$dayKey] = array();
-    $eventsByDay[$dayKey][] = $event;
-    if (!empty($event['anytime'])) {
-        if (!isset($anytimeEventsByDay[$dayKey])) $anytimeEventsByDay[$dayKey] = array();
-        $anytimeEventsByDay[$dayKey][] = $event;
-    } else {
-        if (!isset($timedEventsByDay[$dayKey])) $timedEventsByDay[$dayKey] = array();
-        $timedEventsByDay[$dayKey][] = $event;
-    }
-}
-foreach ($timedEventsByDay as $key => $dayEvents) {
-    schAssignLanes($dayEvents);
-    $timedEventsByDay[$key] = $dayEvents;
-}
-
-/* Day view resource rows. */
-$resourceRows = array();
-if ($view === 'day') {
-    if (!$teamFilterActive || $includeUnassigned) {
-        $resourceRows[] = array('id' => 0, 'name' => 'Unassigned', 'initials' => '', 'job_title' => '');
-    }
-    foreach ($employees as $employee) {
-        $eid = (int)$employee['id'];
-        if ($teamFilterActive && !in_array($eid, $selectedTeamIds, true)) continue;
-        $name = trim((string)$employee['first_name'] . ' ' . (string)$employee['last_name']);
-        $resourceRows[] = array('id' => $eid, 'name' => $name, 'initials' => schInitials($name), 'job_title' => (string)$employee['job_title']);
-    }
-}
-
-$todayUrl = schBuildUrl(array('date' => date('Y-m-d')));
-$previousUrl = schBuildUrl(array('date' => $prevDate));
-$nextUrl = schBuildUrl(array('date' => $nextDate));
-$dayUrl = schBuildUrl(array('view' => 'day'));
-$weekUrl = schBuildUrl(array('view' => 'week'));
-$monthUrl = schBuildUrl(array('view' => 'month'));
-$findTimeUrl = schBuildUrl(array('view' => 'day'));
-$teamLabel = !$teamFilterActive ? 'All' : ((count($selectedTeamIds) + ($includeUnassigned ? 1 : 0)) . ' selected');
-$statusLabel = !$statusFilterActive ? 'All' : (count($selectedStatuses) . ' selected');
-$typeLabel = $typeFilter === 'all' ? 'All' : schReadable($typeFilter);
-$selectedDayKey = $selected->format('Y-m-d');
-$dayEvents = isset($eventsByDay[$selectedDayKey]) ? $eventsByDay[$selectedDayKey] : array();
-$dayTimedEvents = isset($timedEventsByDay[$selectedDayKey]) ? $timedEventsByDay[$selectedDayKey] : array();
-$dayAnytimeEvents = isset($anytimeEventsByDay[$selectedDayKey]) ? $anytimeEventsByDay[$selectedDayKey] : array();
-$eventJson = json_encode($events, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-$currencyJson = json_encode($currency, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+if (session_status() === PHP_SESSION_NONE) session_start();
+if (empty($_SESSION['schedule_csrf_token'])) $_SESSION['schedule_csrf_token'] = bin2hex(random_bytes(32));
+$scheduleCsrf = $_SESSION['schedule_csrf_token'];
+if (empty($_SESSION['clients_csrf_token'])) $_SESSION['clients_csrf_token'] = bin2hex(random_bytes(32));
+$clientsCsrf = $_SESSION['clients_csrf_token'];
 ?>
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Schedule - FieldPlx</title>
-    <?php require_once __DIR__ . '/includes/links.php'; ?>
-    <link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet">
-    <style>
-:root {
-  --fieldplx-primary: #74b824;
-  --fieldplx-primary-dark: #5d971b;
-  --fieldplx-text: #0b1933;
-  --fieldplx-muted: #6f7b90;
-  --fieldplx-border: #e5eaf1;
-  --fieldplx-surface: #ffffff;
-  --fieldplx-background: #f6f8fb;
-  --fieldplx-topbar-height: 70px;
-  --fieldplx-sidebar-width: 250px;
-  --fieldplx-sidebar-collapsed-width: 78px;
-  --fd-navy: #001131;
-  --fd-navy-light: #071f49;
-  --fd-blue: #123d70;
-  --fd-green: #74b824;
-  --fd-green-dark: #5d971b;
-  --fd-green-soft: #f0f8e5;
-  --fd-red: #e45b66;
-  --fd-bg: #f6f8fb;
-  --fd-text: #0b1933;
-  --fd-muted: #6f7b90;
-  --fd-border: #e5eaf1;
-}
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Schedule - FieldPlx</title>
+<?php require_once __DIR__ . '/includes/links.php'; ?>
+<style>
+    :root {
+        --fieldplx-primary: #6d28d9;
+        --fieldplx-primary-dark: #5b21b6;
+        --fieldplx-text: #1f2937;
+        --fieldplx-muted: #6b7280;
+        --fieldplx-border: #e5e7eb;
+        --fieldplx-surface: #ffffff;
+        --fieldplx-background: #f7f7fb;
+        --fieldplx-topbar-height: 64px;
+    }
 
-* { box-sizing: border-box; }
-html, body { min-height: 100%; }
-body {
-  margin: 0;
-  min-height: 100vh;
-  overflow-x: hidden;
-  background: var(--fd-bg) !important;
-  color: var(--fd-text);
-  font-family: Arial, Helvetica, sans-serif !important;
-  font-size: 14px;
-}
+    * {
+        box-sizing: border-box;
+    }
 
-/* =========================================================
-   Shared FieldPlx topbar
-   ========================================================= */
-.fieldplx-topbar {
-  min-height: var(--fieldplx-topbar-height) !important;
-  margin-left: var(--fieldplx-sidebar-width);
-  width: calc(100% - var(--fieldplx-sidebar-width));
-  position: sticky !important;
-  top: 0;
-  z-index: 1030;
-  background: #ffffff !important;
-  border-bottom: 1px solid var(--fd-border) !important;
-  box-shadow: 0 3px 14px rgba(0, 17, 49, 0.035);
-  backdrop-filter: none !important;
-  transition: margin-left .25s ease, width .25s ease;
-}
+    body {
+        margin: 0;
+        min-height: 100vh;
+        overflow-x: hidden;
+        background: var(--fieldplx-background);
+        color: var(--fieldplx-text);
+        font-family: "Inter", sans-serif;
+        font-size: 13px;
+    }
 
-body.fieldplx-sidebar-collapsed .fieldplx-topbar {
-  margin-left: var(--fieldplx-sidebar-collapsed-width);
-  width: calc(100% - var(--fieldplx-sidebar-collapsed-width));
-}
+    .fieldplx-topbar {
+        position: sticky;
+        top: 0;
+        z-index: 1030;
+        min-height: var(--fieldplx-topbar-height);
+        background: rgba(255, 255, 255, 0.96);
+        border-bottom: 1px solid var(--fieldplx-border);
+        backdrop-filter: blur(12px);
+    }
 
-.fieldplx-topbar-inner {
-  min-height: var(--fieldplx-topbar-height) !important;
-  padding: 0 27px !important;
-  display: flex !important;
-  align-items: center !important;
-  gap: 13px !important;
-}
+    .fieldplx-topbar-inner {
+        min-height: var(--fieldplx-topbar-height);
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        padding: 8px 18px;
+    }
 
-.fieldplx-page-heading { display: none !important; }
+    .fieldplx-brand-mobile {
+        display: none;
+        align-items: center;
+        gap: 9px;
+        min-width: 0;
+        text-decoration: none;
+        color: var(--fieldplx-text);
+    }
 
-.fieldplx-menu-toggle,
-.fieldplx-topbar-action {
-  width: 41px !important;
-  height: 41px !important;
-  padding: 0 !important;
-  display: inline-flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  border: 0 !important;
-  border-radius: 9px !important;
-  color: var(--fd-navy) !important;
-  background: transparent !important;
-}
+    .fieldplx-brand-logo {
+        width: 34px;
+        height: 34px;
+        flex: 0 0 34px;
+        border-radius: 9px;
+        object-fit: contain;
+        background: #f3f0ff;
+    }
 
-.fieldplx-menu-toggle:hover,
-.fieldplx-topbar-action:hover {
-  color: var(--fd-navy) !important;
-  background: var(--fd-green-soft) !important;
-}
+    .fieldplx-brand-placeholder {
+        width: 34px;
+        height: 34px;
+        flex: 0 0 34px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 9px;
+        color: #ffffff;
+        background: linear-gradient(135deg, #7c3aed, #5b21b6);
+        font-size: 15px;
+        font-weight: 700;
+    }
 
-.fieldplx-search-wrap {
-  width: 280px !important;
-  margin-left: auto;
-  position: relative;
-}
+    .fieldplx-brand-name {
+        max-width: 170px;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        font-size: 14px;
+        font-weight: 700;
+    }
 
-.fieldplx-search-icon {
-  position: absolute;
-  top: 50%;
-  left: 13px;
-  z-index: 2;
-  transform: translateY(-50%);
-  color: #8795a8;
-  pointer-events: none;
-}
+    .fieldplx-menu-toggle {
+        width: 36px;
+        height: 36px;
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid var(--fieldplx-border);
+        border-radius: 9px;
+        background: #ffffff;
+        color: #4b5563;
+        font-size: 19px;
+    }
 
-.fieldplx-search-input {
-  width: 100%;
-  height: 41px !important;
-  padding: 8px 13px 8px 38px !important;
-  border: 0 !important;
-  border-radius: 8px !important;
-  background: #f5f8fb !important;
-  color: var(--fd-text) !important;
-  box-shadow: none !important;
-  font-size: 12px !important;
-}
+    .fieldplx-menu-toggle:hover {
+        color: var(--fieldplx-primary);
+        border-color: #d8ccfb;
+        background: #faf8ff;
+    }
 
-.fieldplx-search-input:focus {
-  background: #f5f8fb !important;
-  box-shadow: 0 0 0 3px rgba(116, 184, 36, .14) !important;
-}
+    .fieldplx-page-heading {
+        min-width: 0;
+        margin-right: auto;
+    }
 
-.fieldplx-profile-button {
-  min-width: 0;
-  padding: 2px !important;
-  display: flex !important;
-  align-items: center !important;
-  gap: 9px !important;
-  border: 0 !important;
-  border-radius: 9px !important;
-  background: transparent !important;
-  text-align: left;
-}
+    .fieldplx-page-title {
+        margin: 0;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        color: #111827;
+        font-size: 15px;
+        font-weight: 700;
+    }
 
-.fieldplx-profile-button:hover { background: var(--fd-green-soft) !important; }
+    .fieldplx-page-subtitle {
+        margin-top: 2px;
+        color: var(--fieldplx-muted);
+        font-size: 11px;
+    }
 
-.fieldplx-avatar {
-  width: 38px !important;
-  height: 38px !important;
-  flex: 0 0 38px !important;
-  overflow: hidden;
-  display: inline-flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  border: 0 !important;
-  border-radius: 50% !important;
-  color: var(--fd-navy) !important;
-  background: linear-gradient(135deg, #ffffff, #e8f3d9) !important;
-  font-size: 12px !important;
-  font-weight: 800 !important;
-}
+    .fieldplx-search-wrap {
+        width: min(340px, 31vw);
+        position: relative;
+    }
 
-.fieldplx-avatar img { width: 100%; height: 100%; object-fit: cover; }
-.fieldplx-profile-details { max-width: 145px; min-width: 0; }
-.fieldplx-profile-name,
-.fieldplx-profile-role { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.fieldplx-profile-name { color: var(--fd-text) !important; font-size: 12px !important; font-weight: 700; }
-.fieldplx-profile-role { margin-top: 1px; color: var(--fd-muted) !important; font-size: 10px !important; }
-.fieldplx-notification-count { background: var(--fd-red) !important; }
+    .fieldplx-search-icon {
+        position: absolute;
+        top: 50%;
+        left: 12px;
+        z-index: 2;
+        transform: translateY(-50%);
+        color: #9ca3af;
+        font-size: 14px;
+        pointer-events: none;
+    }
 
-.fieldplx-dropdown,
-.fieldplx-profile-menu {
-  border: 1px solid var(--fd-border) !important;
-  background: #ffffff !important;
-  box-shadow: 0 18px 45px rgba(29, 38, 74, .14) !important;
-}
+    .fieldplx-search-input {
+        height: 38px;
+        padding: 8px 13px 8px 35px;
+        border: 1px solid var(--fieldplx-border);
+        border-radius: 10px;
+        background: #f9fafb;
+        box-shadow: none;
+        font-size: 12px;
+    }
 
-.fieldplx-dropdown { width: 340px; max-width: calc(100vw - 24px); margin-top: 10px !important; border-radius: 14px !important; overflow: hidden; }
-.fieldplx-dropdown-header { border-bottom: 1px solid var(--fd-border) !important; background: #fff !important; }
-.fieldplx-dropdown-footer { border-top: 1px solid var(--fd-border) !important; background: #fff !important; }
-.fieldplx-dropdown-footer a,
-.fieldplx-profile-menu .dropdown-item:hover { color: var(--fd-green-dark) !important; }
-#topbarNotificationList { max-height: 300px; overflow-y: auto; background: #fff; }
-.fieldplx-notification-item:hover,
-.fieldplx-notification-item.is-unread { background: #f8fbf3 !important; }
-.fieldplx-notification-icon { color: var(--fd-green-dark) !important; background: var(--fd-green-soft) !important; }
-.fieldplx-empty-notifications { background: #fff !important; }
-.fieldplx-empty-notifications i { color: #9fca68 !important; }
-.fieldplx-profile-menu { width: 230px; border-radius: 12px !important; }
+    .fieldplx-search-input:focus {
+        border-color: #c4b5fd;
+        background: #ffffff;
+        box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.09);
+    }
 
-/* =========================================================
-   Shared FieldPlx sidebar
-   ========================================================= */
-.fieldplx-sidebar {
-  width: var(--fieldplx-sidebar-width) !important;
-  min-width: var(--fieldplx-sidebar-width) !important;
-  height: 100vh !important;
-  position: fixed !important;
-  top: 0 !important;
-  left: 0 !important;
-  z-index: 1045 !important;
-  display: flex !important;
-  flex-direction: column !important;
-  color: #fff !important;
-  background: linear-gradient(180deg, var(--fd-navy-light), var(--fd-navy)) !important;
-  border-right: 0 !important;
-  transition: width .25s ease, min-width .25s ease, transform .25s ease !important;
-}
+    .fieldplx-topbar-action {
+        width: 38px;
+        height: 38px;
+        padding: 0;
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid var(--fieldplx-border);
+        border-radius: 10px;
+        background: #ffffff;
+        color: #4b5563;
+        font-size: 17px;
+    }
 
-body.fieldplx-sidebar-collapsed .fieldplx-sidebar {
-  width: var(--fieldplx-sidebar-collapsed-width) !important;
-  min-width: var(--fieldplx-sidebar-collapsed-width) !important;
-}
+    .fieldplx-topbar-action:hover {
+        color: var(--fieldplx-primary);
+        border-color: #d8ccfb;
+        background: #faf8ff;
+    }
 
-.fieldplx-sidebar-header {
-  min-height: 68px !important;
-  padding: 9px 14px 10px !important;
-  display: flex !important;
-  align-items: center !important;
-  border-bottom: 1px solid rgba(255, 255, 255, .08) !important;
-}
+    .fieldplx-notification-count {
+        position: absolute;
+        top: -5px;
+        right: -5px;
+        min-width: 18px;
+        height: 18px;
+        padding: 0 5px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 2px solid #ffffff;
+        border-radius: 999px;
+        background: #dc2626;
+        color: #ffffff;
+        font-size: 9px;
+        font-weight: 700;
+    }
 
-.fieldplx-sidebar-brand {
-  min-width: 0;
-  display: flex !important;
-  align-items: center !important;
-  gap: 10px !important;
-  color: #fff !important;
-  text-decoration: none !important;
-}
+    .fieldplx-profile-button {
+        min-width: 0;
+        padding: 4px 8px 4px 5px;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        border: 1px solid var(--fieldplx-border);
+        border-radius: 11px;
+        background: #ffffff;
+        text-align: left;
+    }
 
-.fieldplx-sidebar-logo,
-.fieldplx-sidebar-logo-placeholder {
-  width: 40px !important;
-  height: 40px !important;
-  flex: 0 0 40px !important;
-  border-radius: 10px !important;
-}
+    .fieldplx-profile-button:hover {
+        border-color: #d8ccfb;
+        background: #faf8ff;
+    }
 
-.fieldplx-sidebar-logo { object-fit: contain; background: #fff !important; }
-.fieldplx-sidebar-logo-placeholder {
-  display: inline-flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  color: #fff !important;
-  background: linear-gradient(135deg, #8fd236, #68aa1d) !important;
-  font-size: 18px !important;
-  font-weight: 700 !important;
-}
+    .fieldplx-avatar {
+        width: 32px;
+        height: 32px;
+        flex: 0 0 32px;
+        overflow: hidden;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 9px;
+        background: linear-gradient(135deg, #7c3aed, #5b21b6);
+        color: #ffffff;
+        font-size: 11px;
+        font-weight: 700;
+    }
 
-.fieldplx-sidebar-brand-text { min-width: 0; display: block; }
-.fieldplx-sidebar-company-name {
-  max-width: 155px !important;
-  display: block;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  color: #fff !important;
-  font-size: 16px !important;
-  font-weight: 700 !important;
-}
-.fieldplx-sidebar-product-name {
-  margin-top: 1px;
-  display: block;
-  color: #9fda55 !important;
-  font-size: 9px !important;
-  font-weight: 600;
-  letter-spacing: .4px;
-  text-transform: uppercase;
-}
+    .fieldplx-avatar img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
 
-.fieldplx-sidebar-close {
-  width: 34px;
-  height: 34px;
-  margin-left: auto;
-  padding: 0;
-  display: none;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  border-radius: 8px;
-  color: rgba(255,255,255,.88);
-  background: rgba(255,255,255,.08);
-}
+    .fieldplx-profile-details {
+        max-width: 145px;
+        min-width: 0;
+    }
 
-.fieldplx-sidebar-body {
-  min-height: 0 !important;
-  flex: 1 1 auto !important;
-  overflow-x: hidden !important;
-  overflow-y: auto !important;
-  padding: 12px 14px !important;
-  scrollbar-width: none !important;
-}
-.fieldplx-sidebar-body::-webkit-scrollbar { display: none; }
-.fieldplx-sidebar-section-label {
-  margin: 7px 12px !important;
-  color: rgba(255, 255, 255, .5) !important;
-  font-size: 9px !important;
-  font-weight: 700;
-  letter-spacing: .65px;
-  text-transform: uppercase;
-}
-.fieldplx-sidebar-nav { display: flex; flex-direction: column; gap: 3px !important; }
-.fieldplx-sidebar-link {
-  width: 100%;
-  min-height: 46px !important;
-  margin-bottom: 3px !important;
-  padding: 0 14px !important;
-  display: flex !important;
-  align-items: center !important;
-  gap: 15px !important;
-  border: 0 !important;
-  border-radius: 9px !important;
-  color: rgba(255, 255, 255, .94) !important;
-  background: transparent !important;
-  text-align: left;
-  text-decoration: none !important;
-  font-family: inherit;
-  font-size: 14px !important;
-  font-weight: 600 !important;
-}
-.fieldplx-sidebar-link:hover { color: #fff !important; background: rgba(255,255,255,.08) !important; }
-.fieldplx-sidebar-link.active,
-.fieldplx-sidebar-menu.menu-open > .fieldplx-sidebar-link {
-  color: #fff !important;
-  background: linear-gradient(90deg, #7fc92d, #68aa1d) !important;
-  box-shadow: 0 6px 18px rgba(0,17,49,.28) !important;
-}
-.fieldplx-sidebar-link-icon {
-  width: 21px !important;
-  height: 21px !important;
-  flex: 0 0 21px !important;
-  display: inline-flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  font-size: 19px !important;
-}
-.fieldplx-sidebar-link-text {
-  min-width: 0;
-  flex: 1;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.fieldplx-sidebar-arrow {
-  margin-left: auto;
-  color: rgba(255,255,255,.65) !important;
-  font-size: 10px;
-  transition: transform .2s ease;
-}
-.fieldplx-sidebar-menu.menu-open .fieldplx-sidebar-arrow { transform: rotate(180deg); }
-.fieldplx-sidebar-submenu {
-  display: block;
-  max-height: 0;
-  overflow: hidden;
-  padding: 0 0 0 36px !important;
-  transition: max-height .25s ease, padding-top .25s ease, padding-bottom .25s ease;
-}
-.fieldplx-sidebar-menu.menu-open > .fieldplx-sidebar-submenu {
-  max-height: 680px;
-  padding-top: 4px !important;
-  padding-bottom: 5px !important;
-}
-.fieldplx-sidebar-sublink {
-  min-height: 34px !important;
-  padding: 7px 9px;
-  display: flex;
-  align-items: center;
-  border-radius: 7px;
-  color: rgba(255,255,255,.72) !important;
-  text-decoration: none;
-  font-size: 11px !important;
-  font-weight: 500;
-}
-.fieldplx-sidebar-sublink::before {
-  width: 5px;
-  height: 5px;
-  margin-right: 9px;
-  flex: 0 0 5px;
-  content: "";
-  border-radius: 50%;
-  background: rgba(255,255,255,.35) !important;
-}
-.fieldplx-sidebar-sublink:hover,
-.fieldplx-sidebar-sublink.active { color: #fff !important; background: rgba(255,255,255,.08) !important; }
-.fieldplx-sidebar-sublink.active::before { background: #9fda55 !important; }
+    .fieldplx-profile-name,
+    .fieldplx-profile-role {
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+    }
 
-.fieldplx-sidebar-footer {
-  flex: 0 0 auto !important;
-  padding: 10px 14px 14px !important;
-  border-top: 1px solid rgba(255,255,255,.08) !important;
-}
-.fieldplx-sidebar-user {
-  min-height: 62px;
-  padding: 8px;
-  display: flex !important;
-  align-items: center !important;
-  gap: 9px;
-  border-radius: 10px;
-  background: rgba(255,255,255,.08) !important;
-}
-.fieldplx-sidebar-user-avatar {
-  width: 38px !important;
-  height: 38px !important;
-  flex: 0 0 38px !important;
-  display: inline-flex !important;
-  align-items: center !important;
-  justify-content: center !important;
-  overflow: hidden;
-  border-radius: 50% !important;
-  color: var(--fd-navy) !important;
-  background: linear-gradient(135deg,#fff,#e8f3d9) !important;
-}
-.fieldplx-sidebar-user-avatar img { width: 100%; height: 100%; object-fit: cover; }
-.fieldplx-sidebar-user-details { min-width: 0; flex: 1; }
-.fieldplx-sidebar-user-name,
-.fieldplx-sidebar-user-role { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.fieldplx-sidebar-user-name { color: #fff !important; font-size: 12px !important; font-weight: 700; }
-.fieldplx-sidebar-user-role { margin-top: 1px; color: rgba(255,255,255,.6) !important; font-size: 9px !important; }
-.fieldplx-sidebar-logout {
-  width: 29px;
-  height: 29px;
-  flex: 0 0 29px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 8px;
-  color: rgba(255,255,255,.7) !important;
-  text-decoration: none;
-}
-.fieldplx-sidebar-logout:hover { color: #fff !important; background: rgba(228,91,102,.3) !important; }
-.fieldplx-sidebar-overlay { display: none; }
+    .fieldplx-profile-name {
+        color: #111827;
+        font-size: 11px;
+        font-weight: 700;
+    }
 
-body.fieldplx-sidebar-collapsed .fieldplx-sidebar-brand-text,
-body.fieldplx-sidebar-collapsed .fieldplx-sidebar-section-label,
-body.fieldplx-sidebar-collapsed .fieldplx-sidebar-link-text,
-body.fieldplx-sidebar-collapsed .fieldplx-sidebar-arrow,
-body.fieldplx-sidebar-collapsed .fieldplx-sidebar-submenu,
-body.fieldplx-sidebar-collapsed .fieldplx-sidebar-user-details,
-body.fieldplx-sidebar-collapsed .fieldplx-sidebar-logout { display: none; }
-body.fieldplx-sidebar-collapsed .fieldplx-sidebar-header { justify-content: center !important; padding-left: 8px !important; padding-right: 8px !important; }
-body.fieldplx-sidebar-collapsed .fieldplx-sidebar-link { justify-content: center !important; padding-left: 8px !important; padding-right: 8px !important; }
-body.fieldplx-sidebar-collapsed .fieldplx-sidebar-user { justify-content: center !important; padding-left: 5px !important; padding-right: 5px !important; }
+    .fieldplx-profile-role {
+        margin-top: 1px;
+        color: var(--fieldplx-muted);
+        font-size: 9px;
+    }
 
-/* =========================================================
-   Main content and footer
-   ========================================================= */
-.fieldplx-main-layout { display: block !important; min-height: calc(100vh - var(--fieldplx-topbar-height)) !important; }
-.fieldplx-main-content {
-  margin-left: var(--fieldplx-sidebar-width);
-  min-width: 0;
-  transition: margin-left .25s ease;
-}
-body.fieldplx-sidebar-collapsed .fieldplx-main-content { margin-left: var(--fieldplx-sidebar-collapsed-width); }
-.fieldplx-content-wrapper { padding: 0 !important; }
-.fieldplx-footer {
-  display: block !important;
-  min-height: 52px;
-  margin-left: var(--fieldplx-sidebar-width) !important;
-  border-top: 1px solid var(--fieldplx-border);
-  background: #fff;
-  transition: margin-left .22s ease, background-color .22s ease !important;
-}
-body.fieldplx-sidebar-collapsed .fieldplx-footer { margin-left: var(--fieldplx-sidebar-collapsed-width) !important; }
-.fieldplx-footer-inner {
-  min-height: 52px;
-  padding: 10px 18px;
-  display: flex;
-  align-items: center;
-  gap: 18px;
-  color: #6b7280;
-  font-size: 10px;
-}
-.fieldplx-footer-links { display: flex; align-items: center; gap: 8px; }
-.fieldplx-footer-links a { color: #6b7280; text-decoration: none; }
-.fieldplx-footer-links a:hover { color: var(--fieldplx-primary); }
-.fieldplx-footer-product { margin-left: auto; white-space: nowrap; color: #9ca3af; }
-.fieldplx-footer-product strong { color: var(--fieldplx-primary); font-weight: 700; }
+    .fieldplx-dropdown {
+        width: 340px;
+        max-width: calc(100vw - 24px);
+        padding: 0;
+        margin-top: 10px !important;
+        overflow: hidden;
+        border: 1px solid var(--fieldplx-border);
+        border-radius: 14px;
+        background: #ffffff;
+        box-shadow: 0 14px 34px rgba(31, 41, 55, 0.12);
+    }
 
-/* =========================================================
-   Reports page
-   ========================================================= */
-.fd-dashboard {
-  width: 100%;
-  max-width: 1600px;
-  margin: auto;
-  padding: 25px 27px 35px;
-}
-.fd-dashboard .row > * { min-width: 0; }
+    .fieldplx-dropdown-header {
+        min-height: 48px;
+        padding: 11px 16px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-bottom: 1px solid var(--fieldplx-border);
+        background: #ffffff;
+    }
 
-.fr-head {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 18px;
-  margin-bottom: 18px;
-}
-.fr-title { margin: 0 0 7px; color: var(--fd-text); font-size: 21px; line-height: 1.2; font-weight: 700; }
-.fr-sub { margin: 0; max-width: 820px; color: var(--fd-muted); font-size: 10.5px; line-height: 1.55; }
-.fr-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .fieldplx-dropdown-title {
+        margin: 0;
+        color: #111827;
+        font-size: 14px;
+        line-height: 1.2;
+        font-weight: 700;
+    }
 
-.fr-btn {
-  min-height: 39px;
-  padding: 0 13px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  border: 1px solid var(--fd-border);
-  border-radius: 8px;
-  color: #43546c;
-  background: #fff;
-  box-shadow: 0 4px 12px rgba(31,43,88,.04);
-  font-size: 10px;
-  font-weight: 600;
-  text-decoration: none;
-  cursor: pointer;
-  transition: border-color .16s ease, color .16s ease, background .16s ease, box-shadow .16s ease;
-}
-.fr-btn:hover { border-color: #cfe3ae; color: var(--fd-green-dark); background: #f9fcf4; }
-.fr-btn.primary {
-  border-color: var(--fd-green);
-  color: #fff;
-  background: linear-gradient(90deg,#7fc92d,#68aa1d);
-  box-shadow: 0 7px 16px rgba(104,170,29,.18);
-}
-.fr-btn.primary:hover { color: #fff; background: linear-gradient(90deg,#74b824,#5d971b); }
+    .fieldplx-notification-item {
+        padding: 11px 14px;
+        display: flex;
+        gap: 10px;
+        border-bottom: 1px solid #f1f2f4;
+        color: inherit;
+        text-decoration: none;
+    }
 
-.fr-filter-card,
-.fr-card {
-  border: 1px solid var(--fd-border);
-  border-radius: 12px;
-  background: #fff;
-  box-shadow: 0 3px 12px rgba(24,45,76,.035);
-}
-.fr-filter-card { padding: 13px 14px; margin-bottom: 16px; }
-.fr-filter { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
-.fr-field { min-width: 160px; }
-.fr-field label {
-  display: block;
-  margin-bottom: 6px;
-  color: #506784;
-  font-size: 9px;
-  line-height: 1.2;
-  font-weight: 600;
-  text-transform: uppercase;
-}
-.fr-input {
-  width: 100%;
-  height: 39px;
-  padding: 8px 10px;
-  border: 1px solid #dde4ec;
-  border-radius: 8px;
-  color: #33445f;
-  background: #fff;
-  font-size: 10px;
-  outline: 0;
-}
-.fr-input:focus { border-color: #a9cf75; box-shadow: 0 0 0 3px rgba(116,184,36,.11); }
-.fr-input:disabled { color: #8490a0; background: #f6f8fa; cursor: not-allowed; }
-.fr-filter-spacer { margin-left: auto; }
+    .fieldplx-notification-item:hover {
+        background: #faf8ff;
+    }
 
-.fr-summary { margin-bottom: 16px; }
-.fr-stat {
-  height: 100%;
-  min-height: 112px;
-  padding: 18px 20px;
-  border: 1px solid #dfe6ef;
-  border-radius: 12px;
-  background: #fff;
-  box-shadow: 0 3px 12px rgba(24,45,76,.035);
-}
-.fr-stat-row { min-height: 72px; display: flex; align-items: center; gap: 18px; }
-.fr-stat-row > div { min-width: 0; }
-.fr-stat-icon {
-  width: 58px;
-  height: 58px;
-  flex: 0 0 58px;
-  display: grid;
-  place-items: center;
-  border-radius: 16px;
-  color: #fff;
-  background: #123f73;
-  font-size: 25px;
-}
-.fr-stat-icon i { line-height: 1; }
-.fr-stat-label { display: block; margin-bottom: 8px; color: #506784; font-size: 13px; line-height: 1.2; font-weight: 400; }
-.fr-stat-value {
-  display: block;
-  max-width: 100%;
-  overflow: hidden;
-  color: #020b16;
-  font-size: 27px;
-  line-height: 1.05;
-  font-weight: 700;
-  letter-spacing: -.35px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.fr-stat-note { display: block; margin-top: 7px; color: #8a96a7; font-size: 8.5px; line-height: 1.35; }
+    .fieldplx-notification-item.is-unread {
+        background: #fbf9ff;
+    }
 
-.fr-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; margin-bottom: 16px; }
-.fr-card { min-width: 0; overflow: hidden; }
-.fr-card-head {
-  min-height: 54px;
-  padding: 13px 15px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  border-bottom: 1px solid var(--fd-border);
-  background: #fbfcfd;
-}
-.fr-card-head > div { min-width: 0; }
-.fr-card-head h2 { margin: 0; color: var(--fd-text); font-size: 13px; line-height: 1.25; font-weight: 700; }
-.fr-card-head p { margin: 3px 0 0; color: var(--fd-muted); font-size: 9px; line-height: 1.35; }
-.fr-card-head > i { flex: 0 0 auto; color: var(--fd-green-dark) !important; font-size: 16px; }
-.fr-card-body { padding: 14px; }
+    .fieldplx-notification-icon {
+        width: 32px;
+        height: 32px;
+        flex: 0 0 32px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 9px;
+        background: #f3e8ff;
+        color: #7c3aed;
+        font-size: 14px;
+    }
 
-.fr-status-list { display: flex; flex-direction: column; gap: 8px; }
-.fr-status-row {
-  min-height: 42px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 9px 10px;
-  border: 1px solid #eef1f5;
-  border-radius: 8px;
-  background: #fff;
-}
-.fr-status-row:hover { border-color: #e2e8ef; background: #fbfcfd; }
-.fr-status-dot { width: 8px; height: 8px; flex: 0 0 8px; border-radius: 50%; background: var(--fd-green); }
-.fr-status-name { min-width: 0; flex: 1; overflow: hidden; color: #33445f; font-size: 10px; text-transform: capitalize; text-overflow: ellipsis; white-space: nowrap; }
-.fr-status-count { color: var(--fd-navy); font-size: 10px; font-weight: 700; }
-.fr-status-amount { min-width: 90px; text-align: right; color: #6f7b90; font-size: 9px; }
+    .fieldplx-notification-content {
+        min-width: 0;
+    }
 
-.fr-table-wrap {
-  width: 100%;
-  overflow-x: auto;
-  overflow-y: hidden;
-  scrollbar-width: thin;
-  scrollbar-color: #9aa0a6 transparent;
-}
-.fr-table-wrap::-webkit-scrollbar { height: 3px; }
-.fr-table-wrap::-webkit-scrollbar-track { background: transparent; }
-.fr-table-wrap::-webkit-scrollbar-thumb { border-radius: 999px; background: #9aa0a6; }
-.fr-table { width: 100%; min-width: 780px; margin: 0; border-collapse: collapse; white-space: nowrap; }
-.fr-table th {
-  padding: 11px 12px;
-  border-bottom: 1px solid var(--fd-border);
-  color: #65738a;
-  background: #f8fafc;
-  font-size: 9px;
-  font-weight: 600;
-  text-align: left;
-  text-transform: uppercase;
-}
-.fr-table td {
-  padding: 12px;
-  border-bottom: 1px solid #f1f3f7;
-  color: #33445f;
-  font-size: 9.5px;
-  vertical-align: middle;
-}
-.fr-table tbody tr:last-child td { border-bottom: 0; }
-.fr-table tbody tr:hover { background: #fbfcfa; }
-.fr-name { display: block; color: var(--fd-text); font-weight: 700; }
-.fr-muted { display: block; margin-top: 2px; color: #8d98a8; font-size: 8.5px; }
-.fr-badge {
-  display: inline-flex;
-  align-items: center;
-  padding: 5px 7px;
-  border-radius: 5px;
-  color: #5d971b;
-  background: #f0f8e5;
-  font-size: 8.5px;
-  font-weight: 600;
-  text-transform: capitalize;
-}
-.fr-badge.blue { color: #123d70; background: #edf2f7; }
-.fr-badge.gray { color: #6f7b90; background: #eef2f6; }
-.fr-empty { padding: 28px 18px !important; color: #9aa4b3 !important; text-align: center !important; font-size: 10px !important; }
-.fr-section-gap { margin-top: 16px; }
+    .fieldplx-notification-title {
+        margin: 0;
+        color: #111827;
+        font-size: 11px;
+        font-weight: 700;
+    }
 
-/* =========================================================
-   Responsive shell and reports
-   ========================================================= */
-@media (max-width: 991.98px) {
-  html, body { overflow-x: hidden !important; }
-  body.fieldplx-sidebar-mobile-open { overflow: hidden !important; }
+    .fieldplx-notification-message {
+        margin-top: 3px;
+        overflow: hidden;
+        display: -webkit-box;
+        color: var(--fieldplx-muted);
+        font-size: 10px;
+        line-height: 1.45;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+    }
 
-  .fieldplx-topbar,
-  body.fieldplx-sidebar-collapsed .fieldplx-topbar {
-    margin-left: 0 !important;
-    width: 100% !important;
-  }
+    .fieldplx-notification-time {
+        margin-top: 4px;
+        color: #9ca3af;
+        font-size: 9px;
+    }
 
-  .fieldplx-main-content,
-  body.fieldplx-sidebar-collapsed .fieldplx-main-content {
-    margin-left: 0 !important;
-    width: 100% !important;
-  }
+    .fieldplx-empty-notifications {
+        min-height: 155px;
+        padding: 28px 18px 24px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        color: #718096;
+        background: #ffffff;
+        font-size: 13px;
+        line-height: 1.45;
+    }
 
-  .fieldplx-footer,
-  body.fieldplx-sidebar-collapsed .fieldplx-footer { margin-left: 0 !important; }
+    .fieldplx-empty-notifications i {
+        display: block;
+        margin-bottom: 10px;
+        color: #b9a8ff;
+        font-size: 30px;
+        line-height: 1;
+    }
 
-  .fieldplx-sidebar,
-  body.fieldplx-sidebar-collapsed .fieldplx-sidebar {
-    width: min(300px, calc(100vw - 52px)) !important;
-    min-width: 0 !important;
-    max-width: 300px !important;
-    height: 100vh !important;
-    height: 100dvh !important;
-    position: fixed !important;
-    top: 0 !important;
-    bottom: 0 !important;
-    left: 0 !important;
-    z-index: 1060 !important;
-    display: flex !important;
-    flex-direction: column !important;
-    overflow: hidden !important;
-    visibility: hidden !important;
-    transform: translate3d(-100%,0,0) !important;
-    border-right: 0 !important;
-    box-shadow: none !important;
-    filter: none !important;
-    transition: transform .25s ease, visibility .25s ease !important;
-    will-change: transform;
-  }
+    .fieldplx-dropdown-footer {
+        min-height: 44px;
+        padding: 10px 14px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-top: 1px solid var(--fieldplx-border);
+        text-align: center;
+        background: #ffffff;
+    }
 
-  body.fieldplx-sidebar-mobile-open .fieldplx-sidebar,
-  body.fieldplx-sidebar-mobile-open.fieldplx-sidebar-collapsed .fieldplx-sidebar {
-    visibility: visible !important;
-    transform: translate3d(0,0,0) !important;
-  }
+    .fieldplx-dropdown-footer a {
+        color: var(--fieldplx-primary);
+        font-size: 11px;
+        font-weight: 700;
+        text-decoration: none;
+    }
 
-  .fieldplx-sidebar-header,
-  body.fieldplx-sidebar-collapsed .fieldplx-sidebar-header {
-    flex: 0 0 auto !important;
-    justify-content: flex-start !important;
-    padding-left: 14px !important;
-    padding-right: 10px !important;
-  }
+    .fieldplx-dropdown-footer a:hover {
+        text-decoration: underline;
+    }
 
-  .fieldplx-sidebar-close {
-    display: inline-flex !important;
-    align-items: center !important;
-    justify-content: center !important;
-  }
+    .fieldplx-profile-menu {
+        width: 230px;
+        padding: 7px;
+        border: 1px solid var(--fieldplx-border);
+        border-radius: 12px;
+        box-shadow: 0 18px 50px rgba(31, 41, 55, 0.13);
+    }
 
-  .fieldplx-sidebar-body {
-    min-height: 0 !important;
-    flex: 1 1 auto !important;
-    overflow-x: hidden !important;
-    overflow-y: auto !important;
-    overscroll-behavior: contain;
-    -webkit-overflow-scrolling: touch;
-  }
-  .fieldplx-sidebar-footer { flex: 0 0 auto !important; }
+    .fieldplx-profile-menu-header {
+        padding: 9px 10px 11px;
+        border-bottom: 1px solid #f0f1f3;
+    }
 
-  .fieldplx-sidebar-brand-text,
-  body.fieldplx-sidebar-collapsed .fieldplx-sidebar-brand-text,
-  .fieldplx-sidebar-section-label,
-  body.fieldplx-sidebar-collapsed .fieldplx-sidebar-section-label,
-  .fieldplx-sidebar-link-text,
-  body.fieldplx-sidebar-collapsed .fieldplx-sidebar-link-text,
-  .fieldplx-sidebar-user-details,
-  body.fieldplx-sidebar-collapsed .fieldplx-sidebar-user-details { display: block !important; }
+    .fieldplx-profile-menu-name {
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        color: #111827;
+        font-size: 12px;
+        font-weight: 700;
+    }
 
-  .fieldplx-sidebar-arrow,
-  body.fieldplx-sidebar-collapsed .fieldplx-sidebar-arrow,
-  .fieldplx-sidebar-logout,
-  body.fieldplx-sidebar-collapsed .fieldplx-sidebar-logout { display: inline-flex !important; }
+    .fieldplx-profile-menu-email {
+        margin-top: 2px;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        color: var(--fieldplx-muted);
+        font-size: 10px;
+    }
 
-  body.fieldplx-sidebar-collapsed .fieldplx-sidebar-link,
-  body.fieldplx-sidebar-collapsed .fieldplx-sidebar-user { justify-content: flex-start !important; }
+    .fieldplx-profile-menu .dropdown-item {
+        padding: 9px 10px;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        border-radius: 8px;
+        color: #374151;
+        font-size: 11px;
+    }
 
-  .fieldplx-sidebar-submenu,
-  body.fieldplx-sidebar-collapsed .fieldplx-sidebar-submenu {
-    display: block !important;
-    max-height: 0 !important;
-    overflow: hidden !important;
-    padding-top: 0 !important;
-    padding-bottom: 0 !important;
-    transition: max-height .25s ease, padding-top .25s ease, padding-bottom .25s ease !important;
-  }
-  .fieldplx-sidebar-menu.menu-open > .fieldplx-sidebar-submenu,
-  body.fieldplx-sidebar-collapsed .fieldplx-sidebar-menu.menu-open > .fieldplx-sidebar-submenu {
-    display: block !important;
-    max-height: 680px !important;
-    padding-top: 4px !important;
-    padding-bottom: 5px !important;
-  }
+    .fieldplx-profile-menu .dropdown-item:hover {
+        color: var(--fieldplx-primary);
+        background: #faf8ff;
+    }
 
-  .fieldplx-sidebar-overlay {
-    position: fixed !important;
-    inset: 0 !important;
-    z-index: 1055 !important;
-    display: block !important;
-    visibility: hidden !important;
-    opacity: 0 !important;
-    pointer-events: none !important;
-    background: rgba(0,17,49,.48) !important;
-    transition: opacity .25s ease, visibility .25s ease !important;
-  }
-  body.fieldplx-sidebar-mobile-open .fieldplx-sidebar-overlay {
-    visibility: visible !important;
-    opacity: 1 !important;
-    pointer-events: auto !important;
-  }
+    .fieldplx-profile-menu .dropdown-item.text-danger:hover {
+        color: #b91c1c !important;
+        background: #fff5f5;
+    }
 
-  .fieldplx-brand-mobile { display: flex !important; }
-  .fieldplx-page-heading { display: none !important; }
-  .fieldplx-profile-details { display: none; }
-  .fr-grid { grid-template-columns: 1fr; }
-}
+    .fieldplx-main-layout {
+        display: flex;
+        min-height: calc(100vh - var(--fieldplx-topbar-height));
+    }
 
-@media (max-width: 767.98px) {
-  :root { --fieldplx-topbar-height: 64px; }
-  .fieldplx-topbar,
-  .fieldplx-topbar-inner { min-height: 64px !important; }
-  .fieldplx-topbar-inner { padding: 0 13px !important; gap: 8px !important; }
-  .fieldplx-search-wrap { display: none !important; }
-  .fieldplx-dropdown { width: min(330px, calc(100vw - 22px)); }
+    .fieldplx-main-content {
+        min-width: 0;
+        flex: 1;
+    }
 
-  .fd-dashboard { padding: 17px 13px 28px; }
-  .fr-head { flex-direction: column; gap: 13px; }
-  .fr-title { font-size: 19px; }
-  .fr-sub { max-width: 100%; font-size: 10.5px; }
-  .fr-actions { width: 100%; }
-  .fr-actions .fr-btn { flex: 1; }
+    .fieldplx-content-wrapper {
+        padding: 18px;
+    }
 
-  .fr-filter { align-items: stretch; }
-  .fr-field { width: 100%; min-width: 0; }
-  .fr-filter-spacer { display: none; }
-  .fr-filter .fr-btn { flex: 1; }
+    @media (max-width: 991.98px) {
+        .fieldplx-brand-mobile {
+            display: flex;
+        }
 
-  .fr-stat { min-height: 102px; padding: 15px 17px; }
-  .fr-stat-row { min-height: 66px; gap: 15px; }
-  .fr-stat-icon { width: 54px; height: 54px; flex-basis: 54px; border-radius: 15px; font-size: 23px; }
-  .fr-stat-value { font-size: 24px; }
-  .fr-card-head { align-items: flex-start; }
-  .fr-card-head .fr-btn { min-height: 34px; padding: 0 10px; }
+        .fieldplx-page-heading {
+            display: none;
+        }
 
-  .fieldplx-footer-inner { padding: 12px; flex-wrap: wrap; justify-content: center; gap: 7px 14px; text-align: center; }
-  .fieldplx-footer-product { width: 100%; margin-left: 0; }
-}
+        .fieldplx-search-wrap {
+            margin-left: auto;
+            width: min(280px, 40vw);
+        }
 
-@media (max-width: 575.98px) {
-  .fieldplx-sidebar,
-  body.fieldplx-sidebar-collapsed .fieldplx-sidebar { width: min(288px, calc(100vw - 44px)) !important; }
-  .fieldplx-sidebar-body { padding-left: 10px !important; padding-right: 10px !important; }
-  .fieldplx-sidebar-link { min-height: 43px !important; padding-left: 12px !important; padding-right: 12px !important; gap: 12px !important; font-size: 13px !important; }
-  .fieldplx-sidebar-submenu { padding-left: 31px !important; }
-  .fieldplx-sidebar-sublink { min-height: 33px !important; font-size: 11px !important; }
+        .fieldplx-profile-details {
+            display: none;
+        }
 
-  .fr-status-row { gap: 8px; }
-  .fr-status-amount { min-width: 74px; }
-  .fr-card-head { padding: 12px; }
-  .fr-card-body { padding: 12px; }
-}
+        .fieldplx-profile-button {
+            padding-right: 5px;
+        }
+    }
+
+    @media (max-width: 767.98px) {
+        .fieldplx-topbar-inner {
+            gap: 8px;
+            padding: 8px 11px;
+        }
+
+        .fieldplx-brand-name {
+            display: none;
+        }
+
+        .fieldplx-search-wrap {
+            display: none;
+        }
+
+        .fieldplx-topbar-spacer {
+            margin-left: auto;
+        }
+
+        .fieldplx-dropdown {
+            width: min(330px, calc(100vw - 22px));
+        }
+
+        .fieldplx-content-wrapper {
+            padding: 12px;
+        }
+    }
+
+    :root {
+        --fieldplx-sidebar-width: 246px;
+        --fieldplx-sidebar-collapsed-width: 72px;
+    }
+
+    .fieldplx-sidebar {
+        width: var(--fieldplx-sidebar-width);
+        min-width: var(--fieldplx-sidebar-width);
+        height: calc(100vh - var(--fieldplx-topbar-height));
+        position: sticky;
+        top: var(--fieldplx-topbar-height);
+        z-index: 1020;
+        display: flex;
+        flex-direction: column;
+        background: #ffffff;
+        border-right: 1px solid var(--fieldplx-border);
+        transition:
+            width 0.22s ease,
+            min-width 0.22s ease,
+            transform 0.22s ease;
+    }
+
+    .fieldplx-sidebar-header {
+        min-height: 64px;
+        padding: 10px 13px;
+        display: flex;
+        align-items: center;
+        border-bottom: 1px solid #f0f1f3;
+    }
+
+    .fieldplx-sidebar-brand {
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: #111827;
+        text-decoration: none;
+    }
+
+    .fieldplx-sidebar-logo,
+    .fieldplx-sidebar-logo-placeholder {
+        width: 38px;
+        height: 38px;
+        flex: 0 0 38px;
+        border-radius: 10px;
+    }
+
+    .fieldplx-sidebar-logo {
+        object-fit: contain;
+        background: #f7f4ff;
+    }
+
+    .fieldplx-sidebar-logo-placeholder {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: linear-gradient(135deg, #7c3aed, #5b21b6);
+        color: #ffffff;
+        font-size: 16px;
+        font-weight: 700;
+    }
+
+    .fieldplx-sidebar-brand-text {
+        min-width: 0;
+        display: block;
+    }
+
+    .fieldplx-sidebar-company-name {
+        max-width: 160px;
+        display: block;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        font-size: 12px;
+        font-weight: 700;
+    }
+
+    .fieldplx-sidebar-product-name {
+        margin-top: 1px;
+        display: block;
+        color: #8b5cf6;
+        font-size: 9px;
+        font-weight: 600;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+    }
+
+    .fieldplx-sidebar-close {
+        width: 32px;
+        height: 32px;
+        margin-left: auto;
+        padding: 0;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: #6b7280;
+        font-size: 16px;
+    }
+
+    .fieldplx-sidebar-body {
+        flex: 1;
+        overflow-y: auto;
+        overflow-x: hidden;
+        padding: 12px 9px;
+        scrollbar-width: thin;
+        scrollbar-color: #d8d4e5 transparent;
+    }
+
+    .fieldplx-sidebar-section-label {
+        margin: 4px 10px 7px;
+        color: #9ca3af;
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.65px;
+        text-transform: uppercase;
+    }
+
+    .fieldplx-sidebar-nav {
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+    }
+
+    .fieldplx-sidebar-link {
+        width: 100%;
+        min-height: 39px;
+        padding: 8px 10px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        border: 0;
+        border-radius: 9px;
+        background: transparent;
+        color: #4b5563;
+        text-align: left;
+        text-decoration: none;
+        font-family: inherit;
+        font-size: 11px;
+        font-weight: 500;
+        transition:
+            color 0.16s ease,
+            background 0.16s ease;
+    }
+
+    .fieldplx-sidebar-link:hover {
+        background: #f8f6ff;
+        color: #6d28d9;
+    }
+
+    .fieldplx-sidebar-link.active {
+        background: #f0ebff;
+        color: #6d28d9;
+        font-weight: 700;
+    }
+
+    .fieldplx-sidebar-link-icon {
+        width: 20px;
+        height: 20px;
+        flex: 0 0 20px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 15px;
+    }
+
+    .fieldplx-sidebar-link-text {
+        min-width: 0;
+        flex: 1;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+    }
+
+    .fieldplx-sidebar-arrow {
+        margin-left: auto;
+        color: #9ca3af;
+        font-size: 10px;
+        transition: transform 0.2s ease;
+    }
+
+    .fieldplx-sidebar-menu.menu-open .fieldplx-sidebar-arrow {
+        transform: rotate(180deg);
+    }
+
+    .fieldplx-sidebar-submenu {
+        max-height: 0;
+        overflow: hidden;
+        padding-left: 39px;
+        transition: max-height 0.25s ease;
+    }
+
+    .fieldplx-sidebar-menu.menu-open .fieldplx-sidebar-submenu {
+        max-height: 520px;
+        padding-top: 3px;
+        padding-bottom: 3px;
+    }
+
+    .fieldplx-sidebar-sublink {
+        min-height: 31px;
+        padding: 7px 9px;
+        position: relative;
+        display: flex;
+        align-items: center;
+        border-radius: 7px;
+        color: #6b7280;
+        text-decoration: none;
+        font-size: 10px;
+        font-weight: 500;
+    }
+
+    .fieldplx-sidebar-sublink::before {
+        width: 5px;
+        height: 5px;
+        margin-right: 9px;
+        flex: 0 0 5px;
+        content: "";
+        border-radius: 50%;
+        background: #d1d5db;
+    }
+
+    .fieldplx-sidebar-sublink:hover {
+        background: #faf8ff;
+        color: #6d28d9;
+    }
+
+    .fieldplx-sidebar-sublink.active {
+        background: #f7f3ff;
+        color: #6d28d9;
+        font-weight: 700;
+    }
+
+    .fieldplx-sidebar-sublink.active::before {
+        background: #7c3aed;
+    }
+
+    .fieldplx-sidebar-empty {
+        margin: 8px 10px 14px;
+        padding: 14px 12px;
+        display: grid;
+        justify-items: center;
+        gap: 7px;
+        border: 1px dashed #ddd6fe;
+        border-radius: 10px;
+        background: #faf8ff;
+        color: #7c3aed;
+        font-size: 9px;
+        line-height: 1.5;
+        text-align: center;
+    }
+
+    .fieldplx-sidebar-empty i {
+        font-size: 17px;
+    }
+
+    .fieldplx-sidebar-footer {
+        padding: 10px;
+        border-top: 1px solid #f0f1f3;
+    }
+
+    .fieldplx-sidebar-user {
+        padding: 8px;
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        border-radius: 10px;
+        background: #fafafa;
+    }
+
+    .fieldplx-sidebar-user-avatar {
+        width: 31px;
+        height: 31px;
+        flex: 0 0 31px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 9px;
+        background: linear-gradient(135deg, #7c3aed, #5b21b6);
+        color: #ffffff;
+        font-size: 11px;
+        font-weight: 700;
+    }
+
+    .fieldplx-sidebar-user-details {
+        min-width: 0;
+        flex: 1;
+    }
+
+    .fieldplx-sidebar-user-name,
+    .fieldplx-sidebar-user-role {
+        display: block;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+    }
+
+    .fieldplx-sidebar-user-name {
+        color: #111827;
+        font-size: 10px;
+        font-weight: 700;
+    }
+
+    .fieldplx-sidebar-user-role {
+        margin-top: 1px;
+        color: #9ca3af;
+        font-size: 8px;
+    }
+
+    .fieldplx-sidebar-logout {
+        width: 29px;
+        height: 29px;
+        flex: 0 0 29px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 8px;
+        color: #9ca3af;
+        text-decoration: none;
+        font-size: 14px;
+    }
+
+    .fieldplx-sidebar-logout:hover {
+        background: #fee2e2;
+        color: #dc2626;
+    }
+
+    .fieldplx-sidebar-overlay {
+        display: none;
+    }
+
+    body.fieldplx-sidebar-collapsed .fieldplx-sidebar {
+        width: var(--fieldplx-sidebar-collapsed-width);
+        min-width: var(--fieldplx-sidebar-collapsed-width);
+    }
+
+    body.fieldplx-sidebar-collapsed .fieldplx-sidebar-brand-text,
+    body.fieldplx-sidebar-collapsed .fieldplx-sidebar-section-label,
+    body.fieldplx-sidebar-collapsed .fieldplx-sidebar-link-text,
+    body.fieldplx-sidebar-collapsed .fieldplx-sidebar-arrow,
+    body.fieldplx-sidebar-collapsed .fieldplx-sidebar-submenu,
+    body.fieldplx-sidebar-collapsed .fieldplx-sidebar-user-details,
+    body.fieldplx-sidebar-collapsed .fieldplx-sidebar-logout {
+        display: none;
+    }
+
+    body.fieldplx-sidebar-collapsed .fieldplx-sidebar-header {
+        justify-content: center;
+        padding-left: 8px;
+        padding-right: 8px;
+    }
+
+    body.fieldplx-sidebar-collapsed .fieldplx-sidebar-link {
+        justify-content: center;
+        padding-left: 8px;
+        padding-right: 8px;
+    }
+
+    body.fieldplx-sidebar-collapsed .fieldplx-sidebar-user {
+        justify-content: center;
+        padding-left: 5px;
+        padding-right: 5px;
+    }
+
+    @media (max-width: 991.98px) {
+        .fieldplx-sidebar {
+            width: 260px;
+            min-width: 260px;
+            height: 100vh;
+            position: fixed;
+            top: 0;
+            left: 0;
+            z-index: 1050;
+            transform: translateX(-100%);
+            box-shadow: none;
+        }
+
+        body.fieldplx-sidebar-mobile-open .fieldplx-sidebar {
+            transform: translateX(0);
+        }
+
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar {
+            width: 260px;
+            min-width: 260px;
+        }
+
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-brand-text,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-section-label,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-link-text,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-arrow,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-user-details,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-logout {
+            display: block;
+        }
+
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-submenu {
+            display: block;
+        }
+
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-header,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-link,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-user {
+            justify-content: initial;
+        }
+
+        .fieldplx-sidebar-close {
+            display: inline-flex;
+        }
+
+        .fieldplx-sidebar-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 1040;
+            display: block;
+            visibility: hidden;
+            background: rgba(17, 24, 39, 0.42);
+            opacity: 0;
+            transition:
+                opacity 0.2s ease,
+                visibility 0.2s ease;
+        }
+
+        body.fieldplx-sidebar-mobile-open .fieldplx-sidebar-overlay {
+            visibility: visible;
+            opacity: 1;
+        }
+    }
+
+    .fieldplx-fallback-sidebar {
+        width: 236px;
+        min-width: 236px;
+        height: calc(100vh - var(--fieldplx-topbar-height));
+        position: sticky;
+        top: var(--fieldplx-topbar-height);
+        z-index: 1020;
+        display: flex;
+        flex-direction: column;
+        border-right: 1px solid var(--fieldplx-border);
+        background: #ffffff;
+    }
+
+    .fieldplx-fallback-brand {
+        min-height: 62px;
+        padding: 11px 13px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        border-bottom: 1px solid #f1f5f9;
+    }
+
+    .fieldplx-fallback-logo {
+        width: 37px;
+        height: 37px;
+        flex: 0 0 37px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 10px;
+        background: linear-gradient(135deg, #7c3aed, #5b21b6);
+        color: #ffffff;
+        font-size: 14px;
+        font-weight: 700;
+    }
+
+    .fieldplx-fallback-brand-text {
+        min-width: 0;
+    }
+
+    .fieldplx-fallback-brand-text strong,
+    .fieldplx-fallback-brand-text small {
+        display: block;
+    }
+
+    .fieldplx-fallback-brand-text strong {
+        max-width: 155px;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        color: #111827;
+        font-size: 11px;
+    }
+
+    .fieldplx-fallback-brand-text small {
+        margin-top: 2px;
+        color: #8b5cf6;
+        font-size: 8px;
+        font-weight: 700;
+        letter-spacing: 0.4px;
+        text-transform: uppercase;
+    }
+
+    .fieldplx-fallback-nav {
+        flex: 1;
+        overflow-y: auto;
+        padding: 10px 8px;
+    }
+
+    .fieldplx-fallback-nav a,
+    .fieldplx-fallback-footer a {
+        min-height: 38px;
+        padding: 8px 10px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        border-radius: 9px;
+        color: #4b5563;
+        font-size: 10px;
+        font-weight: 600;
+        text-decoration: none;
+    }
+
+    .fieldplx-fallback-nav a:hover,
+    .fieldplx-fallback-nav a.active {
+        background: #f0ebff;
+        color: #6d28d9;
+    }
+
+    .fieldplx-fallback-nav i,
+    .fieldplx-fallback-footer i {
+        width: 19px;
+        flex: 0 0 19px;
+        font-size: 14px;
+        text-align: center;
+    }
+
+    .fieldplx-fallback-footer {
+        padding: 10px;
+        border-top: 1px solid #f1f5f9;
+    }
+
+    .fieldplx-fallback-footer a:hover {
+        background: #fef2f2;
+        color: #dc2626;
+    }
+
+    @media (max-width: 991.98px) {
+        .fieldplx-fallback-sidebar {
+            display: none;
+        }
+    }
+    :root {
+        --fieldplx-primary: #74b824;
+        --fieldplx-primary-dark: #5d971b;
+        --fieldplx-text: #0b1933;
+        --fieldplx-muted: #6f7b90;
+        --fieldplx-border: #e5eaf1;
+        --fieldplx-surface: #ffffff;
+        --fieldplx-background: #f6f8fb;
+        --fieldplx-topbar-height: 70px;
+        --fieldplx-sidebar-width: 250px;
+        --fieldplx-sidebar-collapsed-width: 78px;
+        --fd-navy: #001131;
+        --fd-navy-light: #071f49;
+        --fd-blue: #123d70;
+        --fd-green: #74b824;
+        --fd-green-dark: #5d971b;
+        --fd-green-soft: #f0f8e5;
+        --fd-orange: #96c945;
+        --fd-red: #e45b66;
+        --fd-bg: #f6f8fb;
+        --fd-text: #0b1933;
+        --fd-muted: #6f7b90;
+        --fd-border: #e5eaf1;
+    }
+
+    body {
+        background: var(--fd-bg) !important;
+        color: var(--fd-text);
+        font-family: Arial, Helvetica, sans-serif !important;
+        font-size: 14px;
+    }
+
+    .fieldplx-topbar {
+        min-height: 70px !important;
+        margin-left: var(--fieldplx-sidebar-width);
+        width: calc(100% - var(--fieldplx-sidebar-width));
+        background: #fff !important;
+        border-bottom: 1px solid var(--fd-border) !important;
+        box-shadow: 0 3px 14px rgba(0, 17, 49, 0.035);
+        backdrop-filter: none !important;
+        transition:
+            margin-left 0.25s ease,
+            width 0.25s ease;
+    }
+
+    body.fieldplx-sidebar-collapsed .fieldplx-topbar {
+        margin-left: var(--fieldplx-sidebar-collapsed-width);
+        width: calc(100% - var(--fieldplx-sidebar-collapsed-width));
+    }
+
+    .fieldplx-topbar-inner {
+        min-height: 70px !important;
+        padding: 0 27px !important;
+        gap: 13px !important;
+    }
+
+    .fieldplx-page-heading {
+        display: none !important;
+    }
+
+    .fieldplx-menu-toggle,
+    .fieldplx-topbar-action {
+        width: 41px !important;
+        height: 41px !important;
+        border: 0 !important;
+        border-radius: 9px !important;
+        color: var(--fd-navy) !important;
+        background: transparent !important;
+    }
+
+    .fieldplx-menu-toggle:hover,
+    .fieldplx-topbar-action:hover {
+        color: var(--fd-navy) !important;
+        background: var(--fd-green-soft) !important;
+    }
+
+    .fieldplx-search-wrap {
+        width: 280px !important;
+        margin-left: auto;
+    }
+
+    .fieldplx-search-input {
+        height: 41px !important;
+        padding-left: 38px !important;
+        border: 0 !important;
+        border-radius: 8px !important;
+        background: #f5f8fb !important;
+        color: var(--fd-text) !important;
+        font-size: 12px !important;
+    }
+
+    .fieldplx-search-input:focus {
+        background: #f5f8fb !important;
+        box-shadow: 0 0 0 3px rgba(116, 184, 36, 0.14) !important;
+    }
+
+    .fieldplx-profile-button {
+        padding: 2px !important;
+        border: 0 !important;
+        border-radius: 9px !important;
+        background: transparent !important;
+    }
+
+    .fieldplx-profile-button:hover {
+        background: var(--fd-green-soft) !important;
+    }
+
+    .fieldplx-avatar {
+        width: 38px !important;
+        height: 38px !important;
+        flex: 0 0 38px !important;
+        border-radius: 50% !important;
+        border: 0 !important;
+        color: var(--fd-navy) !important;
+        background: linear-gradient(135deg, #fff, #e8f3d9) !important;
+        font-size: 12px !important;
+        font-weight: 800 !important;
+    }
+
+    .fieldplx-profile-name {
+        font-size: 12px !important;
+    }
+
+    .fieldplx-profile-role {
+        color: var(--fd-muted) !important;
+        font-size: 10px !important;
+    }
+
+    .fieldplx-notification-count {
+        background: var(--fd-red) !important;
+    }
+
+    .fieldplx-dropdown,
+    .fieldplx-profile-menu {
+        border-color: var(--fd-border) !important;
+        box-shadow: 0 18px 45px rgba(29, 38, 74, 0.14) !important;
+    }
+
+    .fieldplx-dropdown-footer a,
+    .fieldplx-profile-menu .dropdown-item:hover {
+        color: var(--fd-green-dark) !important;
+    }
+
+    .fieldplx-sidebar {
+        width: var(--fieldplx-sidebar-width) !important;
+        min-width: var(--fieldplx-sidebar-width) !important;
+        height: 100vh !important;
+        position: fixed !important;
+        top: 0 !important;
+        left: 0 !important;
+        z-index: 1045 !important;
+        color: #fff !important;
+        background: linear-gradient(180deg,
+                var(--fd-navy-light),
+                var(--fd-navy)) !important;
+
+        border-right: 0 !important;
+        transition:
+            width 0.25s ease,
+            min-width 0.25s ease,
+            transform 0.25s ease !important;
+    }
+
+    body.fieldplx-sidebar-collapsed .fieldplx-sidebar {
+        width: var(--fieldplx-sidebar-collapsed-width) !important;
+        min-width: var(--fieldplx-sidebar-collapsed-width) !important;
+    }
+
+    .fieldplx-sidebar-header {
+        min-height: 68px !important;
+        padding: 9px 14px 10px !important;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+    }
+
+    .fieldplx-sidebar-brand {
+        color: #fff !important;
+    }
+
+    .fieldplx-sidebar-logo,
+    .fieldplx-sidebar-logo-placeholder {
+        width: 40px !important;
+        height: 40px !important;
+        flex: 0 0 40px !important;
+        border-radius: 10px !important;
+    }
+
+    .fieldplx-sidebar-logo-placeholder {
+        color: #fff !important;
+        background: linear-gradient(135deg, #8fd236, #68aa1d) !important;
+        font-size: 18px !important;
+    }
+
+    .fieldplx-sidebar-company-name {
+        max-width: 155px !important;
+        color: #fff !important;
+        font-size: 16px !important;
+        font-weight: 700 !important;
+    }
+
+    .fieldplx-sidebar-product-name {
+        color: #9fda55 !important;
+        font-size: 9px !important;
+    }
+
+    .fieldplx-sidebar-body {
+        padding: 12px 14px !important;
+        scrollbar-width: none !important;
+    }
+
+    .fieldplx-sidebar-body::-webkit-scrollbar {
+        display: none;
+    }
+
+    .fieldplx-sidebar-section-label {
+        margin: 7px 12px 7px !important;
+        color: rgba(255, 255, 255, 0.5) !important;
+        font-size: 9px !important;
+    }
+
+    .fieldplx-sidebar-nav {
+        gap: 3px !important;
+    }
+
+    .fieldplx-sidebar-link {
+        min-height: 46px !important;
+        margin-bottom: 3px !important;
+        padding: 0 14px !important;
+        gap: 15px !important;
+        border-radius: 9px !important;
+        color: rgba(255, 255, 255, 0.94) !important;
+        font-size: 14px !important;
+        font-weight: 600 !important;
+    }
+
+    .fieldplx-sidebar-link:hover {
+        color: #fff !important;
+        background: rgba(255, 255, 255, 0.08) !important;
+    }
+
+    .fieldplx-sidebar-link.active,
+    .fieldplx-sidebar-menu.menu-open>.fieldplx-sidebar-link {
+        color: #fff !important;
+        background: linear-gradient(90deg, #7fc92d, #68aa1d) !important;
+        box-shadow: 0 6px 18px rgba(0, 17, 49, 0.28) !important;
+    }
+
+    .fieldplx-sidebar-link-icon {
+        width: 21px !important;
+        height: 21px !important;
+        flex: 0 0 21px !important;
+        font-size: 19px !important;
+    }
+
+    .fieldplx-sidebar-arrow {
+        color: rgba(255, 255, 255, 0.65) !important;
+    }
+
+    .fieldplx-sidebar-submenu {
+        padding-left: 36px !important;
+    }
+
+    .fieldplx-sidebar-sublink {
+        min-height: 34px !important;
+        color: rgba(255, 255, 255, 0.72) !important;
+        font-size: 11px !important;
+    }
+
+    .fieldplx-sidebar-sublink::before {
+        background: rgba(255, 255, 255, 0.35) !important;
+    }
+
+    .fieldplx-sidebar-sublink:hover,
+    .fieldplx-sidebar-sublink.active {
+        color: #fff !important;
+        background: rgba(255, 255, 255, 0.08) !important;
+    }
+
+    .fieldplx-sidebar-sublink.active::before {
+        background: #9fda55 !important;
+    }
+
+    .fieldplx-sidebar-footer {
+        padding: 10px 14px 14px !important;
+        border-top: 1px solid rgba(255, 255, 255, 0.08) !important;
+    }
+
+    .fieldplx-sidebar-user {
+        min-height: 62px;
+        background: rgba(255, 255, 255, 0.08) !important;
+    }
+
+    .fieldplx-sidebar-user-name {
+        color: #fff !important;
+        font-size: 12px !important;
+    }
+
+    .fieldplx-sidebar-user-role {
+        color: rgba(255, 255, 255, 0.6) !important;
+        font-size: 9px !important;
+    }
+
+    .fieldplx-sidebar-user-avatar {
+        width: 38px !important;
+        height: 38px !important;
+        flex: 0 0 38px !important;
+        border-radius: 50% !important;
+        color: var(--fd-navy) !important;
+        background: linear-gradient(135deg, #fff, #e8f3d9) !important;
+    }
+
+    .fieldplx-sidebar-logout {
+        color: rgba(255, 255, 255, 0.7) !important;
+    }
+
+    .fieldplx-sidebar-logout:hover {
+        color: #fff !important;
+        background: rgba(228, 91, 102, 0.3) !important;
+    }
+
+    .fieldplx-main-layout {
+        display: block !important;
+        min-height: calc(100vh - 70px) !important;
+    }
+
+    .fieldplx-main-content {
+        margin-left: var(--fieldplx-sidebar-width);
+        min-width: 0;
+        transition: margin-left 0.25s ease;
+    }
+
+    body.fieldplx-sidebar-collapsed .fieldplx-main-content {
+        margin-left: var(--fieldplx-sidebar-collapsed-width);
+    }
+
+    .fieldplx-content-wrapper {
+        padding: 0 !important;
+    }
+
+    .fieldplx-footer {
+        display: block !important;
+    .fieldplx-footer {
+        min-height: 52px;
+        margin-left: var(--fieldplx-sidebar-width);
+        border-top: 1px solid var(--fieldplx-border);
+        background: #ffffff;
+        transition:
+            margin-left 0.22s ease,
+            background-color 0.22s ease;
+    }
+
+    .fieldplx-footer-inner {
+        min-height: 52px;
+        padding: 10px 18px;
+        display: flex;
+        align-items: center;
+        gap: 18px;
+        color: #6b7280;
+        font-size: 10px;
+    }
+
+    .fieldplx-footer-copyright {
+        min-width: 0;
+    }
+
+    .fieldplx-footer-links {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .fieldplx-footer-links a {
+        color: #6b7280;
+        text-decoration: none;
+        transition: color 0.18s ease;
+    }
+
+    .fieldplx-footer-links a:hover {
+        color: var(--fieldplx-primary);
+    }
+
+    .fieldplx-footer-separator {
+        color: #d1d5db;
+        font-size: 8px;
+    }
+
+    .fieldplx-footer-product {
+        margin-left: auto;
+        white-space: nowrap;
+        color: #9ca3af;
+    }
+
+    .fieldplx-footer-product strong {
+        color: var(--fieldplx-primary);
+        font-weight: 700;
+    }
+
+    body.fieldplx-sidebar-collapsed .fieldplx-footer {
+        margin-left: var(--fieldplx-sidebar-collapsed-width);
+    }
+
+    @media (max-width: 991.98px) {
+        .fieldplx-footer {
+            margin-left: 0;
+        }
+
+        body.fieldplx-sidebar-collapsed .fieldplx-footer {
+            margin-left: 0;
+        }
+    }
+
+    @media (max-width: 767.98px) {
+        .fieldplx-footer-inner {
+            padding: 12px;
+            flex-wrap: wrap;
+            justify-content: center;
+            gap: 7px 14px;
+            text-align: center;
+        }
+
+        .fieldplx-footer-product {
+            width: 100%;
+            margin-left: 0;
+        }
+    }
+
+    /* Notification dropdown correction */
+    .dropdown:has(.fieldplx-topbar-action) .fieldplx-dropdown {
+        right: 0 !important;
+        left: auto !important;
+        width: 340px !important;
+        max-width: calc(100vw - 24px) !important;
+        margin-top: 10px !important;
+        border: 1px solid var(--fd-border) !important;
+        border-radius: 14px !important;
+        background: #ffffff !important;
+        box-shadow: 0 14px 34px rgba(29, 38, 74, 0.12) !important;
+    }
+
+    #topbarNotificationList {
+        max-height: 300px;
+        overflow-y: auto;
+        background: #ffffff;
+    }
+
+    .fieldplx-empty-notifications {
+        min-height: 155px !important;
+        padding: 28px 18px 24px !important;
+    }
+
+    .fieldplx-dropdown-footer {
+        border-top: 1px solid var(--fd-border) !important;
+    }
+
+    @media (max-width: 575.98px) {
+        .dropdown:has(.fieldplx-topbar-action) .fieldplx-dropdown {
+            width: min(320px, calc(100vw - 20px)) !important;
+        }
+
+        .fieldplx-empty-notifications {
+            min-height: 135px !important;
+            padding: 22px 15px !important;
+        }
+    }
+
+    /* ==========================================================
+   FieldPlx mobile sidebar final correction
+   Desktop sidebar appearance is intentionally unchanged.
+   ========================================================== */
+    @media (max-width: 991.98px) {
+
+        html,
+        body {
+            overflow-x: hidden !important;
+        }
+
+        body.fieldplx-sidebar-mobile-open {
+            overflow: hidden !important;
+        }
+
+        .fieldplx-topbar,
+        body.fieldplx-sidebar-collapsed .fieldplx-topbar {
+            margin-left: 0 !important;
+            width: 100% !important;
+        }
+
+        .fieldplx-main-content,
+        body.fieldplx-sidebar-collapsed .fieldplx-main-content {
+            margin-left: 0 !important;
+            width: 100% !important;
+        }
+
+        .fieldplx-sidebar,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar {
+            width: min(300px, calc(100vw - 52px)) !important;
+            min-width: 0 !important;
+            max-width: 300px !important;
+            height: 100vh !important;
+            height: 100dvh !important;
+            position: fixed !important;
+            top: 0 !important;
+            bottom: 0 !important;
+            left: 0 !important;
+            z-index: 1060 !important;
+
+            display: flex !important;
+            flex-direction: column !important;
+
+            overflow: hidden !important;
+            visibility: hidden !important;
+            transform: translate3d(-100%, 0, 0) !important;
+
+            border-right: 0 !important;
+            box-shadow: none !important;
+            filter: none !important;
+
+            transition:
+                transform 0.25s ease,
+                visibility 0.25s ease !important;
+
+            will-change: transform;
+        }
+
+        body.fieldplx-sidebar-mobile-open .fieldplx-sidebar,
+        body.fieldplx-sidebar-mobile-open.fieldplx-sidebar-collapsed .fieldplx-sidebar {
+            visibility: visible !important;
+            transform: translate3d(0, 0, 0) !important;
+        }
+
+        .fieldplx-sidebar-header,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-header {
+            flex: 0 0 auto !important;
+            justify-content: flex-start !important;
+            padding-left: 14px !important;
+            padding-right: 10px !important;
+        }
+
+        .fieldplx-sidebar-close {
+            width: 34px !important;
+            height: 34px !important;
+            margin-left: auto !important;
+            display: inline-flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+
+            color: rgba(255, 255, 255, 0.88) !important;
+            background: rgba(255, 255, 255, 0.08) !important;
+        }
+
+        .fieldplx-sidebar-close:hover {
+            color: #ffffff !important;
+            background: rgba(255, 255, 255, 0.14) !important;
+        }
+
+        .fieldplx-sidebar-body {
+            min-height: 0 !important;
+            flex: 1 1 auto !important;
+            overflow-x: hidden !important;
+            overflow-y: auto !important;
+            overscroll-behavior: contain;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .fieldplx-sidebar-footer {
+            flex: 0 0 auto !important;
+        }
+
+        /* Never allow the desktop collapsed state to hide mobile labels. */
+        .fieldplx-sidebar-brand-text,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-brand-text {
+            display: block !important;
+        }
+
+        .fieldplx-sidebar-section-label,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-section-label {
+            display: block !important;
+        }
+
+        .fieldplx-sidebar-link-text,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-link-text {
+            display: block !important;
+        }
+
+        .fieldplx-sidebar-arrow,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-arrow {
+            display: inline-flex !important;
+        }
+
+        .fieldplx-sidebar-user-details,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-user-details {
+            display: block !important;
+        }
+
+        .fieldplx-sidebar-logout,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-logout {
+            display: inline-flex !important;
+        }
+
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-link,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-user {
+            justify-content: flex-start !important;
+        }
+
+        /* Restore proper accordion behavior on mobile.
+       Do not use display:initial here: it turns the submenu into inline
+       content and breaks max-height animation/spacing. */
+        .fieldplx-sidebar-submenu,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-submenu {
+            display: block !important;
+            max-height: 0 !important;
+            overflow: hidden !important;
+            padding-top: 0 !important;
+            padding-bottom: 0 !important;
+
+            transition:
+                max-height 0.25s ease,
+                padding-top 0.25s ease,
+                padding-bottom 0.25s ease !important;
+        }
+
+        .fieldplx-sidebar-menu.menu-open>.fieldplx-sidebar-submenu,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar-menu.menu-open>.fieldplx-sidebar-submenu {
+            display: block !important;
+            max-height: 680px !important;
+            padding-top: 4px !important;
+            padding-bottom: 5px !important;
+        }
+
+        .fieldplx-sidebar-overlay {
+            position: fixed !important;
+            inset: 0 !important;
+            z-index: 1055 !important;
+
+            display: block !important;
+            visibility: hidden !important;
+            opacity: 0 !important;
+            pointer-events: none !important;
+
+            background: rgba(0, 17, 49, 0.48) !important;
+            transition:
+                opacity 0.25s ease,
+                visibility 0.25s ease !important;
+        }
+
+        body.fieldplx-sidebar-mobile-open .fieldplx-sidebar-overlay {
+            visibility: visible !important;
+            opacity: 1 !important;
+            pointer-events: auto !important;
+        }
+    }
+
+    @media (max-width: 575.98px) {
+
+        .fieldplx-sidebar,
+        body.fieldplx-sidebar-collapsed .fieldplx-sidebar {
+            width: min(288px, calc(100vw - 44px)) !important;
+        }
+
+        .fieldplx-sidebar-body {
+            padding-left: 10px !important;
+            padding-right: 10px !important;
+        }
+
+        .fieldplx-sidebar-link {
+            min-height: 43px !important;
+            padding-left: 12px !important;
+            padding-right: 12px !important;
+            gap: 12px !important;
+            font-size: 13px !important;
+        }
+
+        .fieldplx-sidebar-submenu {
+            padding-left: 31px !important;
+        }
+
+        .fieldplx-sidebar-sublink {
+            min-height: 33px !important;
+            font-size: 11px !important;
+        }
+    }
+.fd-schedule{min-height:calc(100vh - 70px);background:#fff}.fd-schedule-head{position:sticky;top:70px;z-index:20;background:#fff;border-bottom:1px solid var(--fd-border);padding:18px 22px 14px}.fd-head-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.fd-title{font-size:25px;font-weight:700;letter-spacing:-.3px;margin-right:auto}.fd-btn,.fd-chip,.fd-icon-btn{border:1px solid #d7dee8;background:#fff;color:#23364d;border-radius:8px;min-height:38px;padding:8px 12px;font-weight:700;font-size:13px;display:inline-flex;align-items:center;justify-content:center;gap:7px;cursor:pointer}.fd-icon-btn{width:38px;padding:0}.fd-btn:hover,.fd-chip:hover,.fd-icon-btn:hover{border-color:#b8c4d2;background:#f8fafc}.fd-btn.primary{background:#2f8d25;border-color:#2f8d25;color:#fff}.fd-segment{display:inline-flex;border:1px solid #d7dee8;border-radius:8px;overflow:hidden;background:#fff}.fd-segment button{border:0;border-right:1px solid #d7dee8;background:#fff;padding:9px 14px;font-weight:700;color:#526278;cursor:pointer}.fd-segment button:last-child{border-right:0}.fd-segment button.active{background:#edf5e7;color:#2c6f22}.fd-toolbar{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap}.fd-chip{font-weight:600}.fd-chip b{font-weight:700}.fd-calendar-wrap{position:relative;display:flex;min-height:700px}.fd-calendar-main{min-width:0;flex:1}.fd-month{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));border-left:1px solid var(--fd-border);border-top:1px solid var(--fd-border)}.fd-dayname{height:38px;display:flex;align-items:center;justify-content:center;background:#f8fafb;border-right:1px solid var(--fd-border);border-bottom:1px solid var(--fd-border);font-size:11px;font-weight:700;color:#66758a;text-transform:uppercase}.fd-cell{min-height:132px;border-right:1px solid var(--fd-border);border-bottom:1px solid var(--fd-border);padding:7px;position:relative;background:#fff;overflow:hidden}.fd-cell.other{background:#fafbfc;color:#a3adbb}.fd-cell.today .fd-date{background:#356fd1;color:#fff}.fd-date{width:28px;height:28px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700}.fd-cell-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:5px}.fd-count{font-size:10px;color:#77859a}.fd-card{padding:5px 7px;border-radius:6px;margin:4px 0;font-size:10px;line-height:1.25;cursor:pointer;border-left:3px solid transparent;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.fd-card.visit{background:#eaf5e4;border-color:#56a92d;color:#245e1d}.fd-card.request{background:#fff3e1;border-color:#d9902a;color:#805111}.fd-card.task{background:#eaf0fb;border-color:#477fc9;color:#2a5489}.fd-card.event{background:#fff8d7;border-color:#caa92c;color:#725d0f}.fd-card.reminder{background:#fdebed;border-color:#db6670;color:#89333d}.fd-card.completed{opacity:.65;text-decoration:line-through}.fd-card.selected{outline:2px solid #1a73e8}.fd-more{font-size:10px;color:#3e6b9d;cursor:pointer;font-weight:700;padding:3px}.fd-week,.fd-day-view{display:none}.fd-week-grid{display:grid;grid-template-columns:72px repeat(7,minmax(130px,1fr));overflow:auto;border-top:1px solid var(--fd-border);border-left:1px solid var(--fd-border)}.fd-time-label,.fd-week-head,.fd-slot{border-right:1px solid var(--fd-border);border-bottom:1px solid var(--fd-border)}.fd-week-head{height:48px;padding:7px;text-align:center;font-size:12px;font-weight:700;background:#fafbfc}.fd-time-label{height:56px;padding:6px;text-align:right;color:#7a8798;font-size:10px;background:#fafbfc}.fd-slot{height:56px;position:relative;padding:3px;background:#fff}.fd-day-view{padding:0}.fd-agenda{max-width:900px;margin:auto;padding:12px 18px}.fd-agenda-row{display:grid;grid-template-columns:95px 1fr;gap:12px;padding:8px 0;border-bottom:1px solid var(--fd-border)}.fd-agenda-time{font-size:11px;color:#6f7b90;padding-top:7px}.fd-agenda-card{padding:10px 12px;border-radius:8px;background:#f7f9fb}.fd-empty{padding:60px 20px;text-align:center;color:#8692a3}.fd-drawer{position:fixed;top:70px;right:0;bottom:0;width:370px;max-width:95vw;background:#fff;border-left:1px solid var(--fd-border);box-shadow:-8px 0 30px rgba(16,35,62,.1);z-index:1050;transform:translateX(100%);transition:transform .25s ease;display:flex;flex-direction:column}.fd-drawer.show{transform:translateX(0)}.fd-drawer-head{padding:16px 18px;border-bottom:1px solid var(--fd-border);display:flex;align-items:center;gap:8px}.fd-drawer-head h3{margin:0;font-size:18px;flex:1}.fd-drawer-body{padding:16px;overflow:auto;flex:1}.fd-drawer-foot{padding:14px 16px;border-top:1px solid var(--fd-border);display:flex;gap:8px;justify-content:flex-end}.fd-field{margin-bottom:13px}.fd-field label{display:block;margin-bottom:5px;font-size:11px;font-weight:700;color:#57677a}.fd-control{width:100%;height:39px;border:1px solid #d8e0e9;border-radius:7px;padding:8px 10px;background:#fff;color:#23364d}.fd-control:focus{outline:0;border-color:#83b94b;box-shadow:0 0 0 3px rgba(116,184,36,.13)}textarea.fd-control{height:82px;resize:vertical}.fd-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}.fd-check{display:flex;gap:7px;align-items:center;font-size:12px;margin:7px 0}.fd-list-card{border:1px solid var(--fd-border);border-radius:8px;padding:10px;margin-bottom:8px;background:#fff;cursor:pointer}.fd-list-card strong{display:block;font-size:12px}.fd-list-card small{color:#78869a}.fd-dropzone{border:1px dashed #b9c3cf;border-radius:9px;padding:28px 12px;text-align:center;color:#8792a0;margin-top:12px}.fd-popover{position:absolute;top:100%;right:0;margin-top:6px;min-width:230px;background:#fff;border:1px solid var(--fd-border);border-radius:9px;box-shadow:0 12px 35px rgba(0,0,0,.12);padding:8px;z-index:100;display:none}.fd-popover.show{display:block}.fd-popover button{width:100%;border:0;background:#fff;padding:9px 10px;text-align:left;border-radius:6px;cursor:pointer}.fd-popover button:hover{background:#f3f6f8}.fd-relative{position:relative}.fd-filter-menu{position:absolute;top:calc(100% + 6px);left:0;width:250px;background:#fff;border:1px solid var(--fd-border);border-radius:9px;box-shadow:0 12px 35px rgba(0,0,0,.12);padding:10px;z-index:60;display:none}.fd-filter-menu.show{display:block}.fd-search{width:100%;height:35px;border:1px solid #dce2e8;border-radius:7px;padding:7px 9px;margin-bottom:8px}.fd-filter-option{display:flex;align-items:center;gap:8px;padding:7px 4px;font-size:12px}.fd-filter-actions{display:flex;justify-content:space-between;border-top:1px solid #edf0f3;padding-top:8px;margin-top:6px}.fd-link-btn{border:0;background:none;color:#2f7c26;font-weight:700;cursor:pointer}.fd-modal{position:fixed;inset:0;background:rgba(7,22,43,.42);z-index:1100;display:none;align-items:flex-start;justify-content:center;padding:80px 16px 30px;overflow:auto}.fd-modal.show{display:flex}.fd-dialog{width:500px;max-width:96vw;background:#fff;border-radius:12px;box-shadow:0 18px 60px rgba(0,0,0,.2);overflow:hidden}.fd-dialog.lg{width:720px}.fd-modal-head{padding:15px 18px;border-bottom:1px solid var(--fd-border);display:flex;align-items:center}.fd-modal-head h3{margin:0;flex:1;font-size:18px}.fd-modal-body{padding:16px 18px}.fd-modal-foot{padding:13px 18px;border-top:1px solid var(--fd-border);display:flex;justify-content:flex-end;gap:8px}.fd-tabs{display:flex;border-bottom:1px solid var(--fd-border);margin:-16px -18px 16px}.fd-tabs button{flex:1;padding:12px;border:0;background:#fff;font-weight:700;color:#6b7889;cursor:pointer}.fd-tabs button.active{color:#2f7d25;border-bottom:3px solid #2f8d25}.fd-type-panel{display:none}.fd-type-panel.active{display:block}.fd-toast{position:fixed;top:82px;right:18px;z-index:1200;min-width:260px;max-width:420px;padding:11px 14px;border-radius:9px;color:#fff;background:#26374b;box-shadow:0 10px 30px rgba(0,0,0,.18);display:none}.fd-toast.show{display:block}.fd-toast.success{background:#2e7d32}.fd-toast.error{background:#b93c4a}.fd-toast.warning{background:#9a671d}.fd-status-dot{width:8px;height:8px;border-radius:50%;display:inline-block}.fd-status-dot.visit{background:#56a92d}.fd-status-dot.request{background:#d9902a}.fd-status-dot.task{background:#477fc9}.fd-status-dot.event{background:#caa92c}.fd-status-dot.reminder{background:#db6670}.fd-settings-preview{border:1px solid var(--fd-border);border-radius:8px;padding:10px;background:#fafbfc}.fd-preview-card{height:30px;border-radius:5px;background:#eaf5e4;border-left:3px solid #56a92d;margin:6px 0}.fd-find-slot{display:flex;justify-content:space-between;align-items:center;border:1px solid var(--fd-border);border-radius:8px;padding:9px 10px;margin:7px 0}.fd-bulk-bar{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:80;background:#0e2648;color:#fff;border-radius:10px;padding:10px 12px;display:none;align-items:center;gap:10px;box-shadow:0 10px 35px rgba(0,0,0,.25)}.fd-bulk-bar.show{display:flex}.fd-bulk-bar .fd-btn{min-height:34px}.fd-calendar-wrap.drag-target{outline:3px solid rgba(116,184,36,.3);outline-offset:-3px}
+@media(max-width:991.98px){.fieldplx-main-content,body.fieldplx-sidebar-collapsed .fieldplx-main-content{margin-left:0!important;width:100%!important}.fieldplx-footer,body.fieldplx-sidebar-collapsed .fieldplx-footer{margin-left:0!important}.fd-schedule-head{top:64px}.fd-drawer{top:64px}.fd-title{width:100%;font-size:21px}.fd-calendar-main{overflow:auto}.fd-month{min-width:840px}.fd-week-grid{min-width:1050px}.fd-modal{padding-top:72px}}
+@media(max-width:767.98px){.fd-schedule-head{padding:12px}.fd-toolbar{gap:6px}.fd-chip{padding:7px 9px;font-size:11px}.fd-month{min-width:760px}.fd-day-view{display:block}.fd-agenda{padding:8px 10px}.fd-row{grid-template-columns:1fr}.fd-dialog{width:96vw}.fd-drawer{width:100vw;max-width:100vw}.fd-title{font-size:19px}.fd-segment button{padding:8px 10px;font-size:11px}}
+</style>
+
+<style id="fieldplx-schedule-force-styles">
+/* Schedule-only cascade guard. Keeps shared FieldPlx/Bootstrap CSS from reverting calendar controls. */
+#fieldplxSchedulePage{min-height:calc(100vh - 70px)!important;background:#fff!important;color:#0b1933!important;font-family:Arial,Helvetica,sans-serif!important}
+#fieldplxSchedulePage *,#fieldplxSchedulePage *::before,#fieldplxSchedulePage *::after{box-sizing:border-box!important}
+#fieldplxSchedulePage .fd-schedule-head{position:sticky!important;top:70px!important;z-index:20!important;background:#fff!important;border-bottom:1px solid #e5eaf1!important;padding:18px 22px 14px!important}
+#fieldplxSchedulePage .fd-head-row{display:flex!important;align-items:center!important;gap:10px!important;flex-wrap:wrap!important}
+#fieldplxSchedulePage .fd-title{margin-right:auto!important;font-size:25px!important;line-height:1.2!important;font-weight:700!important;color:#0b1933!important;letter-spacing:-.3px!important}
+#fieldplxSchedulePage button.fd-btn,#fieldplxSchedulePage button.fd-chip,#fieldplxSchedulePage button.fd-icon-btn{appearance:none!important;-webkit-appearance:none!important;margin:0!important;border:1px solid #d7dee8!important;background:#fff!important;color:#23364d!important;border-radius:8px!important;min-height:38px!important;padding:8px 12px!important;font:700 13px/1.2 Arial,Helvetica,sans-serif!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;gap:7px!important;cursor:pointer!important;box-shadow:none!important}
+#fieldplxSchedulePage button.fd-icon-btn{width:38px!important;padding:0!important}
+#fieldplxSchedulePage button.fd-btn:hover,#fieldplxSchedulePage button.fd-chip:hover,#fieldplxSchedulePage button.fd-icon-btn:hover{border-color:#b8c4d2!important;background:#f8fafc!important}
+#fieldplxSchedulePage button.fd-btn.primary{background:#2f8d25!important;border-color:#2f8d25!important;color:#fff!important}
+#fieldplxSchedulePage .fd-segment{display:inline-flex!important;border:1px solid #d7dee8!important;border-radius:8px!important;overflow:hidden!important;background:#fff!important}
+#fieldplxSchedulePage .fd-segment button{appearance:none!important;-webkit-appearance:none!important;margin:0!important;border:0!important;border-right:1px solid #d7dee8!important;border-radius:0!important;background:#fff!important;padding:9px 14px!important;color:#526278!important;font:700 13px/1.2 Arial,Helvetica,sans-serif!important;cursor:pointer!important}
+#fieldplxSchedulePage .fd-segment button:last-child{border-right:0!important}
+#fieldplxSchedulePage .fd-segment button.active{background:#edf5e7!important;color:#2c6f22!important}
+#fieldplxSchedulePage .fd-toolbar{display:flex!important;align-items:center!important;gap:8px!important;margin-top:12px!important;flex-wrap:wrap!important}
+#fieldplxSchedulePage .fd-relative{position:relative!important}
+#fieldplxSchedulePage .fd-filter-menu{position:absolute!important;top:calc(100% + 6px)!important;left:0!important;width:250px!important;background:#fff!important;border:1px solid #e5eaf1!important;border-radius:9px!important;box-shadow:0 12px 35px rgba(0,0,0,.12)!important;padding:10px!important;z-index:60!important;display:none!important}
+#fieldplxSchedulePage .fd-filter-menu.show{display:block!important}
+#fieldplxSchedulePage .fd-search{appearance:none!important;width:100%!important;height:35px!important;border:1px solid #dce2e8!important;border-radius:7px!important;padding:7px 9px!important;margin:0 0 8px!important;background:#fff!important;color:#23364d!important;font-size:12px!important}
+#fieldplxSchedulePage .fd-filter-option{display:flex!important;align-items:center!important;gap:8px!important;padding:7px 4px!important;font-size:12px!important}
+#fieldplxSchedulePage .fd-filter-option input{width:auto!important;margin:0!important}
+#fieldplxSchedulePage .fd-filter-actions{display:flex!important;justify-content:space-between!important;border-top:1px solid #edf0f3!important;padding-top:8px!important;margin-top:6px!important}
+#fieldplxSchedulePage .fd-link-btn{appearance:none!important;border:0!important;background:transparent!important;color:#2f7c26!important;font-weight:700!important;cursor:pointer!important;padding:4px!important}
+#fieldplxSchedulePage .fd-popover{position:absolute!important;top:100%!important;right:0!important;margin-top:6px!important;min-width:230px!important;background:#fff!important;border:1px solid #e5eaf1!important;border-radius:9px!important;box-shadow:0 12px 35px rgba(0,0,0,.12)!important;padding:8px!important;z-index:100!important;display:none!important}
+#fieldplxSchedulePage .fd-popover.show{display:block!important}
+#fieldplxSchedulePage .fd-popover button{appearance:none!important;width:100%!important;border:0!important;border-radius:6px!important;background:#fff!important;color:#23364d!important;padding:9px 10px!important;text-align:left!important;font-size:12px!important;cursor:pointer!important}
+#fieldplxSchedulePage .fd-popover button:hover{background:#f3f6f8!important}
+#fieldplxSchedulePage .fd-calendar-wrap{position:relative!important;display:flex!important;min-height:700px!important;background:#fff!important}
+#fieldplxSchedulePage .fd-calendar-main{min-width:0!important;flex:1 1 auto!important}
+#fieldplxSchedulePage .fd-month{display:grid!important;grid-template-columns:repeat(7,minmax(0,1fr))!important;border-left:1px solid #e5eaf1!important;border-top:1px solid #e5eaf1!important;background:#fff!important}
+#fieldplxSchedulePage .fd-dayname{height:38px!important;display:flex!important;align-items:center!important;justify-content:center!important;background:#f8fafb!important;border-right:1px solid #e5eaf1!important;border-bottom:1px solid #e5eaf1!important;color:#66758a!important;font-size:11px!important;font-weight:700!important;text-transform:uppercase!important}
+#fieldplxSchedulePage .fd-cell{min-height:132px!important;border-right:1px solid #e5eaf1!important;border-bottom:1px solid #e5eaf1!important;padding:7px!important;position:relative!important;background:#fff!important;overflow:hidden!important;color:#0b1933!important}
+#fieldplxSchedulePage .fd-cell.other{background:#fafbfc!important;color:#a3adbb!important}
+#fieldplxSchedulePage .fd-cell-head{display:flex!important;justify-content:space-between!important;align-items:center!important;margin-bottom:5px!important}
+#fieldplxSchedulePage .fd-date{width:28px!important;height:28px!important;border-radius:7px!important;display:flex!important;align-items:center!important;justify-content:center!important;font-size:12px!important;font-weight:700!important}
+#fieldplxSchedulePage .fd-cell.today .fd-date{background:#356fd1!important;color:#fff!important}
+#fieldplxSchedulePage .fd-card{display:block!important;padding:5px 7px!important;border-radius:6px!important;margin:4px 0!important;font-size:10px!important;line-height:1.25!important;cursor:pointer!important;border:0!important;border-left:3px solid transparent!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;text-decoration:none!important}
+#fieldplxSchedulePage .fd-card.visit{background:#eaf5e4!important;border-left-color:#56a92d!important;color:#245e1d!important}
+#fieldplxSchedulePage .fd-card.request{background:#fff3e1!important;border-left-color:#d9902a!important;color:#805111!important}
+#fieldplxSchedulePage .fd-card.task{background:#eaf0fb!important;border-left-color:#477fc9!important;color:#2a5489!important}
+#fieldplxSchedulePage .fd-card.event{background:#fff8d7!important;border-left-color:#caa92c!important;color:#725d0f!important}
+#fieldplxSchedulePage .fd-card.reminder{background:#fdebed!important;border-left-color:#db6670!important;color:#89333d!important}
+#fieldplxSchedulePage .fd-week{display:none}#fieldplxSchedulePage .fd-day-view{display:none}
+#fieldplxSchedulePage .fd-week-grid{display:grid!important;grid-template-columns:72px repeat(7,minmax(130px,1fr))!important;overflow:auto!important;border-top:1px solid #e5eaf1!important;border-left:1px solid #e5eaf1!important}
+#fieldplxSchedulePage .fd-week-head,#fieldplxSchedulePage .fd-time-label,#fieldplxSchedulePage .fd-slot{border-right:1px solid #e5eaf1!important;border-bottom:1px solid #e5eaf1!important}
+#fieldplxSchedulePage .fd-week-head{height:48px!important;padding:7px!important;text-align:center!important;font-size:12px!important;font-weight:700!important;background:#fafbfc!important}
+#fieldplxSchedulePage .fd-time-label{height:56px!important;padding:6px!important;text-align:right!important;color:#7a8798!important;font-size:10px!important;background:#fafbfc!important}
+#fieldplxSchedulePage .fd-slot{height:56px!important;position:relative!important;padding:3px!important;background:#fff!important}
+#fieldplxSchedulePage .fd-agenda{max-width:900px!important;margin:auto!important;padding:12px 18px!important}
+#fieldplxSchedulePage .fd-agenda-row{display:grid!important;grid-template-columns:95px 1fr!important;gap:12px!important;padding:8px 0!important;border-bottom:1px solid #e5eaf1!important}
+#fieldplxSchedulePage .fd-drawer{position:fixed!important;top:70px!important;right:0!important;bottom:0!important;width:370px!important;max-width:95vw!important;background:#fff!important;border-left:1px solid #e5eaf1!important;box-shadow:-8px 0 30px rgba(16,35,62,.1)!important;z-index:1050!important;transform:translateX(100%)!important;transition:transform .25s ease!important;display:flex!important;flex-direction:column!important}
+#fieldplxSchedulePage .fd-drawer.show{transform:translateX(0)!important}
+#fieldplxSchedulePage .fd-control{appearance:none!important;width:100%!important;height:39px!important;border:1px solid #d8e0e9!important;border-radius:7px!important;padding:8px 10px!important;background:#fff!important;color:#23364d!important}
+#fieldplxSchedulePage textarea.fd-control{height:82px!important;resize:vertical!important}
+#fieldplxSchedulePage .fd-modal{position:fixed!important;inset:0!important;background:rgba(7,22,43,.42)!important;z-index:1100!important;display:none!important;align-items:flex-start!important;justify-content:center!important;padding:80px 16px 30px!important;overflow:auto!important}
+#fieldplxSchedulePage .fd-modal.show{display:flex!important}
+#fieldplxSchedulePage .fd-dialog{width:500px!important;max-width:96vw!important;background:#fff!important;border-radius:12px!important;box-shadow:0 18px 60px rgba(0,0,0,.2)!important;overflow:hidden!important}
+@media(max-width:991.98px){#fieldplxSchedulePage .fd-schedule-head{top:64px!important}#fieldplxSchedulePage .fd-month{min-width:840px!important}#fieldplxSchedulePage .fd-calendar-main{overflow:auto!important}#fieldplxSchedulePage .fd-drawer{top:64px!important}}
+@media(max-width:767.98px){#fieldplxSchedulePage .fd-schedule-head{padding:12px!important}#fieldplxSchedulePage .fd-title{width:100%!important;font-size:19px!important}#fieldplxSchedulePage .fd-month{min-width:760px!important}#fieldplxSchedulePage .fd-drawer{width:100vw!important;max-width:100vw!important}}
 
 
-/* =========================================================
-   Schedule workspace v2
-   ========================================================= */
-.fd-dashboard.schedule-workspace{width:100%;max-width:none;margin:0;padding:0;background:#fff}
-.sch2-card{min-height:calc(100vh - var(--fieldplx-topbar-height));background:#fff}
-.sch2-toolbar{min-height:58px;padding:10px 16px;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--fd-border);background:#fff;position:sticky;top:var(--fieldplx-topbar-height);z-index:22}
-.sch2-period{margin-right:14px;display:inline-flex;align-items:center;gap:7px;color:#10243e;font-size:20px;font-weight:700;white-space:nowrap}
-.sch2-period i{font-size:11px;color:#60748b}
-.sch2-icon-btn,.sch2-btn,.sch2-filter-btn,.sch2-view-btn{height:34px;display:inline-flex;align-items:center;justify-content:center;gap:6px;border:1px solid #dbe2e9;border-radius:7px;background:#fff;color:#31465f;text-decoration:none!important;font-size:10px;font-weight:600;cursor:pointer;white-space:nowrap}
-.sch2-icon-btn{width:34px;padding:0}.sch2-btn{padding:0 11px}.sch2-btn.primary{border-color:#5d971b;background:#2f8b22;color:#fff}.sch2-btn.primary:hover{background:#24751b;color:#fff}
-.sch2-filter-btn{padding:0 12px;border-radius:18px}.sch2-filter-btn.active{background:#ecebe7;border-color:#dedcd6}.sch2-filter-btn .muted{color:#7f8b99;font-weight:500}
-.sch2-toolbar-spacer{flex:1}.sch2-info{color:#2688de;font-size:16px}.sch2-view-switch{height:34px;display:flex;border:1px solid #dbe2e9;border-radius:7px;overflow:hidden}.sch2-view-btn{height:32px;padding:0 13px;border:0;border-radius:0}.sch2-view-btn.active{box-shadow:inset 0 0 0 1px #5d971b;color:#4e7c20;background:#fbfff7}
-.sch2-menu-wrap,.sch2-filter-wrap{position:relative}.sch2-dropdown{width:252px;position:absolute;top:42px;left:0;z-index:90;border:1px solid #d9dfe5;border-radius:8px;background:#fff;box-shadow:0 8px 22px rgba(0,17,49,.14);display:none;overflow:hidden}.sch2-dropdown.open{display:block}.sch2-dropdown.right{left:auto;right:0}.sch2-dropdown-search{padding:10px;border-bottom:1px solid #edf0f3}.sch2-dropdown-search input{width:100%;height:34px;padding:0 9px;border:1px solid #dbe2e9;border-radius:6px;outline:0;font-size:10px}.sch2-dropdown-list{max-height:280px;overflow:auto}.sch2-choice{min-height:40px;padding:8px 12px;display:flex;align-items:center;gap:9px;color:#40546b;font-size:10px;cursor:pointer}.sch2-choice:hover,.sch2-choice.selected{background:#f4f3ef}.sch2-choice-check{margin-left:auto;color:#24465a;font-size:15px}.sch2-choice-avatar{width:22px;height:22px;display:grid;place-items:center;border-radius:50%;background:#294b5d;color:#fff;font-size:7px;font-weight:700}.sch2-choice-avatar.unassigned{background:#fff0ea;color:#e05a45;border:1px solid #efb9ad}.sch2-dropdown-foot{padding:10px 12px;display:flex;align-items:center;justify-content:space-between;border-top:1px solid #e6e9ec;background:#fff}.sch2-link-btn{border:0;background:transparent;color:#4f8d22;text-decoration:underline;font-size:10px;cursor:pointer}.sch2-link-btn.secondary{color:#7f8790;text-decoration:none;background:#efefed;border-radius:4px;padding:5px 8px}
-.sch2-calendar{position:relative;background:#fff}.sch2-scroll{width:100%;overflow:auto;scrollbar-width:thin;scrollbar-color:#8c8f92 transparent}.sch2-scroll::-webkit-scrollbar{height:9px;width:9px}.sch2-scroll::-webkit-scrollbar-thumb{background:#8c8f92;border-radius:8px}
-/* month */
-.sch2-month-weekdays{min-width:980px;display:grid;grid-template-columns:repeat(7,minmax(140px,1fr));height:43px;border-bottom:1px solid #d9dee3;background:#fff;position:sticky;top:0;z-index:5}.sch2-month-weekday{display:flex;align-items:center;justify-content:center;color:#183149;font-size:10px;font-weight:700}.sch2-month-grid{min-width:980px;display:grid;grid-template-columns:repeat(7,minmax(140px,1fr));grid-template-rows:repeat(6,minmax(108px,1fr));height:calc(100vh - var(--fieldplx-topbar-height) - 102px);min-height:650px;background:#e2e3e3;gap:1px}.sch2-month-day{padding:5px 6px;background:#fff;overflow:hidden}.sch2-month-day.outside{background:#ececec}.sch2-month-day-head{height:24px;display:flex;align-items:center;gap:5px}.sch2-month-date{width:20px;height:20px;display:grid;place-items:center;border-radius:5px;color:#1d354a;font-size:10px}.sch2-month-day.today .sch2-month-date,.sch2-month-day.selected .sch2-month-date{background:#2e82bb;color:#fff;font-weight:700}.sch2-visit-count{padding:2px 4px;border:1px solid #d5dde4;border-radius:3px;background:#fff;color:#68798c;font-size:7px}.sch2-month-events{display:grid;gap:3px}.sch2-month-event{height:22px;padding:0 6px;display:flex;align-items:center;gap:5px;overflow:hidden;border:0;border-radius:2px;background:#e5efe3;color:#294640;text-decoration:none!important;font-size:8px;cursor:pointer}.sch2-month-event.progress{background:#fff1d9}.sch2-month-event.completed{background:#e6f2dc}.sch2-month-event.rescheduled{background:#f0eafa}.sch2-month-event.cancelled{background:#f9e3e5}.sch2-month-event .avatar{width:14px;height:14px;flex:0 0 14px;display:grid;place-items:center;border-radius:50%;background:#355768;color:#fff;font-size:5.5px;font-weight:700}.sch2-month-event .title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.sch2-month-more{color:#4f7f27;font-size:8px;text-decoration:none!important}
-/* week */
-.sch2-week-wrap{min-width:980px}.sch2-week-head{display:grid;grid-template-columns:55px repeat(7,minmax(130px,1fr));height:66px;background:#fff;border-bottom:0}.sch2-week-corner{border-right:1px solid #e1e4e7}.sch2-week-day{padding-top:11px;text-align:center;color:#30465b;font-size:10px;font-weight:700}.sch2-week-day .date{width:28px;height:28px;margin:5px auto 0;display:grid;place-items:center;border-radius:6px}.sch2-week-day.today .date,.sch2-week-day.selected .date{background:#2f83bb;color:#fff}.sch2-anytime-row{display:grid;grid-template-columns:55px repeat(7,minmax(130px,1fr));min-height:28px;border-bottom:1px solid #e0e3e6}.sch2-anytime-label{padding:6px 4px;color:#788899;font-size:8px;text-align:right;border-right:1px solid #e4e6e8}.sch2-anytime-cell{min-height:28px;padding:3px;border-right:1px solid #ededed}.sch2-anytime-event{height:20px;padding:0 5px;display:flex;align-items:center;gap:4px;border-radius:2px;background:#e5efe3;color:#294640;font-size:8px;overflow:hidden;cursor:pointer}.sch2-week-body{display:grid;grid-template-columns:55px repeat(7,minmax(130px,1fr));height:1536px;position:relative}.sch2-time-axis{position:relative;border-right:1px solid #e4e6e8;background:#fff}.sch2-time-label{height:64px;padding-right:4px;position:absolute;left:0;right:0;transform:translateY(-5px);color:#6a7a8c;font-size:8px;text-align:right}.sch2-week-column{position:relative;border-right:1px solid #ededed;background-image:repeating-linear-gradient(to bottom,#fff 0,#fff 63px,#e9e9e8 63px,#e9e9e8 64px)}.sch2-week-column.today{background-color:#fffefa}.sch2-week-event{position:absolute;z-index:4;min-height:22px;padding:4px 5px;overflow:hidden;border:0;border-radius:3px;background:#e5efe3;color:#294640;font-size:7.5px;cursor:pointer}.sch2-week-event.progress{background:#fff1d9}.sch2-week-event.completed{background:#e6f2dc}.sch2-week-event.rescheduled{background:#f0eafa}.sch2-week-event.cancelled{background:#f9e3e5}.sch2-week-event .line1{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.sch2-week-event .line2{margin-top:2px;color:#65766f;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-/* day resource timeline */
-.sch2-day-wrap{min-width:1280px;display:grid;grid-template-columns:205px 1fr}.sch2-resource-head{height:76px;position:sticky;left:0;z-index:8;border-right:1px solid #d9d9d7;border-bottom:1px solid #e0e3e5;background:#fff;display:flex;align-items:flex-end;justify-content:flex-end;padding:0 8px 13px;color:#728197;font-size:8px}.sch2-day-timeline-head{height:76px;position:relative;border-bottom:1px solid #e0e3e5;background:#fff;overflow:hidden}.sch2-day-hours{width:2304px;height:100%;position:relative}.sch2-day-hour{width:96px;position:absolute;bottom:10px;color:#657587;font-size:8px}.sch2-resource-row{height:184px;position:sticky;left:0;z-index:7;padding:0 13px;display:flex;align-items:center;gap:9px;border-right:1px solid #d9d9d7;border-bottom:1px solid #e3e3e1;background:#fff}.sch2-resource-row.alt{background:#fbfaf8}.sch2-resource-avatar{width:24px;height:24px;display:grid;place-items:center;border-radius:50%;background:#294b5d;color:#fff;font-size:7px;font-weight:700}.sch2-resource-avatar.unassigned{background:transparent;color:#677786;border:0;font-size:17px}.sch2-resource-copy{min-width:0;flex:1}.sch2-resource-name{display:block;color:#31465a;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.sch2-resource-count{margin-top:4px;display:inline-block;color:#4f8f27;font-size:8px}.sch2-resource-timeline{height:184px;position:relative;border-bottom:1px solid #e3e3e1;background-image:repeating-linear-gradient(to right,transparent 0,transparent 95px,#ddd 95px,#ddd 96px);background-color:#fff}.sch2-resource-timeline.alt{background-color:#fbfaf8}.sch2-day-event{height:34px;position:absolute;top:18px;padding:4px 7px;overflow:hidden;border-radius:3px;background:#e5efe3;color:#294640;font-size:8px;cursor:pointer}.sch2-day-event:nth-child(2n){top:58px}.sch2-day-event:nth-child(3n){top:98px}.sch2-day-event .line1{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.sch2-day-event .line2{margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.sch2-day-scroller{overflow:auto}.sch2-day-timeline-inner{width:2304px;position:relative}.sch2-anytime-toggle{position:absolute;top:9px;left:0;border:0;background:transparent;color:#66798e;font-size:8px;cursor:pointer}.sch2-anytime-drawer{width:180px;position:absolute;top:76px;bottom:0;left:205px;z-index:16;border-right:1px solid #cfd5d9;background:#fff;box-shadow:4px 0 10px rgba(0,0,0,.06);display:none}.sch2-anytime-drawer.open{display:block}.sch2-anytime-drawer-head{height:42px;padding:0 10px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #e3e6e8;color:#30465b;font-size:10px;font-weight:700}.sch2-anytime-drawer-list{padding:8px;display:grid;gap:5px}.sch2-anytime-drawer-event{height:25px;padding:0 7px;display:flex;align-items:center;gap:4px;border-radius:2px;background:#e5efe3;color:#294640;font-size:8px;cursor:pointer}
-/* popover */
-.sch2-popover{width:335px;position:fixed;z-index:120;display:none;border:1px solid #d9dfe4;border-radius:8px;background:#fff;box-shadow:0 8px 22px rgba(0,17,49,.18);overflow:hidden}.sch2-popover.open{display:block}.sch2-popover-head{padding:12px 14px 8px;display:flex;align-items:flex-start;justify-content:space-between}.sch2-popover-kicker{color:#6f8092;font-size:9px}.sch2-popover-title{margin-top:5px;color:#18324a;font-size:13px;font-weight:700}.sch2-popover-close{border:0;background:transparent;color:#566879;font-size:16px}.sch2-popover-body{padding:0 14px 10px;color:#43576d;font-size:9px}.sch2-pop-row{margin:8px 0}.sch2-pop-label{display:block;margin-bottom:3px;color:#18324a;font-weight:700}.sch2-team-chips{display:flex;gap:5px;flex-wrap:wrap}.sch2-team-chip{height:24px;padding:0 7px;display:inline-flex;align-items:center;gap:5px;border-radius:13px;background:#e7e5e0;color:#31495c}.sch2-chip-avatar{width:17px;height:17px;display:grid;place-items:center;border-radius:50%;background:#294b5d;color:#fff;font-size:6px;font-weight:700}.sch2-pop-lines{border:1px solid #e2e6e9;border-radius:5px;overflow:hidden}.sch2-pop-line{min-height:30px;padding:6px 8px;display:flex;align-items:flex-start;justify-content:space-between;gap:10px;border-bottom:1px solid #eceeef}.sch2-pop-line:last-child{border-bottom:0}.sch2-pop-total{padding:7px 8px;text-align:right;font-weight:700}.sch2-pop-actions{padding:8px 12px;display:flex;gap:7px;border-top:1px solid #e6e8ea;background:#fff}.sch2-pop-actions .sch2-btn{flex:1}.sch2-pop-actions .sch2-btn.primary{background:#338d22}
-/* modal */
-.sch2-modal{position:fixed;inset:0;z-index:130;display:none;align-items:center;justify-content:center;padding:20px;background:rgba(0,17,49,.34)}.sch2-modal.open{display:flex}.sch2-modal-dialog{width:min(510px,calc(100vw - 28px));max-height:calc(100vh - 36px);overflow:auto;border-radius:8px;background:#fff;box-shadow:0 18px 50px rgba(0,17,49,.22)}.sch2-modal-head{height:66px;padding:0 18px;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #e2e6e9}.sch2-modal-title{margin:0;color:#183149;font-size:18px;font-weight:700}.sch2-modal-close{width:34px;height:34px;border:0;background:transparent;color:#41586b;font-size:19px}.sch2-modal-body{padding:14px}.sch2-visit-top{display:grid;grid-template-columns:1.2fr .9fr;gap:14px}.sch2-visit-name{font-size:14px;font-weight:700;color:#183149}.sch2-visit-customer{margin-top:12px;color:#526779;font-size:10px;line-height:1.5}.sch2-visit-meta{display:grid;gap:10px;color:#526779;font-size:10px}.sch2-visit-meta-row{display:flex;align-items:flex-start;gap:8px}.sch2-visit-meta-row i{color:#5d971b;font-size:14px}.sch2-modal-actions{margin-top:16px;display:grid;grid-template-columns:1fr 1fr;gap:10px}.sch2-complete{height:38px;border:0;border-radius:6px;background:#338d22;color:#fff;font-size:10px;font-weight:700}.sch2-more-action{height:38px;border:1px solid #dbe1e6;border-radius:6px;background:#fff;color:#4d8a24;font-size:10px;font-weight:700}.sch2-tabs{margin-top:14px;height:40px;display:flex;gap:25px;border-bottom:1px solid #dfe4e8}.sch2-tab{height:40px;padding:0 7px;border:0;border-bottom:3px solid transparent;background:transparent;color:#4a6074;font-size:10px;font-weight:600}.sch2-tab.active{border-bottom-color:#338d22;color:#19364a}.sch2-tab-panel{display:none;padding-top:12px}.sch2-tab-panel.active{display:block}.sch2-info-block{padding:10px 0;border-bottom:1px solid #e7eaec}.sch2-info-block:last-child{border-bottom:0}.sch2-info-title{margin-bottom:7px;color:#1a344a;font-size:10px;font-weight:700}.sch2-info-text{color:#65778a;font-size:9.5px;line-height:1.55;white-space:pre-wrap}.sch2-info-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}.sch2-modal-line-items{margin-top:8px}.sch2-modal-line{padding:7px 0;display:grid;grid-template-columns:1fr auto;gap:8px;color:#53687b;font-size:9px}.sch2-modal-line .desc{display:block;margin-top:3px;color:#8290a0}.sch2-toast{min-width:240px;max-width:360px;position:fixed;top:86px;right:18px;z-index:180;padding:10px 12px;border-radius:7px;background:#2f8b22;color:#fff;font-size:9px;box-shadow:0 8px 25px rgba(0,0,0,.18);display:none}.sch2-toast.error{background:#cf4f58}.sch2-toast.show{display:block}
-@media(max-width:1100px){.sch2-period{font-size:17px}.sch2-filter-btn{padding:0 9px}.sch2-toolbar{overflow-x:auto}.sch2-toolbar-spacer{min-width:10px}.sch2-view-switch{flex:0 0 auto}}
-@media(max-width:767.98px){.sch2-toolbar{top:64px;padding:8px 10px}.sch2-period{font-size:16px;margin-right:6px}.sch2-btn.find-time{display:none}.sch2-info{display:none}.sch2-month-grid{height:700px}.sch2-modal{padding:8px}.sch2-visit-top{grid-template-columns:1fr}.sch2-popover{width:min(330px,calc(100vw - 18px))}}
+/* ==========================================================
+   Schedule overlays live outside #fieldplxSchedulePage.
+   Keep these rules global and strong so tenant/global CSS
+   cannot expose drawers/modals as raw document content.
+   ========================================================== */
+body .fd-drawer{position:fixed!important;top:70px!important;right:0!important;bottom:0!important;width:370px!important;max-width:95vw!important;background:#fff!important;border-left:1px solid #e5eaf1!important;box-shadow:-8px 0 30px rgba(16,35,62,.10)!important;z-index:1060!important;transform:translateX(105%)!important;visibility:hidden!important;pointer-events:none!important;transition:transform .25s ease,visibility .25s ease!important;display:flex!important;flex-direction:column!important;color:#0b1933!important}
+body .fd-drawer.show{transform:translateX(0)!important;visibility:visible!important;pointer-events:auto!important}
+body .fd-drawer-head{padding:16px 18px!important;border-bottom:1px solid #e5eaf1!important;display:flex!important;align-items:center!important;gap:8px!important;background:#fff!important}
+body .fd-drawer-head h3{margin:0!important;font-size:18px!important;line-height:1.25!important;font-weight:700!important;flex:1!important;color:#0b1933!important}
+body .fd-drawer-body{padding:16px!important;overflow:auto!important;flex:1 1 auto!important;background:#fff!important}
+body .fd-drawer-foot{padding:14px 16px!important;border-top:1px solid #e5eaf1!important;display:flex!important;gap:8px!important;justify-content:flex-end!important;background:#fff!important}
+body .fd-field{margin-bottom:13px!important}
+body .fd-field label{display:block!important;margin-bottom:5px!important;font-size:11px!important;font-weight:700!important;color:#57677a!important}
+body .fd-control{appearance:none!important;width:100%!important;min-width:0!important;height:39px!important;border:1px solid #d8e0e9!important;border-radius:7px!important;padding:8px 10px!important;background:#fff!important;color:#23364d!important;font:inherit!important;font-size:12px!important;box-shadow:none!important}
+body select.fd-control[multiple]{height:auto!important;min-height:112px!important;padding:6px!important}
+body textarea.fd-control{height:82px!important;resize:vertical!important}
+body .fd-control:focus{outline:0!important;border-color:#83b94b!important;box-shadow:0 0 0 3px rgba(116,184,36,.13)!important}
+body .fd-row{display:grid!important;grid-template-columns:1fr 1fr!important;gap:10px!important}
+body .fd-check{display:flex!important;gap:7px!important;align-items:center!important;font-size:12px!important;margin:7px 0!important;color:#23364d!important}
+body .fd-check input{width:auto!important;margin:0!important}
+body .fd-list-card{border:1px solid #e5eaf1!important;border-radius:8px!important;padding:10px!important;margin-bottom:8px!important;background:#fff!important;cursor:pointer!important}
+body .fd-list-card strong{display:block!important;font-size:12px!important;color:#0b1933!important}
+body .fd-list-card small{color:#78869a!important}
+body .fd-dropzone{border:1px dashed #b9c3cf!important;border-radius:9px!important;padding:28px 12px!important;text-align:center!important;color:#8792a0!important;margin-top:12px!important;background:#fbfcfd!important}
+body .fd-drawer .fd-btn,body .fd-modal .fd-btn,body .fd-bulk-bar .fd-btn{appearance:none!important;border:1px solid #d7dee8!important;background:#fff!important;color:#23364d!important;border-radius:8px!important;min-height:38px!important;padding:8px 12px!important;font-weight:700!important;font-size:13px!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;gap:7px!important;cursor:pointer!important;line-height:1!important;text-decoration:none!important}
+body .fd-drawer .fd-btn.primary,body .fd-modal .fd-btn.primary{background:#2f8d25!important;border-color:#2f8d25!important;color:#fff!important}
+body .fd-drawer .fd-icon-btn,body .fd-modal .fd-icon-btn{appearance:none!important;width:38px!important;height:38px!important;min-width:38px!important;padding:0!important;border:1px solid #d7dee8!important;border-radius:8px!important;background:#fff!important;color:#23364d!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;cursor:pointer!important}
 
-    </style>
+body .fd-modal{position:fixed!important;inset:0!important;background:rgba(7,22,43,.42)!important;z-index:1100!important;display:none!important;align-items:flex-start!important;justify-content:center!important;padding:80px 16px 30px!important;overflow:auto!important;visibility:hidden!important;pointer-events:none!important}
+body .fd-modal.show{display:flex!important;visibility:visible!important;pointer-events:auto!important}
+body .fd-dialog{width:500px!important;max-width:96vw!important;background:#fff!important;border:1px solid #e5eaf1!important;border-radius:12px!important;box-shadow:0 18px 60px rgba(0,0,0,.20)!important;overflow:hidden!important;color:#0b1933!important}
+body .fd-dialog.lg{width:720px!important}
+body .fd-modal-head{padding:15px 18px!important;border-bottom:1px solid #e5eaf1!important;display:flex!important;align-items:center!important;gap:8px!important;background:#fff!important}
+body .fd-modal-head h3{margin:0!important;flex:1!important;font-size:18px!important;font-weight:700!important;color:#0b1933!important}
+body .fd-modal-body{padding:16px 18px!important;background:#fff!important}
+body .fd-modal-foot{padding:13px 18px!important;border-top:1px solid #e5eaf1!important;display:flex!important;justify-content:flex-end!important;gap:8px!important;background:#fff!important}
+body .fd-tabs{display:flex!important;border-bottom:1px solid #e5eaf1!important;margin:-16px -18px 16px!important}
+body .fd-tabs button{appearance:none!important;flex:1!important;padding:12px!important;border:0!important;background:#fff!important;font-weight:700!important;color:#6b7889!important;cursor:pointer!important}
+body .fd-tabs button.active{color:#2f7d25!important;border-bottom:3px solid #2f8d25!important}
+body .fd-type-panel{display:none!important}
+body .fd-type-panel.active{display:block!important}
+body .fd-settings-preview{border:1px solid #e5eaf1!important;border-radius:8px!important;padding:10px!important;background:#fafbfc!important}
+body .fd-preview-card{height:30px!important;border-radius:5px!important;background:#eaf5e4!important;border-left:3px solid #56a92d!important;margin:6px 0!important}
+body .fd-find-slot{display:flex!important;justify-content:space-between!important;align-items:center!important;border:1px solid #e5eaf1!important;border-radius:8px!important;padding:9px 10px!important;margin:7px 0!important;background:#fff!important}
+
+body .fd-toast{position:fixed!important;top:82px!important;right:18px!important;z-index:1200!important;min-width:260px!important;max-width:420px!important;padding:11px 14px!important;border-radius:9px!important;color:#fff!important;background:#26374b!important;box-shadow:0 10px 30px rgba(0,0,0,.18)!important;display:none!important}
+body .fd-toast.show{display:block!important}
+body .fd-toast.success{background:#2e7d32!important}
+body .fd-toast.error{background:#b93c4a!important}
+body .fd-toast.warning{background:#9a671d!important}
+
+body .fd-bulk-bar{position:fixed!important;left:50%!important;bottom:22px!important;transform:translateX(-50%)!important;z-index:1080!important;background:#0e2648!important;color:#fff!important;border-radius:10px!important;padding:10px 12px!important;display:none!important;align-items:center!important;gap:10px!important;box-shadow:0 10px 35px rgba(0,0,0,.25)!important}
+body .fd-bulk-bar.show{display:flex!important}
+
+@media(max-width:991.98px){body .fd-drawer{top:64px!important}}
+@media(max-width:767.98px){body .fd-drawer{width:100vw!important;max-width:100vw!important}body .fd-modal{padding:72px 10px 20px!important}body .fd-dialog,body .fd-dialog.lg{width:100%!important;max-width:100%!important}body .fd-row{grid-template-columns:1fr!important}}
+
+/* Jobber-style quick create optional fields */
+body .fd-quick-actions{display:flex!important;flex-direction:column!important;align-items:flex-start!important;gap:12px!important;margin:2px 0 14px!important}
+body .fd-add-action{appearance:none!important;min-height:40px!important;padding:8px 13px!important;display:inline-flex!important;align-items:center!important;gap:9px!important;border:1px solid #d7dee8!important;border-radius:8px!important;background:#fff!important;color:#294052!important;font:700 13px/1.2 Arial,Helvetica,sans-serif!important;cursor:pointer!important}
+body .fd-add-action:hover{border-color:#9bc66e!important;background:#f7fbf2!important;color:#2f7d25!important}
+body .fd-add-action i{font-size:15px!important}
+body .fd-optional-section{width:100%!important;margin:0!important}
+body .fd-optional-section[hidden]{display:none!important}
+body .fd-remove-optional{appearance:none!important;margin-top:5px!important;padding:2px 0!important;border:0!important;background:transparent!important;color:#748294!important;font-size:10px!important;cursor:pointer!important}
+body .fd-remove-optional:hover{color:#b93c4a!important}
+body .fd-client-search-wrap{position:relative!important}
+body .fd-client-search-input{height:48px!important;font-size:14px!important;padding:10px 14px!important}
+body .fd-client-results{position:absolute!important;left:0!important;right:0!important;top:calc(100% + 6px)!important;z-index:120!important;display:none!important;max-height:290px!important;overflow:auto!important;border:1px solid #d8e0e9!important;border-radius:9px!important;background:#fff!important;box-shadow:0 10px 28px rgba(16,35,62,.14)!important}
+body .fd-client-results.show{display:block!important}
+body .fd-client-result{width:100%!important;min-height:44px!important;padding:9px 12px!important;display:flex!important;align-items:center!important;gap:9px!important;border:0!important;border-bottom:1px solid #eef1f4!important;background:#fff!important;color:#23364d!important;text-align:left!important;font-size:12px!important;cursor:pointer!important}
+body .fd-client-result:last-child{border-bottom:0!important}
+body .fd-client-result:hover{background:#f8fafc!important}
+body .fd-client-result strong,body .fd-client-result small{display:block!important}
+body .fd-client-result small{margin-top:2px!important;color:#7b8796!important;font-size:10px!important}
+body .fd-client-create{color:#2f8d25!important;font-weight:700!important;font-size:13px!important}
+body .fd-client-create i{font-size:16px!important}
+
+
+/* Jobber-style inline Create client or address */
+body #quickClientCreateModal{z-index:1130!important}
+body #quickClientCreateModal .fd-dialog{width:620px!important;max-width:calc(100vw - 28px)!important}
+body .fd-client-create-title{font-size:20px!important;font-weight:700!important;color:#0b1933!important}
+body .fd-client-create-grid{display:grid!important;grid-template-columns:1fr 1fr!important;gap:12px!important}
+body .fd-client-create-grid .full{grid-column:1/-1!important}
+body .fd-client-create-section{margin:2px 0 14px!important;color:#5c6d80!important;font-size:11px!important;font-weight:700!important;text-transform:uppercase!important;letter-spacing:.04em!important}
+body .fd-client-create-error{display:none!important;margin:0 0 12px!important;padding:9px 11px!important;border:1px solid #f0c6ca!important;border-radius:8px!important;background:#fff3f4!important;color:#a33b46!important;font-size:11px!important}
+body .fd-client-create-error.show{display:block!important}
+body #saveInlineClient[disabled]{opacity:.6!important;cursor:not-allowed!important}
+@media(max-width:767.98px){body .fd-client-create-grid{grid-template-columns:1fr!important}body .fd-client-create-grid .full{grid-column:auto!important}}
+
+</style>
 </head>
 <body>
 <?php require_once __DIR__ . '/includes/nav.php'; ?>
 <div class="fieldplx-main-layout">
-    <?php require_once __DIR__ . '/includes/sidebar.php'; ?>
-    <main class="fieldplx-main-content">
-        <div class="fieldplx-content-wrapper">
-            <div class="fd-dashboard schedule-workspace">
-                <section class="sch2-card">
-                    <div class="sch2-toolbar">
-                        <div class="sch2-period"><?= schH($heading) ?> <i class="bi bi-chevron-down"></i></div>
-                        <a class="sch2-icon-btn" href="<?= schH($previousUrl) ?>" aria-label="Previous"><i class="bi bi-arrow-left"></i></a>
-                        <a class="sch2-icon-btn" href="<?= schH($nextUrl) ?>" aria-label="Next"><i class="bi bi-arrow-right"></i></a>
-                        <a class="sch2-btn" href="<?= schH($todayUrl) ?>">Today</a>
-                        <a class="sch2-btn primary find-time" href="<?= schH($findTimeUrl) ?>">Find a Time</a>
-
-                        <div class="sch2-filter-wrap">
-                            <button type="button" class="sch2-filter-btn <?= $typeFilter !== 'all' ? 'active' : '' ?>" data-dropdown="typeDropdown">Type <span class="muted">|</span> <?= schH($typeLabel) ?></button>
-                            <div class="sch2-dropdown" id="typeDropdown">
-                                <div class="sch2-dropdown-list">
-                                    <?php foreach (array('all'=>'All','visit'=>'Visits','job'=>'Jobs') as $value=>$label): ?>
-                                        <a class="sch2-choice <?= $typeFilter === $value ? 'selected' : '' ?>" href="<?= schH(schBuildUrl(array('type'=>$value))) ?>">
-                                            <span><?= schH($label) ?></span><?php if ($typeFilter === $value): ?><i class="bi bi-check-lg sch2-choice-check"></i><?php endif; ?>
-                                        </a>
-                                    <?php endforeach; ?>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="sch2-filter-wrap">
-                            <button type="button" class="sch2-filter-btn <?= $teamFilterActive ? 'active' : '' ?>" data-dropdown="teamDropdown">Team <span class="muted">|</span> <?= schH($teamLabel) ?></button>
-                            <div class="sch2-dropdown" id="teamDropdown">
-                                <div class="sch2-dropdown-search"><input type="search" id="teamSearch" placeholder="Search"></div>
-                                <div class="sch2-dropdown-list" id="teamChoices">
-                                    <?php foreach ($employees as $employee): ?>
-                                        <?php $eid=(int)$employee['id']; $ename=trim($employee['first_name'].' '.$employee['last_name']); $checked=!$teamFilterActive || in_array($eid,$selectedTeamIds,true); ?>
-                                        <label class="sch2-choice team-choice" data-search="<?= schH(strtolower($ename)) ?>">
-                                            <input type="checkbox" class="team-check" value="<?= $eid ?>" <?= $checked ? 'checked' : '' ?> hidden>
-                                            <span class="sch2-choice-avatar"><?= schH(schInitials($ename)) ?></span>
-                                            <span><?= schH($ename) ?></span>
-                                            <i class="bi bi-check-lg sch2-choice-check"></i>
-                                        </label>
-                                    <?php endforeach; ?>
-                                    <label class="sch2-choice team-choice" data-search="unassigned">
-                                        <input type="checkbox" id="teamUnassigned" <?= $includeUnassigned ? 'checked' : '' ?> hidden>
-                                        <span class="sch2-choice-avatar unassigned"><i class="bi bi-person-slash"></i></span>
-                                        <span>Unassigned</span>
-                                        <i class="bi bi-check-lg sch2-choice-check"></i>
-                                    </label>
-                                </div>
-                                <div class="sch2-dropdown-foot">
-                                    <button type="button" class="sch2-link-btn secondary" id="teamSelectAll">Select All</button>
-                                    <button type="button" class="sch2-link-btn" id="teamClear">Clear</button>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="sch2-filter-wrap">
-                            <button type="button" class="sch2-filter-btn <?= $statusFilterActive ? 'active' : '' ?>" data-dropdown="statusDropdown">Status <span class="muted">|</span> <?= schH($statusLabel) ?></button>
-                            <div class="sch2-dropdown" id="statusDropdown">
-                                <div class="sch2-dropdown-list" id="statusChoices">
-                                    <?php foreach ($allowedStatuses as $statusOption): ?>
-                                        <?php $checked=!$statusFilterActive || in_array($statusOption,$selectedStatuses,true); ?>
-                                        <label class="sch2-choice status-choice">
-                                            <input type="checkbox" class="status-check" value="<?= schH($statusOption) ?>" <?= $checked ? 'checked' : '' ?> hidden>
-                                            <span><?= schH(schReadable($statusOption)) ?></span>
-                                            <i class="bi bi-check-lg sch2-choice-check"></i>
-                                        </label>
-                                    <?php endforeach; ?>
-                                </div>
-                                <div class="sch2-dropdown-foot">
-                                    <button type="button" class="sch2-link-btn secondary" id="statusSelectAll">Select All</button>
-                                    <button type="button" class="sch2-link-btn" id="statusClear">Clear</button>
-                                </div>
-                            </div>
-                        </div>
-
-                        <div class="sch2-toolbar-spacer"></div>
-                        <i class="bi bi-info-circle sch2-info" title="Schedule shows visits and job assignments for the selected period."></i>
-                        <div class="sch2-view-switch">
-                            <a class="sch2-view-btn <?= $view === 'month' ? 'active' : '' ?>" href="<?= schH($monthUrl) ?>">Month</a>
-                            <a class="sch2-view-btn <?= $view === 'week' ? 'active' : '' ?>" href="<?= schH($weekUrl) ?>">Week</a>
-                            <a class="sch2-view-btn <?= $view === 'day' ? 'active' : '' ?>" href="<?= schH($dayUrl) ?>">Day</a>
-                        </div>
-                        <div class="sch2-menu-wrap">
-                            <button type="button" class="sch2-btn" data-dropdown="moreDropdown"><i class="bi bi-three-dots"></i> More</button>
-                            <div class="sch2-dropdown right" id="moreDropdown">
-                                <div class="sch2-dropdown-list">
-                                    <a class="sch2-choice" href="job-form.php"><i class="bi bi-plus-lg"></i><span>Create Job</span></a>
-                                    <a class="sch2-choice" href="jobs.php"><i class="bi bi-briefcase"></i><span>View Jobs</span></a>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <form id="scheduleHiddenFilter" method="get" action="schedule.php" style="display:none">
-                        <input type="hidden" name="view" value="<?= schH($view) ?>">
-                        <input type="hidden" name="date" value="<?= schH($selectedDate) ?>">
-                        <?php if ($branchId > 0): ?><input type="hidden" name="branch_id" value="<?= (int)$branchId ?>"><?php endif; ?>
-                        <input type="hidden" name="type" value="<?= schH($typeFilter) ?>">
-                        <input type="hidden" name="team_filter" id="teamFilterFlag" value="<?= $teamFilterActive ? 1 : 0 ?>">
-                        <input type="hidden" name="team_ids" id="teamIdsInput" value="<?= schH(implode(',',$selectedTeamIds)) ?>">
-                        <input type="hidden" name="include_unassigned" id="teamUnassignedInput" value="<?= $includeUnassigned ? 1 : 0 ?>">
-                        <input type="hidden" name="status_filter" id="statusFilterFlag" value="<?= $statusFilterActive ? 1 : 0 ?>">
-                        <input type="hidden" name="statuses" id="statusesInput" value="<?= schH(implode(',',$selectedStatuses)) ?>">
-                    </form>
-
-                    <div class="sch2-calendar">
-                    <?php if ($view === 'month'): ?>
-                        <div class="sch2-scroll">
-                            <div class="sch2-month-weekdays">
-                                <?php foreach (array('Sun','Mon','Tue','Wed','Thu','Fri','Sat') as $weekday): ?><div class="sch2-month-weekday"><?= schH($weekday) ?></div><?php endforeach; ?>
-                            </div>
-                            <div class="sch2-month-grid">
-                                <?php foreach ($displayDays as $day): ?>
-                                    <?php $dayKey=$day->format('Y-m-d'); $items=isset($eventsByDay[$dayKey])?$eventsByDay[$dayKey]:array(); $outside=$day->format('Y-m')!==$currentMonthKey; $isToday=$dayKey===date('Y-m-d'); $isSelected=$dayKey===$selectedDate; ?>
-                                    <div class="sch2-month-day <?= $outside?'outside':'' ?> <?= $isToday?'today':'' ?> <?= $isSelected?'selected':'' ?>">
-                                        <div class="sch2-month-day-head">
-                                            <span class="sch2-month-date"><?= schH($day->format('j')) ?></span>
-                                            <?php if ($items): ?><span class="sch2-visit-count"><?= count($items) ?> visit<?= count($items)===1?'':'s' ?></span><?php endif; ?>
-                                        </div>
-                                        <div class="sch2-month-events">
-                                            <?php foreach (array_slice($items,0,4) as $event): ?>
-                                                <?php $eventClass=schEventClass($event['status']); $person=!empty($event['assignee_names'][0])?$event['assignee_names'][0]:''; ?>
-                                                <button type="button" class="sch2-month-event <?= schH($eventClass) ?> schedule-event" data-event-key="<?= schH($event['key']) ?>">
-                                                    <?php if ($person!==''): ?><span class="avatar"><?= schH(schInitials($person)) ?></span><?php endif; ?>
-                                                    <span class="title"><?= schH($event['service']!==''?$event['service']:$event['title']) ?></span>
-                                                </button>
-                                            <?php endforeach; ?>
-                                            <?php if (count($items)>4): ?><a class="sch2-month-more" href="<?= schH(schBuildUrl(array('view'=>'day','date'=>$dayKey))) ?>">+<?= count($items)-4 ?> more</a><?php endif; ?>
-                                        </div>
-                                    </div>
-                                <?php endforeach; ?>
-                            </div>
-                        </div>
-                    <?php elseif ($view === 'week'): ?>
-                        <div class="sch2-scroll">
-                            <div class="sch2-week-wrap">
-                                <div class="sch2-week-head">
-                                    <div class="sch2-week-corner"></div>
-                                    <?php foreach ($displayDays as $day): ?>
-                                        <?php $dayKey=$day->format('Y-m-d'); ?>
-                                        <div class="sch2-week-day <?= $dayKey===date('Y-m-d')?'today':'' ?> <?= $dayKey===$selectedDate?'selected':'' ?>">
-                                            <div><?= schH($day->format('D')) ?></div><div class="date"><?= schH($day->format('j')) ?></div>
-                                        </div>
-                                    <?php endforeach; ?>
-                                </div>
-                                <div class="sch2-anytime-row">
-                                    <div class="sch2-anytime-label">Anytime</div>
-                                    <?php foreach ($displayDays as $day): ?>
-                                        <?php $dayKey=$day->format('Y-m-d'); $items=isset($anytimeEventsByDay[$dayKey])?$anytimeEventsByDay[$dayKey]:array(); ?>
-                                        <div class="sch2-anytime-cell">
-                                            <?php foreach ($items as $event): ?><button type="button" class="sch2-anytime-event schedule-event" data-event-key="<?= schH($event['key']) ?>"><?= schH($event['service']!==''?$event['service']:$event['title']) ?></button><?php endforeach; ?>
-                                        </div>
-                                    <?php endforeach; ?>
-                                </div>
-                                <div class="sch2-week-body">
-                                    <div class="sch2-time-axis">
-                                        <?php for($hour=0;$hour<24;$hour++): ?><div class="sch2-time-label" style="top:<?= $hour*64 ?>px"><?= schH(date('g A',mktime($hour,0,0,1,1,2026))) ?></div><?php endfor; ?>
-                                    </div>
-                                    <?php foreach ($displayDays as $day): ?>
-                                        <?php $dayKey=$day->format('Y-m-d'); $items=isset($timedEventsByDay[$dayKey])?$timedEventsByDay[$dayKey]:array(); ?>
-                                        <div class="sch2-week-column <?= $dayKey===date('Y-m-d')?'today':'' ?>">
-                                            <?php foreach ($items as $event): ?>
-                                                <?php $st=strtotime($event['start']);$et=strtotime($event['end']);if(!$et||$et<=$st)$et=$st+3600;$minute=(int)date('G',$st)*60+(int)date('i',$st);$duration=max(20,($et-$st)/60);$top=$minute/60*64;$height=max(22,$duration/60*64);$lanes=max(1,(int)$event['lane_count']);$lane=max(0,(int)$event['lane']);$width=100/$lanes;$left=$lane*$width;$cls=schEventClass($event['status']); ?>
-                                                <button type="button" class="sch2-week-event <?= schH($cls) ?> schedule-event" data-event-key="<?= schH($event['key']) ?>" style="top:<?= number_format($top,2,'.','') ?>px;height:<?= number_format($height,2,'.','') ?>px;left:calc(<?= number_format($left,4,'.','') ?>% + 3px);width:calc(<?= number_format($width,4,'.','') ?>% - 6px)">
-                                                    <span class="line1"><?= schH($event['service']!==''?$event['service']:$event['title']) ?></span>
-                                                    <?php if($height>=40): ?><span class="line2"><?= schH(date('g:i A',$st)) ?> · <?= schH($event['customer']) ?></span><?php endif; ?>
-                                                </button>
-                                            <?php endforeach; ?>
-                                        </div>
-                                    <?php endforeach; ?>
-                                </div>
-                            </div>
-                        </div>
-                    <?php else: ?>
-                        <div class="sch2-day-scroller">
-                            <div class="sch2-day-wrap">
-                                <div class="sch2-resource-head">Anytime</div>
-                                <div class="sch2-day-timeline-head">
-                                    <button type="button" class="sch2-anytime-toggle" id="anytimeToggle">Anytime</button>
-                                    <div class="sch2-day-hours">
-                                        <?php for($hour=0;$hour<24;$hour++): ?><span class="sch2-day-hour" style="left:<?= $hour*96 ?>px"><?= schH(date('g A',mktime($hour,0,0,1,1,2026))) ?></span><?php endfor; ?>
-                                    </div>
-                                </div>
-                                <?php foreach($resourceRows as $idx=>$resource): ?>
-                                    <?php $rid=(int)$resource['id'];$rowItems=array();foreach($dayTimedEvents as $event){$ids=array_map('intval',$event['assignee_ids']);if(($rid===0&&!$ids)||($rid>0&&in_array($rid,$ids,true)))$rowItems[]=$event;} ?>
-                                    <div class="sch2-resource-row <?= $idx%2?'alt':'' ?>">
-                                        <span class="sch2-resource-avatar <?= $rid===0?'unassigned':'' ?>"><?= $rid===0?'<i class="bi bi-person-slash"></i>':schH($resource['initials']) ?></span>
-                                        <span class="sch2-resource-copy"><span class="sch2-resource-name"><?= schH($resource['name']) ?></span><span class="sch2-resource-count"><?= count($rowItems) ?><?= count($rowItems)?' visit'.(count($rowItems)===1?'':'s'):'' ?></span></span>
-                                    </div>
-                                    <div class="sch2-resource-timeline <?= $idx%2?'alt':'' ?>">
-                                        <div class="sch2-day-timeline-inner">
-                                            <?php foreach($rowItems as $event): ?>
-                                                <?php $st=strtotime($event['start']);$et=strtotime($event['end']);if(!$et||$et<=$st)$et=$st+3600;$minute=(int)date('G',$st)*60+(int)date('i',$st);$dur=max(15,($et-$st)/60);$left=$minute/60*96;$width=max(48,$dur/60*96); ?>
-                                                <button type="button" class="sch2-day-event schedule-event" data-event-key="<?= schH($event['key']) ?>" style="left:<?= number_format($left,2,'.','') ?>px;width:<?= number_format($width,2,'.','') ?>px"><span class="line1"><?= schH($event['service']!==''?$event['service']:$event['title']) ?></span><span class="line2"><?= schH(date('g:i A',$st)) ?></span></button>
-                                            <?php endforeach; ?>
-                                        </div>
-                                    </div>
-                                <?php endforeach; ?>
-                            </div>
-                        </div>
-                        <aside class="sch2-anytime-drawer" id="anytimeDrawer">
-                            <div class="sch2-anytime-drawer-head"><span>Anytime</span><button type="button" class="sch2-popover-close" id="anytimeClose">&times;</button></div>
-                            <div class="sch2-anytime-drawer-list">
-                                <?php if(!$dayAnytimeEvents): ?><div style="padding:8px;color:#83909d;font-size:9px">No anytime visits.</div><?php endif; ?>
-                                <?php foreach($dayAnytimeEvents as $event): ?><button type="button" class="sch2-anytime-drawer-event schedule-event" data-event-key="<?= schH($event['key']) ?>"><?= schH($event['service']!==''?$event['service']:$event['title']) ?></button><?php endforeach; ?>
-                            </div>
-                        </aside>
-                    <?php endif; ?>
-                    </div>
-                </section>
-            </div>
-        </div>
-    </main>
-</div>
-<?php require_once __DIR__ . '/includes/footer.php'; ?>
-
-<div class="sch2-popover" id="eventPopover" aria-hidden="true">
-    <div class="sch2-popover-head"><div><div class="sch2-popover-kicker" id="popKicker">Visit</div><div class="sch2-popover-title" id="popTitle">-</div></div><button type="button" class="sch2-popover-close" id="popClose">&times;</button></div>
-    <div class="sch2-popover-body" id="popBody"></div>
-    <div class="sch2-pop-actions"><button type="button" class="sch2-btn" id="popFindTime"><i class="bi bi-clock"></i> Find a time</button><a class="sch2-btn" id="popEdit" href="#">Edit</a><button type="button" class="sch2-btn primary" id="popDetails">Details</button></div>
-</div>
-
-<div class="sch2-modal" id="visitModal" aria-hidden="true">
-    <div class="sch2-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="visitModalTitle">
-        <div class="sch2-modal-head"><h2 class="sch2-modal-title" id="visitModalTitle">Visit Details</h2><button type="button" class="sch2-modal-close" id="visitModalClose">&times;</button></div>
-        <div class="sch2-modal-body">
-            <div class="sch2-visit-top"><div><div class="sch2-visit-name" id="modalVisitName">-</div><div class="sch2-visit-customer" id="modalCustomer"></div></div><div class="sch2-visit-meta" id="modalMeta"></div></div>
-            <div class="sch2-modal-actions"><button type="button" class="sch2-complete" id="modalComplete">Mark Complete</button><a class="sch2-more-action" id="modalEdit" href="#">Edit Job</a></div>
-            <div class="sch2-tabs"><button type="button" class="sch2-tab active" data-tab="info">Info</button><button type="button" class="sch2-tab" data-tab="client">Customer</button><button type="button" class="sch2-tab" data-tab="notes">Notes</button></div>
-            <div class="sch2-tab-panel active" data-panel="info" id="modalInfo"></div>
-            <div class="sch2-tab-panel" data-panel="client" id="modalClient"></div>
-            <div class="sch2-tab-panel" data-panel="notes" id="modalNotes"></div>
-        </div>
+<?php require_once __DIR__ . '/includes/sidebar.php'; ?>
+<main class="fieldplx-main-content"><div class="fieldplx-content-wrapper"><section class="fd-schedule" id="fieldplxSchedulePage">
+  <header class="fd-schedule-head">
+    <div class="fd-head-row">
+      <div class="fd-title" id="periodTitle">Schedule</div>
+      <button class="fd-icon-btn" id="prevBtn" title="Previous"><i class="bi bi-chevron-left"></i></button>
+      <button class="fd-icon-btn" id="nextBtn" title="Next"><i class="bi bi-chevron-right"></i></button>
+      <button class="fd-btn" id="todayBtn">Today</button>
+      <button class="fd-btn primary" id="findTimeBtn"><i class="bi bi-clock"></i> Find a Time</button>
+      <div class="fd-segment" id="viewSegment"><button data-view="month" class="active">Month</button><button data-view="week">Week</button><button data-view="day">Day</button></div>
+      <button class="fd-btn" id="unscheduledBtn"><i class="bi bi-inbox"></i> Unscheduled <span id="unscheduledCount">0</span></button>
+      <button class="fd-icon-btn" id="mapBtn" title="Map"><i class="bi bi-map"></i></button>
+      <div class="fd-relative"><button class="fd-btn" id="moreBtn"><i class="bi bi-three-dots"></i> More</button><div class="fd-popover" id="moreMenu"><button data-more="bulk">Reschedule &amp; reassign</button><button data-more="newvisit">Create new visits</button><button data-more="crews">Manage crews</button><button data-more="settings">Schedule Settings</button></div></div>
     </div>
+    <div class="fd-toolbar">
+      <div class="fd-relative"><button class="fd-chip" data-filter-btn="type">Type <b id="typeLabel">All</b> <i class="bi bi-chevron-down"></i></button><div class="fd-filter-menu" id="typeMenu"><input class="fd-search" placeholder="Search" data-filter-search="type"><div id="typeOptions"></div><div class="fd-filter-actions"><button class="fd-link-btn" data-select-all="type">Select All</button><button class="fd-link-btn" data-clear="type">Clear</button></div></div></div>
+      <div class="fd-relative"><button class="fd-chip" data-filter-btn="team">Team <b id="teamLabel">All</b> <i class="bi bi-chevron-down"></i></button><div class="fd-filter-menu" id="teamMenu"><input class="fd-search" placeholder="Search" data-filter-search="team"><div id="teamOptions"></div><div class="fd-filter-actions"><button class="fd-link-btn" data-select-all="team">Select All</button><button class="fd-link-btn" data-clear="team">Clear</button></div></div></div>
+      <div class="fd-relative"><button class="fd-chip" data-filter-btn="status">Status <b id="statusLabel">All</b> <i class="bi bi-chevron-down"></i></button><div class="fd-filter-menu" id="statusMenu"><input class="fd-search" placeholder="Search" data-filter-search="status"><div id="statusOptions"></div><div class="fd-filter-actions"><button class="fd-link-btn" data-select-all="status">Select All</button><button class="fd-link-btn" data-clear="status">Clear</button></div></div></div>
+    </div>
+  </header>
+  <div class="fd-calendar-wrap" id="calendarWrap">
+    <div class="fd-calendar-main">
+      <div id="monthView" class="fd-month"></div>
+      <div id="weekView" class="fd-week"><div id="weekGrid" class="fd-week-grid"></div></div>
+      <div id="dayView" class="fd-day-view"><div class="fd-agenda" id="dayAgenda"></div></div>
+    </div>
+  </div>
+</section></div></main></div>
+
+<div class="fd-drawer" id="unscheduledDrawer"><div class="fd-drawer-head"><h3>Unscheduled <span id="drawerUnscheduledCount">0</span></h3><button class="fd-icon-btn" data-close-drawer="unscheduledDrawer"><i class="bi bi-x-lg"></i></button></div><div class="fd-drawer-body"><div class="fd-field"><select id="unscheduledSort" class="fd-control"><option value="oldest">Oldest first</option><option value="newest">Newest first</option><option value="az">Client A-Z</option><option value="za">Client Z-A</option><option value="manual">Manual</option></select></div><div id="unscheduledList"></div><div class="fd-dropzone" id="unscheduleDropzone"><i class="bi bi-box-arrow-in-down" style="font-size:25px"></i><div style="margin-top:8px">Drag items here to unschedule them</div></div></div></div>
+
+<div class="fd-drawer" id="detailDrawer"><div class="fd-drawer-head"><h3 id="detailTitle">Appointment</h3><button class="fd-icon-btn" data-close-drawer="detailDrawer"><i class="bi bi-x-lg"></i></button></div><div class="fd-drawer-body" id="detailBody"></div><div class="fd-drawer-foot"><button class="fd-btn" id="detailFindTime">Find a Time</button><button class="fd-btn" id="detailEdit">Edit</button><button class="fd-btn primary" id="detailOpen">Details</button></div></div>
+
+<div class="fd-drawer" id="bulkDrawer"><div class="fd-drawer-head"><h3>Reschedule and reassign appointments</h3><button class="fd-icon-btn" data-close-drawer="bulkDrawer"><i class="bi bi-x-lg"></i></button></div><div class="fd-drawer-body"><p style="color:#728095;font-size:12px">From the schedule or map, select the appointments you want to reschedule or reassign.</p><div class="fd-field"><label>RESCHEDULE TO</label><select id="bulkMode" class="fd-control"><option value="none">No change</option><option value="specific">Specific date</option><option value="shift">Shift by days</option></select></div><div class="fd-field" id="bulkDateWrap" style="display:none"><label>Choose date</label><input id="bulkDate" type="date" class="fd-control"></div><div class="fd-field" id="bulkShiftWrap" style="display:none"><label>Shift by days</label><div class="fd-row"><button class="fd-btn" id="shiftMinus">-</button><input id="bulkShift" type="number" class="fd-control" value="1"><button class="fd-btn" id="shiftPlus">+</button></div></div><div class="fd-field"><label>REASSIGN TO</label><select id="bulkAssignees" class="fd-control" multiple size="6"></select></div><div style="font-weight:700" id="bulkCount">0 appointments selected</div></div><div class="fd-drawer-foot"><button class="fd-btn primary" id="bulkConfirm" disabled>Confirm</button></div></div>
+
+<div class="fd-drawer" id="crewsDrawer"><div class="fd-drawer-head"><h3>Crews</h3><button class="fd-btn primary" id="addCrewBtn"><i class="bi bi-plus-lg"></i> Add crew</button><button class="fd-icon-btn" data-close-drawer="crewsDrawer"><i class="bi bi-x-lg"></i></button></div><div class="fd-drawer-body" id="crewsList"></div></div>
+
+<div class="fd-drawer" id="findDrawer"><div class="fd-drawer-head"><h3>Find a Time</h3><button class="fd-icon-btn" data-close-drawer="findDrawer"><i class="bi bi-x-lg"></i></button></div><div class="fd-drawer-body"><div class="fd-field"><label>Team member</label><select id="findUser" class="fd-control"></select></div><div class="fd-field"><label>Crew</label><select id="findCrew" class="fd-control"></select></div><div class="fd-row"><div class="fd-field"><label>Starting</label><input id="findDate" type="date" class="fd-control"></div><div class="fd-field"><label>Days</label><input id="findDays" type="number" min="1" max="31" value="7" class="fd-control"></div></div><div class="fd-field"><label>Duration in minutes</label><input id="findDuration" type="number" min="15" step="15" value="60" class="fd-control"></div><button class="fd-btn primary" id="findSearch">Find available times</button><div id="findResults" style="margin-top:14px"></div></div></div>
+
+<div class="fd-modal" id="quickModal"><div class="fd-dialog"><div class="fd-modal-head"><h3 id="quickHeading">New appointment</h3><button class="fd-icon-btn" data-close-modal="quickModal"><i class="bi bi-x-lg"></i></button></div><div class="fd-modal-body"><div class="fd-tabs" id="quickTabs"><button class="active" data-qtype="job">Job</button><button data-qtype="request">Request</button><button data-qtype="task">Task</button><button data-qtype="event">Event</button></div>
+<div id="commonClient" class="fd-type-panel active">
+  <div class="fd-field fd-client-search-wrap">
+    <input id="quickClientSearch" class="fd-control fd-client-search-input" autocomplete="off" placeholder="Search client or address">
+    <input type="hidden" id="quickClient" value="">
+    <div class="fd-client-results" id="quickClientResults"></div>
+  </div>
+  <div class="fd-field fd-optional-section" id="quickPropertyWrap" hidden><label>Property</label><select id="quickProperty" class="fd-control"></select></div>
 </div>
-<div class="sch2-toast" id="scheduleToast"></div>
+<div class="fd-field"><input id="quickTitle" class="fd-control" placeholder="Title"></div>
+<div class="fd-quick-actions" id="quickOptionalActions">
+  <button type="button" class="fd-add-action" id="addInstructionsBtn"><i class="bi bi-plus-lg"></i> Add Instructions</button>
+  <div class="fd-optional-section" id="instructionsSection" hidden><textarea id="quickDescription" class="fd-control" placeholder="Add instructions"></textarea><button type="button" class="fd-remove-optional" data-hide-optional="instructionsSection">Remove</button></div>
+  <button type="button" class="fd-add-action" id="addLineItemBtn"><i class="bi bi-plus-lg"></i> Add Line Item</button>
+  <div class="fd-optional-section" id="lineItemWrap" hidden><select id="quickLineItem" class="fd-control"><option value="">Select line item</option></select><button type="button" class="fd-remove-optional" data-hide-optional="lineItemWrap">Remove</button></div>
+  <button type="button" class="fd-add-action" id="addAssignBtn"><i class="bi bi-plus-lg"></i> Assign</button>
+  <div class="fd-optional-section" id="assignSection" hidden><select id="quickAssignees" class="fd-control" multiple size="4"></select><button type="button" class="fd-remove-optional" data-hide-optional="assignSection">Remove</button></div>
+</div><label class="fd-check"><input type="checkbox" id="quickScheduleLater"> Unscheduled / Schedule later</label><div id="quickScheduleFields"><div class="fd-row"><div class="fd-field"><label>Start Date</label><input id="quickDate" type="date" class="fd-control"></div><div class="fd-field"><label>Duration in hours</label><input id="quickDuration" type="number" min="0.25" step="0.25" value="1" class="fd-control"></div></div><div class="fd-row"><div class="fd-field"><label>Start Time</label><input id="quickTime" type="time" value="09:00" class="fd-control"></div><div class="fd-field" id="quickEndDateWrap" style="display:none"><label>End Date</label><input id="quickEndDate" type="date" class="fd-control"></div></div><label class="fd-check"><input type="checkbox" id="quickAnytime"> Anytime</label><label class="fd-check"><input type="checkbox" id="quickAvailability"> Show availability</label></div><div id="repeatWrap" style="display:none"><div class="fd-field"><label>Repeats</label><select id="quickRepeats" class="fd-control"><option value="never">Never</option><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="yearly">Yearly</option></select></div></div></div><div class="fd-modal-foot"><button class="fd-btn" id="moreOptionsBtn">More Options</button><button class="fd-btn primary" id="quickSave">Save</button></div></div></div>
+
+
+<div class="fd-modal" id="quickClientCreateModal">
+  <div class="fd-dialog">
+    <div class="fd-modal-head">
+      <h3 class="fd-client-create-title">Create client or address</h3>
+      <button type="button" class="fd-icon-btn" data-close-modal="quickClientCreateModal" aria-label="Close"><i class="bi bi-x-lg"></i></button>
+    </div>
+    <div class="fd-modal-body">
+      <div class="fd-client-create-error" id="inlineClientCreateError"></div>
+      <div class="fd-client-create-section">Client details</div>
+      <div class="fd-client-create-grid">
+        <div class="fd-field"><label>First Name</label><input id="clientCreateFirstName" class="fd-control" autocomplete="given-name" placeholder="First name"></div>
+        <div class="fd-field"><label>Last Name</label><input id="clientCreateLastName" class="fd-control" autocomplete="family-name" placeholder="Last name"></div>
+        <div class="fd-field full"><label>Company</label><input id="clientCreateCompany" class="fd-control" autocomplete="organization" placeholder="Company name"></div>
+        <div class="fd-field"><label>Phone</label><input id="clientCreatePhone" class="fd-control" autocomplete="tel" placeholder="Phone number"></div>
+        <div class="fd-field"><label>Email</label><input id="clientCreateEmail" type="email" class="fd-control" autocomplete="email" placeholder="Email"></div>
+        <div class="fd-field full"><label>Lead Source</label><input id="clientCreateSource" class="fd-control" list="clientCreateSourceList" placeholder="Lead source"><datalist id="clientCreateSourceList"></datalist></div>
+      </div>
+      <div class="fd-client-create-section" style="margin-top:8px!important">Property / address</div>
+      <div class="fd-client-create-grid">
+        <div class="fd-field full"><label>Street 1</label><input id="clientCreateStreet1" class="fd-control" autocomplete="address-line1" placeholder="Street 1"></div>
+        <div class="fd-field full"><label>Street 2</label><input id="clientCreateStreet2" class="fd-control" autocomplete="address-line2" placeholder="Street 2"></div>
+        <div class="fd-field"><label>City</label><input id="clientCreateCity" class="fd-control" autocomplete="address-level2" placeholder="City"></div>
+        <div class="fd-field"><label>State / Province</label><input id="clientCreateState" class="fd-control" autocomplete="address-level1" placeholder="State / Province"></div>
+        <div class="fd-field"><label>Postal Code</label><input id="clientCreatePostal" class="fd-control" autocomplete="postal-code" placeholder="Postal code"></div>
+        <div class="fd-field"><label>Country</label><select id="clientCreateCountry" class="fd-control"><option value="">Select country</option></select></div>
+      </div>
+    </div>
+    <div class="fd-modal-foot">
+      <button type="button" class="fd-btn" data-close-modal="quickClientCreateModal">Cancel</button>
+      <button type="button" class="fd-btn primary" id="saveInlineClient">Create client</button>
+    </div>
+  </div>
+</div>
+
+<div class="fd-modal" id="crewModal"><div class="fd-dialog"><div class="fd-modal-head"><h3>Create a new crew</h3><button class="fd-icon-btn" data-close-modal="crewModal"><i class="bi bi-x-lg"></i></button></div><div class="fd-modal-body"><div class="fd-field"><label>Crew name</label><input id="crewName" class="fd-control" placeholder="e.g. West Team"></div><div class="fd-field"><label>Crew leader</label><select id="crewLeader" class="fd-control"></select></div><div class="fd-field"><label>Members</label><select id="crewMembers" class="fd-control" multiple size="7"></select></div></div><div class="fd-modal-foot"><button class="fd-btn" data-close-modal="crewModal">Cancel</button><button class="fd-btn primary" id="saveCrew">Create crew</button></div></div></div>
+
+<div class="fd-modal" id="settingsModal"><div class="fd-dialog lg"><div class="fd-modal-head"><h3>Customize your schedule</h3><button class="fd-icon-btn" data-close-modal="settingsModal"><i class="bi bi-x-lg"></i></button></div><div class="fd-modal-body"><div class="fd-row"><div><div class="fd-field"><label>Default view</label><select id="settingView" class="fd-control"><option value="month">Month</option><option value="week">Week</option><option value="day">Day</option></select></div><div class="fd-field"><label>Appointment layout</label><label class="fd-check"><input type="radio" name="layout" value="stacked" checked> Stacked — easier to see time gaps</label><label class="fd-check"><input type="radio" name="layout" value="nested"> Nested — easier to read titles in busy schedules</label></div><label class="fd-check"><input type="checkbox" id="settingWeekends" checked> Show weekends</label><div class="fd-row"><div class="fd-field"><label>Workday start</label><input id="settingStart" type="time" class="fd-control"></div><div class="fd-field"><label>Workday end</label><input id="settingEnd" type="time" class="fd-control"></div></div><div class="fd-row"><div class="fd-field"><label>Time interval</label><select id="settingSlot" class="fd-control"><option value="15">15 min</option><option value="30">30 min</option><option value="60">60 min</option></select></div><div class="fd-field"><label>Default duration</label><input id="settingDuration" type="number" min="15" step="15" class="fd-control"></div></div><div class="fd-field"><label>Timezone</label><input id="settingTimezone" class="fd-control" value="Asia/Kolkata"></div></div><div><label style="display:block;font-size:11px;font-weight:700;margin-bottom:6px">Preview</label><div class="fd-settings-preview"><strong>Mon 14</strong><div class="fd-preview-card"></div><div class="fd-preview-card" style="width:72%"></div><div class="fd-preview-card" style="width:58%"></div></div></div></div></div><div class="fd-modal-foot"><button class="fd-btn" data-close-modal="settingsModal">Cancel</button><button class="fd-btn primary" id="saveSettings">Finish</button></div></div></div>
+
+<div class="fd-bulk-bar" id="bulkBar"><strong id="bulkBarCount">0 selected</strong><button class="fd-btn" id="openBulk">Reschedule &amp; reassign</button><button class="fd-btn" id="cancelBulk">Cancel</button></div>
+<div class="fd-toast" id="toast"></div>
+<?php require_once __DIR__ . '/includes/footer.php'; ?>
 <script>
-(function(){
-'use strict';
-var EVENTS=<?= $eventJson ? $eventJson : '[]' ?>;
-var CURRENCY=<?= $currencyJson ? $currencyJson : '{}'; ?>;
-var CSRF=<?= json_encode($scheduleCsrfToken) ?>;
-var eventMap={};EVENTS.forEach(function(e){eventMap[e.key]=e;});
-var activeEvent=null;
-function qs(s,r){return (r||document).querySelector(s)}function qsa(s,r){return Array.prototype.slice.call((r||document).querySelectorAll(s))}
-function esc(v){var d=document.createElement('div');d.textContent=v==null?'':String(v);return d.innerHTML}
-function title(v){return String(v||'').replace(/_/g,' ').replace(/\b\w/g,function(c){return c.toUpperCase()})}
-function money(v){var n=Number(v||0),d=parseInt(CURRENCY.decimal_places||2,10);if(isNaN(d))d=2;var value=n.toFixed(d),sym=String(CURRENCY.symbol||'');return String(CURRENCY.symbol_position||'before')==='after'?value+sym:sym+value}
-function fmt(dt){if(!dt)return '-';var d=new Date(String(dt).replace(' ','T'));if(isNaN(d.getTime()))return dt;return d.toLocaleString([], {month:'short',day:'2-digit',year:'numeric',hour:'numeric',minute:'2-digit'})}
-function toast(msg,error){var t=qs('#scheduleToast');t.textContent=msg;t.className='sch2-toast show'+(error?' error':'');setTimeout(function(){t.className='sch2-toast'},2600)}
-function closeDropdowns(except){qsa('.sch2-dropdown.open').forEach(function(d){if(d!==except)d.classList.remove('open')})}
-qsa('[data-dropdown]').forEach(function(btn){btn.addEventListener('click',function(e){e.stopPropagation();var d=qs('#'+btn.getAttribute('data-dropdown'));var open=d.classList.contains('open');closeDropdowns();if(!open)d.classList.add('open')})});
-document.addEventListener('click',function(e){if(!e.target.closest('.sch2-filter-wrap')&&!e.target.closest('.sch2-menu-wrap'))closeDropdowns()});
-function submitTeam(){var checked=qsa('.team-check:checked').map(function(x){return x.value});qs('#teamFilterFlag').value='1';qs('#teamIdsInput').value=checked.join(',');qs('#teamUnassignedInput').value=qs('#teamUnassigned').checked?'1':'0';qs('#scheduleHiddenFilter').submit()}
-qsa('.team-check').forEach(function(x){x.addEventListener('change',function(){submitTeam()})});qs('#teamUnassigned').addEventListener('change',submitTeam);
-qs('#teamSelectAll').addEventListener('click',function(){qsa('.team-check').forEach(function(x){x.checked=true});qs('#teamUnassigned').checked=true;qs('#teamFilterFlag').value='0';qs('#teamIdsInput').value='';qs('#teamUnassignedInput').value='1';qs('#scheduleHiddenFilter').submit()});
-qs('#teamClear').addEventListener('click',function(){qsa('.team-check').forEach(function(x){x.checked=false});qs('#teamUnassigned').checked=false;submitTeam()});
-qs('#teamSearch').addEventListener('input',function(){var q=this.value.toLowerCase().trim();qsa('.team-choice').forEach(function(row){row.style.display=!q||String(row.getAttribute('data-search')||'').indexOf(q)!==-1?'flex':'none'})});
-function submitStatus(){var checked=qsa('.status-check:checked').map(function(x){return x.value});qs('#statusFilterFlag').value='1';qs('#statusesInput').value=checked.join(',');qs('#scheduleHiddenFilter').submit()}
-qsa('.status-check').forEach(function(x){x.addEventListener('change',submitStatus)});qs('#statusSelectAll').addEventListener('click',function(){qs('#statusFilterFlag').value='0';qs('#statusesInput').value='';qs('#scheduleHiddenFilter').submit()});qs('#statusClear').addEventListener('click',function(){qsa('.status-check').forEach(function(x){x.checked=false});submitStatus()});
-function teamHtml(e){if(!e.assignee_names||!e.assignee_names.length)return '<span style="color:#8996a3">Unassigned</span>';return '<div class="sch2-team-chips">'+e.assignee_names.map(function(n){var initials=n.split(/\s+/).map(function(p){return p.charAt(0)}).join('').slice(0,2).toUpperCase();return '<span class="sch2-team-chip"><span class="sch2-chip-avatar">'+esc(initials)+'</span>'+esc(n)+'</span>'}).join('')+'</div>'}
-function linesHtml(e){if(!e.line_items||!e.line_items.length)return '<div style="padding:8px;color:#8894a0">No line items.</div>';var h=e.line_items.map(function(i){return '<div class="sch2-pop-line"><span>'+esc(Number(i.quantity||0))+'x&nbsp; '+esc(i.name)+'</span><strong>'+money(i.line_total)+'</strong></div>'}).join('');return h+'<div class="sch2-pop-total">Total '+money(e.total)+'</div>'}
-function showPopover(btn,e){activeEvent=e;qs('#popKicker').textContent=e.source==='visit'?'Visit':'Job';qs('#popTitle').textContent=e.service||e.title||'Scheduled work';var complete=String(e.status||'').toLowerCase()==='completed';qs('#popBody').innerHTML='<label style="display:flex;align-items:center;gap:7px;margin-bottom:8px"><input type="checkbox" id="popCompleted" '+(complete?'checked':'')+' '+(complete?'disabled':'')+'> Completed</label><div class="sch2-pop-row"><span class="sch2-pop-label">Details</span>'+esc(e.customer||'-')+' · <a href="job-view.php?job_id='+Number(e.job_id)+'" style="color:#4f8b25">'+esc(e.job_no||'Job')+'</a></div><div class="sch2-pop-row"><span class="sch2-pop-label">Team</span>'+teamHtml(e)+'</div><div class="sch2-pop-row"><span class="sch2-pop-label">Location</span>'+esc(e.location||'-')+'</div><div class="sch2-pop-row"><span class="sch2-pop-label">Start</span>'+esc(fmt(e.start))+'</div><div class="sch2-pop-row"><span class="sch2-pop-label">Line items</span><div class="sch2-pop-lines">'+linesHtml(e)+'</div></div>';
-qs('#popEdit').href='job-form.php?job_id='+Number(e.job_id);var p=qs('#eventPopover');p.classList.add('open');p.setAttribute('aria-hidden','false');var r=btn.getBoundingClientRect();var w=335;var left=Math.min(window.innerWidth-w-10,Math.max(10,r.left));var top=r.bottom+7;if(top+420>window.innerHeight)top=Math.max(74,r.top-420);p.style.left=left+'px';p.style.top=top+'px';var c=qs('#popCompleted');if(c&&!complete)c.addEventListener('change',function(){if(c.checked)markComplete(e)})}
-function hidePopover(){var p=qs('#eventPopover');p.classList.remove('open');p.setAttribute('aria-hidden','true')}
-qsa('.schedule-event').forEach(function(btn){btn.addEventListener('click',function(ev){ev.preventDefault();ev.stopPropagation();var e=eventMap[btn.getAttribute('data-event-key')];if(e)showPopover(btn,e)})});qs('#popClose').addEventListener('click',hidePopover);document.addEventListener('click',function(e){if(!e.target.closest('#eventPopover')&&!e.target.closest('.schedule-event'))hidePopover()});
-function modalPanel(name){qsa('.sch2-tab').forEach(function(t){t.classList.toggle('active',t.getAttribute('data-tab')===name)});qsa('.sch2-tab-panel').forEach(function(p){p.classList.toggle('active',p.getAttribute('data-panel')===name)})}
-function openModal(e){activeEvent=e;hidePopover();qs('#modalVisitName').textContent=e.service||e.title||'Scheduled work';qs('#modalCustomer').innerHTML=esc(e.customer||'-')+'<br>'+esc(e.location||'');qs('#modalMeta').innerHTML='<div class="sch2-visit-meta-row"><i class="bi bi-calendar3"></i><span>'+esc(fmt(e.start))+'</span></div>'+(e.client_phone?'<div class="sch2-visit-meta-row"><i class="bi bi-telephone"></i><span>'+esc(e.client_phone)+'</span></div>':'')+(e.location?'<div class="sch2-visit-meta-row"><i class="bi bi-geo-alt"></i><span>'+esc(e.location)+'</span></div>':'');qs('#modalEdit').href='job-form.php?job_id='+Number(e.job_id);var completed=String(e.status||'').toLowerCase()==='completed';qs('#modalComplete').disabled=completed;qs('#modalComplete').textContent=completed?'Completed':'Mark Complete';qs('#modalInfo').innerHTML='<div class="sch2-info-block"><div class="sch2-info-title">Instructions</div><div class="sch2-info-text">'+esc(e.instructions||'No additional instructions')+'</div></div><div class="sch2-info-block"><div class="sch2-info-grid"><div><div class="sch2-info-title">Job</div><div class="sch2-info-text"><a href="job-view.php?job_id='+Number(e.job_id)+'" style="color:#4f8b25">'+esc(e.job_no||'Job')+'</a><br>'+esc(e.title||'')+'</div></div><div><div class="sch2-info-title">Team</div>'+teamHtml(e)+'</div></div></div><div class="sch2-info-block"><div class="sch2-info-title">Line items</div><div class="sch2-modal-line-items">'+(e.line_items&&e.line_items.length?e.line_items.map(function(i){return '<div class="sch2-modal-line"><span>'+esc(i.name)+'<span class="desc">'+esc(i.description||'')+'</span></span><span>'+esc(Number(i.quantity||0))+'</span></div>'}).join(''):'<div class="sch2-info-text">No line items.</div>')+'</div></div>';
-qs('#modalClient').innerHTML='<div class="sch2-info-block"><div class="sch2-info-title">Customer</div><div class="sch2-info-text">'+esc(e.customer||'-')+'<br>'+esc(e.client_phone||'')+'<br>'+esc(e.client_email||'')+'</div></div><div class="sch2-info-block"><div class="sch2-info-title">Service Location</div><div class="sch2-info-text">'+esc(e.location||'-')+'</div></div>';
-qs('#modalNotes').innerHTML='<div class="sch2-info-block"><div class="sch2-info-title">Visit / Job Notes</div><div class="sch2-info-text">'+esc(e.instructions||'No notes')+'</div></div>';
-modalPanel('info');qs('#visitModal').classList.add('open');qs('#visitModal').setAttribute('aria-hidden','false')}
-function closeModal(){qs('#visitModal').classList.remove('open');qs('#visitModal').setAttribute('aria-hidden','true')}
-qs('#popDetails').addEventListener('click',function(){if(activeEvent)openModal(activeEvent)});qs('#popFindTime').addEventListener('click',function(){if(activeEvent)window.location.href='schedule.php?view=day&date='+encodeURIComponent(String(activeEvent.start).slice(0,10))});qs('#visitModalClose').addEventListener('click',closeModal);qs('#visitModal').addEventListener('click',function(e){if(e.target===this)closeModal()});qsa('.sch2-tab').forEach(function(t){t.addEventListener('click',function(){modalPanel(t.getAttribute('data-tab'))})});
-function markComplete(e){var fd=new FormData();fd.append('schedule_action','mark_complete');fd.append('csrf_token',CSRF);fd.append('visit_id',String(e.visit_id||0));fd.append('job_id',String(e.job_id||0));fetch('schedule.php',{method:'POST',body:fd,credentials:'same-origin',headers:{'X-Requested-With':'XMLHttpRequest'}}).then(function(r){return r.json().then(function(j){if(!r.ok||!j.success)throw new Error(j.message||'Unable to complete visit.');return j})}).then(function(j){toast(j.message||'Visit marked complete.');setTimeout(function(){window.location.reload()},450)}).catch(function(err){toast(err.message||'Unable to complete visit.',true)})}
-qs('#modalComplete').addEventListener('click',function(){if(activeEvent)markComplete(activeEvent)});
-var anyToggle=qs('#anytimeToggle'),anyDrawer=qs('#anytimeDrawer'),anyClose=qs('#anytimeClose');if(anyToggle&&anyDrawer)anyToggle.addEventListener('click',function(){anyDrawer.classList.toggle('open')});if(anyClose&&anyDrawer)anyClose.addEventListener('click',function(){anyDrawer.classList.remove('open')});
-document.addEventListener('keydown',function(e){if(e.key==='Escape'){hidePopover();closeModal();closeDropdowns();if(anyDrawer)anyDrawer.classList.remove('open')}});
+(function(){'use strict';
+var csrf=<?= json_encode($scheduleCsrf) ?>,api='api/schedule.php',clientCsrf=<?= json_encode($clientsCsrf) ?>,clientApi='api/client-form.php';
+var clientMeta={countries:[],lead_sources:[]},clientMetaLoaded=false;
+var meta={users:[],clients:[],properties:[],catalog:[],crews:[],settings:{}},items=[],unscheduled=[],view='month',anchor=new Date(),filters={type:[],team:[],status:[]},bulkMode=false,selected={},detail=null,quickType='job';
+function E(id){return document.getElementById(id)}
+function esc(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;')}
+function toast(type,msg){var t=E('toast');t.className='fd-toast '+type+' show';t.textContent=msg;clearTimeout(t._timer);t._timer=setTimeout(function(){t.classList.remove('show')},3500)}
+function req(data){var fd=new FormData();Object.keys(data||{}).forEach(function(k){var v=data[k];if(Array.isArray(v)||typeof v==='object'&&v!==null)fd.append(k,JSON.stringify(v));else fd.append(k,v==null?'':v)});fd.append('csrf_token',csrf);return fetch(api,{method:'POST',body:fd,credentials:'same-origin',headers:{'Accept':'application/json','X-Requested-With':'XMLHttpRequest'}}).then(function(r){return r.text().then(function(raw){var j;try{j=JSON.parse(raw)}catch(e){throw new Error(raw.replace(/<[^>]+>/g,' ').trim()||'Invalid server response')}if(!r.ok||!j.success)throw new Error(j.message||'Request failed');return j})})}
+function clientReq(data){var fd=new FormData();Object.keys(data||{}).forEach(function(k){var v=data[k];if(Array.isArray(v)||typeof v==='object'&&v!==null)fd.append(k,JSON.stringify(v));else fd.append(k,v==null?'':v)});fd.append('csrf_token',clientCsrf);return fetch(clientApi,{method:'POST',body:fd,credentials:'same-origin',headers:{'Accept':'application/json','X-Requested-With':'XMLHttpRequest'}}).then(function(r){return r.text().then(function(raw){var j;try{j=JSON.parse(raw)}catch(e){throw new Error(raw.replace(/<[^>]+>/g,' ').replace(/\s+/g,' ').trim()||'Invalid client server response')}if(!r.ok||!j.success)throw new Error(j.message||(j.error&&j.error.message)||'Client request failed');return j})})}
+function ymd(d){return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0')}
+function parseDate(s){var p=String(s||'').slice(0,10).split('-');return new Date(Number(p[0]),Number(p[1])-1,Number(p[2]))}
+function firstOfMonth(d){return new Date(d.getFullYear(),d.getMonth(),1)}function lastOfMonth(d){return new Date(d.getFullYear(),d.getMonth()+1,0)}
+function addDays(d,n){var x=new Date(d);x.setDate(x.getDate()+n);return x}
+function startOfWeek(d){var x=new Date(d),start=Number(meta.settings.week_starts_on||0),diff=(x.getDay()-start+7)%7;return addDays(x,-diff)}
+function userName(id){var u=meta.users.find(function(x){return Number(x.id)===Number(id)});return u?(u.name||((u.first_name||'')+' '+(u.last_name||'')).trim()):''}
+function clientName(id){var c=meta.clients.find(function(x){return Number(x.id)===Number(id)});return c?c.name:''}
+function visible(i){if(filters.type.length&&filters.type.indexOf(i.type)<0)return false;if(filters.status.length){var st=i.confirmed?'confirmed':i.status;if(filters.status.indexOf(st)<0&&filters.status.indexOf(i.status)<0)return false}if(filters.team.length){var ids=(i.assignee_ids||[]).map(String),ok=false;filters.team.forEach(function(f){if(f==='unassigned'&&!ids.length)ok=true;else if(f.indexOf('user:')===0&&ids.indexOf(f.slice(5))>=0)ok=true;else if(f.indexOf('crew:')===0){var c=meta.crews.find(function(x){return String(x.id)===f.slice(5)});if(c&&(c.member_ids||[]).some(function(id){return ids.indexOf(String(id))>=0}))ok=true}});if(!ok)return false}return true}
+function range(){if(view==='month'){var f=firstOfMonth(anchor),s=startOfWeek(f),e=addDays(s,41);return{from:ymd(s),to:ymd(e)}}if(view==='week'){var s=startOfWeek(anchor);return{from:ymd(s),to:ymd(addDays(s,6))}}return{from:ymd(anchor),to:ymd(anchor)}}
+function load(){var r=range();return Promise.all([req({action:'range',from:r.from,to:r.to}),req({action:'unscheduled'})]).then(function(a){items=a[0].items||[];unscheduled=a[1].items||[];E('unscheduledCount').textContent=unscheduled.length;E('drawerUnscheduledCount').textContent=unscheduled.length;render();renderUnscheduled()}).catch(function(e){toast('error',e.message)})}
+function title(){if(view==='month')return anchor.toLocaleDateString(undefined,{month:'long',year:'numeric'});if(view==='week'){var s=startOfWeek(anchor),e=addDays(s,6);return s.toLocaleDateString(undefined,{month:'short',day:'numeric'})+' – '+e.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'})}return anchor.toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric',year:'numeric'})}
+function itemHtml(i){var tm=(i.assignee_ids||[]).map(userName).filter(Boolean).join(', '),time=i.anytime?'Any time':String(i.start||'').slice(11,16);return '<div class="fd-card '+esc(i.type)+' '+(i.status==='completed'?'completed ':'')+(selected[i.key]?'selected':'')+'" draggable="true" data-key="'+esc(i.key)+'" title="'+esc(i.title)+'"><strong>'+esc(time)+'</strong> '+esc(i.title)+(tm?' · '+esc(tm):'')+'</div>'}
+function renderMonth(){var box=E('monthView');box.innerHTML='';var names=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'],startDay=Number(meta.settings.week_starts_on||0),showW=Number(meta.settings.show_weekends||1)===1;var order=[];for(var n=0;n<7;n++)order.push(names[(startDay+n)%7]);if(!showW)order=order.filter(function(x){return x!=='Sat'&&x!=='Sun'});box.style.gridTemplateColumns='repeat('+order.length+',minmax(0,1fr))';order.forEach(function(n){box.insertAdjacentHTML('beforeend','<div class="fd-dayname">'+n+'</div>')});var f=firstOfMonth(anchor),s=startOfWeek(f),today=ymd(new Date());for(var k=0;k<42;k++){var d=addDays(s,k),dow=d.getDay();if(!showW&&(dow===0||dow===6))continue;var ds=ymd(d),dayItems=items.filter(function(i){return visible(i)&&String(i.start||'').slice(0,10)===ds}),same=d.getMonth()===anchor.getMonth(),cards=dayItems.slice(0,4).map(itemHtml).join(''),more=dayItems.length>4?'<div class="fd-more" data-more-day="'+ds+'">+'+(dayItems.length-4)+' more</div>':'';box.insertAdjacentHTML('beforeend','<div class="fd-cell '+(!same?'other ':'')+(ds===today?'today':'')+'" data-date="'+ds+'"><div class="fd-cell-head"><span class="fd-date">'+d.getDate()+'</span>'+(dayItems.length?'<span class="fd-count">'+dayItems.length+' '+(dayItems.length===1?'item':'items')+'</span>':'')+'</div>'+cards+more+'</div>')}}
+function hourList(){var s=parseInt(String(meta.settings.workday_start||'08:00').slice(0,2),10),e=parseInt(String(meta.settings.workday_end||'18:00').slice(0,2),10),a=[];for(var h=s;h<=e;h++)a.push(h);return a}
+function renderWeek(){var box=E('weekGrid'),s=startOfWeek(anchor),showW=Number(meta.settings.show_weekends||1)===1,days=[];for(var i=0;i<7;i++){var d=addDays(s,i);if(showW||![0,6].includes(d.getDay()))days.push(d)}box.style.gridTemplateColumns='72px repeat('+days.length+',minmax(130px,1fr))';box.innerHTML='<div class="fd-week-head"></div>'+days.map(function(d){return '<div class="fd-week-head">'+d.toLocaleDateString(undefined,{weekday:'short'})+'<br><strong>'+d.getDate()+'</strong></div>'}).join('');hourList().forEach(function(h){box.insertAdjacentHTML('beforeend','<div class="fd-time-label">'+String(h).padStart(2,'0')+':00</div>');days.forEach(function(d){var ds=ymd(d),its=items.filter(function(x){return visible(x)&&String(x.start||'').slice(0,10)===ds&&parseInt(String(x.start||'').slice(11,13)||0,10)===h});box.insertAdjacentHTML('beforeend','<div class="fd-slot" data-date="'+ds+'" data-time="'+String(h).padStart(2,'0')+':00">'+its.map(itemHtml).join('')+'</div>')})})}
+function renderDay(){var box=E('dayAgenda'),ds=ymd(anchor),its=items.filter(function(i){return visible(i)&&String(i.start||'').slice(0,10)===ds}).sort(function(a,b){return String(a.start).localeCompare(String(b.start))});if(!its.length){box.innerHTML='<div class="fd-empty">No appointments scheduled for this day.</div>';return}box.innerHTML=its.map(function(i){var time=i.anytime?'Any time':String(i.start||'').slice(11,16);return '<div class="fd-agenda-row"><div class="fd-agenda-time">'+esc(time)+'</div><div class="fd-agenda-card">'+itemHtml(i)+'</div></div>'}).join('')}
+function render(){E('periodTitle').textContent=title();E('monthView').style.display=view==='month'?'grid':'none';E('weekView').style.display=view==='week'?'block':'none';E('dayView').style.display=view==='day'?'block':'none';document.querySelectorAll('#viewSegment button').forEach(function(b){b.classList.toggle('active',b.dataset.view===view)});if(view==='month')renderMonth();else if(view==='week')renderWeek();else renderDay();updateBulk()}
+function filterLabels(){['type','team','status'].forEach(function(k){var x=filters[k];E(k+'Label').textContent=x.length?(x.length+' selected'):'All'})}
+function renderFilters(){var types=[['visit','Visits'],['request','Requests'],['task','Tasks'],['event','Events'],['reminder','Reminders']],status=[['completed','Completed'],['overdue','Overdue'],['upcoming','Upcoming'],['confirmed','Confirmed by client']];E('typeOptions').innerHTML=types.map(function(x){return '<label class="fd-filter-option"><span class="fd-status-dot '+x[0]+'"></span><input type="checkbox" data-filter="type" value="'+x[0]+'"> '+x[1]+'</label>'}).join('');E('statusOptions').innerHTML=status.map(function(x){return '<label class="fd-filter-option"><input type="checkbox" data-filter="status" value="'+x[0]+'"> '+x[1]+'</label>'}).join('');var team=meta.users.map(function(u){return ['user:'+u.id,u.name]}).concat(meta.crews.map(function(c){return ['crew:'+c.id,'Crew: '+c.name]}),[['unassigned','Unassigned']]);E('teamOptions').innerHTML=team.map(function(x){return '<label class="fd-filter-option"><input type="checkbox" data-filter="team" value="'+x[0]+'"> '+esc(x[1])+'</label>'}).join('');filterLabels()}
+function renderUnscheduled(){var a=unscheduled.slice(),sort=E('unscheduledSort').value;if(sort==='newest')a.reverse();else if(sort==='az')a.sort(function(x,y){return String(x.client_name||x.title).localeCompare(String(y.client_name||y.title))});else if(sort==='za')a.sort(function(x,y){return String(y.client_name||y.title).localeCompare(String(x.client_name||x.title))});E('unscheduledList').innerHTML=a.length?a.map(function(i){return '<div class="fd-list-card" draggable="true" data-unscheduled-key="'+esc(i.key)+'"><strong><span class="fd-status-dot '+i.type+'"></span> '+esc(i.title)+'</strong><small>'+esc(i.type.charAt(0).toUpperCase()+i.type.slice(1))+'</small></div>'}).join(''):'<div class="fd-empty" style="padding:35px 10px">No unscheduled appointments.</div>'}
+function openDrawer(id){document.querySelectorAll('.fd-drawer').forEach(function(x){x.classList.remove('show')});E(id).classList.add('show')}function closeDrawers(){document.querySelectorAll('.fd-drawer').forEach(function(x){x.classList.remove('show')})}
+function showDetail(i){detail=i;E('detailTitle').textContent=i.title;var names=(i.assignee_ids||[]).map(userName).filter(Boolean).join(', ')||'Unassigned';E('detailBody').innerHTML='<label class="fd-check"><input type="checkbox" id="detailComplete" '+(i.status==='completed'?'checked':'')+' '+(i.type!=='visit'?'disabled':'')+'> Completed</label><hr style="border:0;border-top:1px solid #edf0f3"><div class="fd-field"><label>Type</label><div>'+esc(i.type.charAt(0).toUpperCase()+i.type.slice(1))+'</div></div>'+(i.job_no?'<div class="fd-field"><label>Job</label><div>'+esc(i.job_no)+'</div></div>':'')+(i.client_name?'<div class="fd-field"><label>Client</label><div>'+esc(i.client_name)+'</div></div>':'')+'<div class="fd-field"><label>Team</label><div>'+esc(names)+'</div></div>'+(i.address?'<div class="fd-field"><label>Location</label><div>'+esc(i.address)+'</div></div>':'')+'<div class="fd-field"><label>Start</label><div>'+esc(i.anytime?String(i.start).slice(0,10)+' · Anytime':String(i.start).replace(' ',' · '))+'</div></div>'+(i.instructions?'<div class="fd-field"><label>Instructions</label><div>'+esc(i.instructions)+'</div></div>':'');openDrawer('detailDrawer');setTimeout(function(){var c=E('detailComplete');if(c&&!c.disabled)c.onchange=function(){req({action:'complete_visit',id:i.id,completed:this.checked?1:0}).then(function(d){toast('success',d.message);load()}).catch(function(e){toast('error',e.message)})}},0)}
+function resetQuickOptional(){['instructionsSection','lineItemWrap','assignSection'].forEach(function(id){var x=E(id);if(x)x.hidden=true});['addInstructionsBtn','addLineItemBtn','addAssignBtn'].forEach(function(id){var x=E(id);if(x)x.hidden=false});if(E('quickDescription'))E('quickDescription').value='';if(E('quickLineItem'))E('quickLineItem').value='';if(E('quickAssignees'))Array.prototype.forEach.call(E('quickAssignees').options,function(o){o.selected=false})}
+function toggleQuickOptional(sectionId,buttonId,show){var sec=E(sectionId),btn=E(buttonId);if(!sec||!btn)return;sec.hidden=!show;btn.hidden=!!show}
+function renderQuickClientResults(term){var box=E('quickClientResults');if(!box)return;term=String(term||'').trim().toLowerCase();var rows=[];(meta.clients||[]).forEach(function(c){var props=(meta.properties||[]).filter(function(p){return Number(p.client_id)===Number(c.id)});var clientText=[c.name,c.company_name,c.phone,c.email].filter(Boolean).join(' ').toLowerCase();if(!term||clientText.indexOf(term)>=0)rows.push({client_id:c.id,property_id:'',title:c.name||('Client '+c.id),sub:c.company_name||c.phone||'Client'});props.forEach(function(p){var txt=[c.name,p.name,p.address_line1,p.city,p.state,p.postal_code].filter(Boolean).join(' ').toLowerCase();if(!term||txt.indexOf(term)>=0)rows.push({client_id:c.id,property_id:p.id,title:c.name||('Client '+c.id),sub:[p.name,p.address_line1,p.city].filter(Boolean).join(' · ')||'Property'})})});rows=rows.slice(0,12);box.innerHTML=rows.map(function(r){return '<button type="button" class="fd-client-result" data-client-id="'+r.client_id+'" data-property-id="'+r.property_id+'"><span><strong>'+esc(r.title)+'</strong><small>'+esc(r.sub)+'</small></span></button>'}).join('')+'<button type="button" class="fd-client-result fd-client-create" data-create-client="1"><i class="bi bi-plus-lg"></i><span>Create client or address</span></button>';box.classList.add('show')}
+function selectQuickClient(clientId,propertyId){var c=(meta.clients||[]).find(function(x){return Number(x.id)===Number(clientId)});E('quickClient').value=clientId||'';updateProperties();if(propertyId)E('quickProperty').value=String(propertyId);E('quickPropertyWrap').hidden=!clientId;var p=(meta.properties||[]).find(function(x){return Number(x.id)===Number(propertyId)});E('quickClientSearch').value=c?((c.name||'')+(p?' · '+(p.name||p.address_line1||'Property'):'')):'';E('quickClientResults').classList.remove('show')}
+function inlineClientError(message){var box=E('inlineClientCreateError');if(!box)return;box.textContent=message||'';box.classList.toggle('show',!!message)}
+function populateInlineClientMeta(){var countries=clientMeta.countries||[],sources=clientMeta.lead_sources||[];E('clientCreateCountry').innerHTML='<option value="">Select country</option>'+countries.map(function(c){return '<option value="'+Number(c.id)+'">'+esc(c.name||c.country_name||'')+'</option>'}).join('');E('clientCreateSourceList').innerHTML=sources.map(function(x){return '<option value="'+esc(x.source_name||x.name||'')+'"></option>'}).join('');var india=countries.find(function(c){return String(c.name||c.country_name||'').toLowerCase()==='india'});if(india)E('clientCreateCountry').value=String(india.id)}
+function loadInlineClientMeta(){if(clientMetaLoaded){populateInlineClientMeta();return Promise.resolve(clientMeta)}return clientReq({action:'meta'}).then(function(d){clientMeta=d.meta||{};clientMetaLoaded=true;populateInlineClientMeta();return clientMeta})}
+function resetInlineClientForm(){['clientCreateFirstName','clientCreateLastName','clientCreateCompany','clientCreatePhone','clientCreateEmail','clientCreateSource','clientCreateStreet1','clientCreateStreet2','clientCreateCity','clientCreateState','clientCreatePostal'].forEach(function(id){E(id).value=''});inlineClientError('');if(clientMetaLoaded)populateInlineClientMeta()}
+function openInlineClientModal(){E('quickClientResults').classList.remove('show');resetInlineClientForm();E('quickClientCreateModal').classList.add('show');setTimeout(function(){E('clientCreateFirstName').focus()},0);loadInlineClientMeta().catch(function(e){inlineClientError(e.message)})}
+function buildInlineLocation(){var street1=E('clientCreateStreet1').value.trim(),street2=E('clientCreateStreet2').value.trim(),city=E('clientCreateCity').value.trim(),state=E('clientCreateState').value.trim(),postal=E('clientCreatePostal').value.trim(),country=E('clientCreateCountry').value;var has=[street1,street2,city,state,postal,country].some(function(v){return String(v||'').trim()!==''});if(!has)return null;if(!street1)throw new Error('Street 1 is required when adding a property address.');return{id:0,location_type:'other',name:'',address_line1:street1,address_line2:street2,city:city,state:state,postal_code:postal,country_id:country,tax_rate_id:'',billing_same_as_property:1,billing_address_line1:'',billing_address_line2:'',billing_city:'',billing_state:'',billing_postal_code:'',billing_country_id:'',latitude:'',longitude:'',contact_name:'',contact_phone:'',gate_code:'',access_notes:'',service_instructions:'',is_primary:1,status:'active',custom_values:{},contacts:[],_delete:0}}
+function saveInlineClient(){var first=E('clientCreateFirstName').value.trim(),last=E('clientCreateLastName').value.trim(),company=E('clientCreateCompany').value.trim(),email=E('clientCreateEmail').value.trim(),phone=E('clientCreatePhone').value.trim(),display=[first,last].filter(Boolean).join(' ').trim()||company;if(!display){inlineClientError('Enter a first name, last name, or company name.');return}if(email&&!E('clientCreateEmail').checkValidity()){inlineClientError('Enter a valid email address.');return}var locationRow;try{locationRow=buildInlineLocation()}catch(e){inlineClientError(e.message);return}inlineClientError('');var phoneRows=phone?[{id:0,phone_number:phone,phone_type:'main',receives_messages:1,is_primary:1,sort_order:1,_delete:0}]:[];var payload={action:'save',client_id:0,display_name:display,title_prefix:'',first_name:first,last_name:last,company_name:company,phone:phone,email:email,source:E('clientCreateSource').value.trim(),client_type:'client',status:'active',branch_id:'',account_manager_id:'',alternate_phone:'',preferred_contact_method:'email',tax_number:'',allow_email:1,allow_sms:1,notes:'',communication_json:JSON.stringify({quote_followups:1,invoice_followups:1,visit_reminders:1,job_close_followups:1}),customer_custom_values_json:'{}',client_contacts_json:'[]',phone_numbers_json:JSON.stringify(phoneRows),locations_json:JSON.stringify(locationRow?[locationRow]:[])};var btn=E('saveInlineClient');btn.disabled=true;btn.textContent='Creating...';clientReq(payload).then(function(d){var newId=Number(d.client_id||0);if(!newId)throw new Error('Client was created but no client ID was returned.');return req({action:'meta'}).then(function(fresh){meta.clients=fresh.clients||meta.clients;meta.properties=fresh.properties||meta.properties;var created=(meta.clients||[]).find(function(c){return Number(c.id)===newId});var props=(meta.properties||[]).filter(function(p){return Number(p.client_id)===newId});var preferred=props.find(function(p){return Number(p.is_primary||0)===1})||props[0]||null;selectQuickClient(newId,preferred?preferred.id:'');E('quickClientCreateModal').classList.remove('show');toast('success',d.message||'Client created successfully.');if(created&&!E('quickClientSearch').value)E('quickClientSearch').value=created.name||display})}).catch(function(e){inlineClientError(e.message)}).finally(function(){btn.disabled=false;btn.textContent='Create client'})}
+
+function openQuick(date,time){quickType='job';document.querySelectorAll('#quickTabs button').forEach(function(b){b.classList.toggle('active',b.dataset.qtype==='job')});E('quickDate').value=date||ymd(new Date());E('quickEndDate').value=E('quickDate').value;E('quickTime').value=time||'09:00';E('quickTitle').value='';E('quickClient').value='';E('quickClientSearch').value='';E('quickProperty').innerHTML='<option value="">Select property</option>';E('quickPropertyWrap').hidden=true;resetQuickOptional();E('quickScheduleLater').checked=false;E('quickAnytime').checked=!time;syncQuickType();E('quickModal').classList.add('show')}
+function syncQuickType(){var clientNeeded=quickType!=='event';E('commonClient').style.display=clientNeeded?'block':'none';var allowLine=quickType==='job'||quickType==='request';E('addLineItemBtn').style.display=allowLine?'inline-flex':'none';if(!allowLine)E('lineItemWrap').hidden=true;E('repeatWrap').style.display=quickType==='event'?'block':'none';E('quickEndDateWrap').style.display=quickType==='event'?'block':'none';E('quickHeading').textContent='New '+quickType.charAt(0).toUpperCase()+quickType.slice(1)}
+function saveQuick(){var title=E('quickTitle').value.trim();if(!title){toast('warning','Enter a title.');return}var ids=Array.prototype.map.call(E('quickAssignees').selectedOptions,function(o){return Number(o.value)}),base={title:title,instructions:E('quickDescription').value,description:E('quickDescription').value,client_id:E('quickClient').value,property_id:E('quickProperty').value,assignee_ids:ids,schedule_later:E('quickScheduleLater').checked?1:0,anytime:E('quickAnytime').checked?1:0,date:E('quickDate').value,time:E('quickTime').value,duration_minutes:Math.round(Number(E('quickDuration').value||1)*60)};if(quickType==='job')base.action='quick_job';else if(quickType==='request')base.action='quick_request';else if(quickType==='task')base.action='save_task';else{base.action='save_event';base.item_type='event';base.end_date=E('quickEndDate').value||base.date;var end=new Date('2000-01-01T'+(base.time||'09:00')+':00');end.setMinutes(end.getMinutes()+base.duration_minutes);base.end_time=String(end.getHours()).padStart(2,'0')+':'+String(end.getMinutes()).padStart(2,'0');base.recurrence_json=JSON.stringify({repeat:E('quickRepeats').value})}E('quickSave').disabled=true;req(base).then(function(d){E('quickModal').classList.remove('show');toast('success',d.message);load()}).catch(function(e){toast('error',e.message)}).finally(function(){E('quickSave').disabled=false})}
+function populateMeta(){E('quickLineItem').innerHTML='<option value="">Select line item</option>'+meta.catalog.map(function(x){return '<option value="'+x.id+'">'+esc(x.name)+'</option>'}).join('');var users=meta.users.map(function(u){return '<option value="'+u.id+'">'+esc(u.name)+'</option>'}).join('');E('quickAssignees').innerHTML=users;E('bulkAssignees').innerHTML=users;E('crewLeader').innerHTML='<option value="">No leader</option>'+users;E('crewMembers').innerHTML=users;E('findUser').innerHTML='<option value="">Select team member</option>'+users;E('findCrew').innerHTML='<option value="">Select crew</option>'+meta.crews.map(function(c){return '<option value="'+c.id+'">'+esc(c.name)+'</option>'}).join('');renderFilters();applySettingsToForm();renderCrews()}
+function updateProperties(){var cid=Number(E('quickClient').value||0),rows=meta.properties.filter(function(p){return Number(p.client_id)===cid});E('quickProperty').innerHTML='<option value="">Select property</option>'+rows.map(function(p){return '<option value="'+p.id+'">'+esc(p.name||p.address_line1||('Property '+p.id))+'</option>'}).join('')}
+function renderCrews(){E('crewsList').innerHTML=meta.crews.length?meta.crews.map(function(c){return '<div class="fd-list-card"><strong>'+esc(c.name)+'</strong><small>'+(c.member_ids||[]).map(userName).filter(Boolean).join(', ')+'</small></div>'}).join(''):'<div class="fd-empty"><i class="bi bi-people" style="font-size:30px"></i><div style="margin-top:8px;font-weight:700">No crews yet</div><div style="margin-top:5px">Group teammates into crews to schedule them together.</div></div>'}
+function saveCrew(){var name=E('crewName').value.trim();if(!name){toast('warning','Enter a crew name.');return}var ids=Array.prototype.map.call(E('crewMembers').selectedOptions,function(o){return Number(o.value)});req({action:'save_crew',name:name,leader_user_id:E('crewLeader').value,member_ids:ids}).then(function(d){toast('success',d.message);E('crewModal').classList.remove('show');return req({action:'crew_list'})}).then(function(d){meta.crews=d.crews||[];populateMeta();openDrawer('crewsDrawer')}).catch(function(e){toast('error',e.message)})}
+function applySettingsToForm(){var s=meta.settings||{};E('settingView').value=s.default_view||'month';var r=document.querySelector('input[name="layout"][value="'+(s.appointment_layout||'stacked')+'"]');if(r)r.checked=true;E('settingWeekends').checked=Number(s.show_weekends||0)===1;E('settingStart').value=String(s.workday_start||'08:00').slice(0,5);E('settingEnd').value=String(s.workday_end||'18:00').slice(0,5);E('settingSlot').value=String(s.slot_minutes||30);E('settingDuration').value=String(s.default_duration_minutes||60);E('settingTimezone').value=s.timezone||'Asia/Kolkata';E('quickDuration').value=(Number(s.default_duration_minutes||60)/60)}
+function saveSettings(){var layout=document.querySelector('input[name="layout"]:checked').value;req({action:'save_settings',default_view:E('settingView').value,appointment_layout:layout,show_weekends:E('settingWeekends').checked?1:0,week_starts_on:0,workday_start:E('settingStart').value,workday_end:E('settingEnd').value,slot_minutes:E('settingSlot').value,default_duration_minutes:E('settingDuration').value,timezone:E('settingTimezone').value}).then(function(d){meta.settings.default_view=E('settingView').value;meta.settings.appointment_layout=layout;meta.settings.show_weekends=E('settingWeekends').checked?1:0;meta.settings.workday_start=E('settingStart').value;meta.settings.workday_end=E('settingEnd').value;meta.settings.slot_minutes=E('settingSlot').value;meta.settings.default_duration_minutes=E('settingDuration').value;meta.settings.timezone=E('settingTimezone').value;E('settingsModal').classList.remove('show');toast('success',d.message);render()}).catch(function(e){toast('error',e.message)})}
+function updateBulk(){var count=Object.keys(selected).length;E('bulkBarCount').textContent=count+' selected';E('bulkCount').textContent=count+' appointment'+(count===1?'':'s')+' selected';E('bulkConfirm').disabled=count===0;E('bulkBar').classList.toggle('show',bulkMode);}
+function enterBulk(){bulkMode=true;selected={};updateBulk();openDrawer('bulkDrawer');render()}
+function bulkApply(){var list=Object.keys(selected).map(function(k){var a=k.split(':');return{type:a[0],id:Number(a[1])}}),mode=E('bulkMode').value;req({action:'bulk_update',items:list,specific_date:mode==='specific'?E('bulkDate').value:'',shift_days:mode==='shift'?E('bulkShift').value:0,assignee_ids:Array.prototype.map.call(E('bulkAssignees').selectedOptions,function(o){return Number(o.value)}),do_reassign:E('bulkAssignees').selectedOptions.length?1:0}).then(function(d){toast('success',d.message);bulkMode=false;selected={};closeDrawers();load()}).catch(function(e){toast('error',e.message)})}
+function findTime(){var uid=E('findUser').value,crew=E('findCrew').value;if(!uid&&!crew){toast('warning','Select a team member or crew.');return}E('findResults').innerHTML='Searching...';req({action:'availability',user_id:uid,crew_id:crew,date:E('findDate').value,days:E('findDays').value,duration_minutes:E('findDuration').value}).then(function(d){E('findResults').innerHTML=(d.slots||[]).length?d.slots.map(function(s){return '<div class="fd-find-slot"><span>'+esc(new Date(s.start.replace(' ','T')).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}))+'</span><button class="fd-btn" data-use-slot="'+esc(s.start)+'">Use</button></div>'}).join(''):'<div class="fd-empty" style="padding:30px 10px">No open times found.</div>'}).catch(function(e){toast('error',e.message)})}
+function openFind(){E('findDate').value=ymd(anchor);E('findResults').innerHTML='';openDrawer('findDrawer')}
+function dragSchedule(key,date,time){var a=key.split(':');if(a[0]!=='visit'){toast('warning','Drag scheduling is currently enabled for Visits. Edit Tasks/Events from their details.');return}req({action:'schedule_visit',id:a[1],date:date,time:time||'09:00',duration_minutes:meta.settings.default_duration_minutes||60,anytime:time?0:1}).then(function(d){toast('success',d.message);load()}).catch(function(e){toast('error',e.message)})}
+function unschedule(key){var a=key.split(':');if(a[0]!=='visit'){toast('warning','Only Visits can be moved to Unscheduled from drag/drop.');return}req({action:'unschedule_visit',id:a[1]}).then(function(d){toast('success',d.message);load()}).catch(function(e){toast('error',e.message)})}
+
+E('prevBtn').onclick=function(){if(view==='month')anchor.setMonth(anchor.getMonth()-1);else if(view==='week')anchor=addDays(anchor,-7);else anchor=addDays(anchor,-1);load()};E('nextBtn').onclick=function(){if(view==='month')anchor.setMonth(anchor.getMonth()+1);else if(view==='week')anchor=addDays(anchor,7);else anchor=addDays(anchor,1);load()};E('todayBtn').onclick=function(){anchor=new Date();load()};document.querySelectorAll('#viewSegment button').forEach(function(b){b.onclick=function(){view=this.dataset.view;history.replaceState(null,'','?view='+view+'&date='+ymd(anchor));load()}});
+E('unscheduledBtn').onclick=function(){openDrawer('unscheduledDrawer')};E('unscheduledSort').onchange=renderUnscheduled;E('findTimeBtn').onclick=openFind;E('mapBtn').onclick=function(){toast('warning','Map view is the integration point for your existing GPS/location module.')};E('moreBtn').onclick=function(e){e.stopPropagation();E('moreMenu').classList.toggle('show')};document.addEventListener('click',function(e){if(!e.target.closest('.fd-relative'))document.querySelectorAll('.fd-popover,.fd-filter-menu').forEach(function(x){x.classList.remove('show')})});
+document.querySelectorAll('[data-more]').forEach(function(b){b.onclick=function(){E('moreMenu').classList.remove('show');var a=this.dataset.more;if(a==='bulk')enterBulk();else if(a==='newvisit')openQuick(ymd(anchor));else if(a==='crews')openDrawer('crewsDrawer');else if(a==='settings')E('settingsModal').classList.add('show')}});
+document.querySelectorAll('[data-close-drawer]').forEach(function(b){b.onclick=function(){E(this.dataset.closeDrawer).classList.remove('show')}});document.querySelectorAll('[data-close-modal]').forEach(function(b){b.onclick=function(){E(this.dataset.closeModal).classList.remove('show')}});document.querySelectorAll('.fd-modal').forEach(function(m){m.addEventListener('mousedown',function(e){if(e.target===m)m.classList.remove('show')})});
+document.querySelectorAll('[data-filter-btn]').forEach(function(b){b.onclick=function(e){e.stopPropagation();var id=this.dataset.filterBtn+'Menu';document.querySelectorAll('.fd-filter-menu').forEach(function(x){if(x.id!==id)x.classList.remove('show')});E(id).classList.toggle('show')}});document.addEventListener('change',function(e){if(e.target.matches('[data-filter]')){var k=e.target.dataset.filter,v=e.target.value,ix=filters[k].indexOf(v);if(e.target.checked&&ix<0)filters[k].push(v);if(!e.target.checked&&ix>=0)filters[k].splice(ix,1);filterLabels();render()}});document.querySelectorAll('[data-select-all]').forEach(function(b){b.onclick=function(){var k=this.dataset.selectAll,arr=[];E(k+'Options').querySelectorAll('input').forEach(function(x){x.checked=true;arr.push(x.value)});filters[k]=arr;filterLabels();render()}});document.querySelectorAll('[data-clear]').forEach(function(b){b.onclick=function(){var k=this.dataset.clear;E(k+'Options').querySelectorAll('input').forEach(function(x){x.checked=false});filters[k]=[];filterLabels();render()}});document.querySelectorAll('[data-filter-search]').forEach(function(i){i.oninput=function(){var q=this.value.toLowerCase(),box=E(this.dataset.filterSearch+'Options');box.querySelectorAll('.fd-filter-option').forEach(function(r){r.style.display=r.textContent.toLowerCase().indexOf(q)>=0?'flex':'none'})}});
+E('calendarWrap').addEventListener('click',function(e){var card=e.target.closest('[data-key]');if(card){var key=card.dataset.key;if(bulkMode){selected[key]=!selected[key];if(!selected[key])delete selected[key];render();return}var i=items.find(function(x){return x.key===key});if(i)showDetail(i);return}var cell=e.target.closest('[data-date]');if(cell&&!e.target.closest('.fd-more'))openQuick(cell.dataset.date,cell.dataset.time||'')});E('calendarWrap').addEventListener('dragstart',function(e){var c=e.target.closest('[data-key]');if(c)e.dataTransfer.setData('text/plain',c.dataset.key)});E('calendarWrap').addEventListener('dragover',function(e){if(e.target.closest('[data-date]'))e.preventDefault()});E('calendarWrap').addEventListener('drop',function(e){var c=e.target.closest('[data-date]');if(!c)return;e.preventDefault();dragSchedule(e.dataTransfer.getData('text/plain'),c.dataset.date,c.dataset.time||'')});E('unscheduledList').addEventListener('dragstart',function(e){var c=e.target.closest('[data-unscheduled-key]');if(c)e.dataTransfer.setData('text/plain',c.dataset.unscheduledKey)});E('unscheduleDropzone').addEventListener('dragover',function(e){e.preventDefault()});E('unscheduleDropzone').addEventListener('drop',function(e){e.preventDefault();unschedule(e.dataTransfer.getData('text/plain'))});
+E('quickTabs').onclick=function(e){var b=e.target.closest('[data-qtype]');if(!b)return;quickType=b.dataset.qtype;this.querySelectorAll('button').forEach(function(x){x.classList.toggle('active',x===b)});syncQuickType()};E('addInstructionsBtn').onclick=function(){toggleQuickOptional('instructionsSection','addInstructionsBtn',true);E('quickDescription').focus()};E('addLineItemBtn').onclick=function(){toggleQuickOptional('lineItemWrap','addLineItemBtn',true);E('quickLineItem').focus()};E('addAssignBtn').onclick=function(){toggleQuickOptional('assignSection','addAssignBtn',true);E('quickAssignees').focus()};document.querySelectorAll('[data-hide-optional]').forEach(function(b){b.onclick=function(){var id=this.dataset.hideOptional,map={instructionsSection:'addInstructionsBtn',lineItemWrap:'addLineItemBtn',assignSection:'addAssignBtn'};toggleQuickOptional(id,map[id],false)}});E('quickClientSearch').onfocus=function(){renderQuickClientResults(this.value)};E('quickClientSearch').oninput=function(){E('quickClient').value='';E('quickPropertyWrap').hidden=true;renderQuickClientResults(this.value)};E('quickClientResults').onclick=function(e){var create=e.target.closest('[data-create-client]');if(create){openInlineClientModal();return}var row=e.target.closest('[data-client-id]');if(row)selectQuickClient(row.dataset.clientId,row.dataset.propertyId)};document.addEventListener('click',function(e){if(!e.target.closest('.fd-client-search-wrap')&&E('quickClientResults'))E('quickClientResults').classList.remove('show')});E('quickScheduleLater').onchange=function(){E('quickScheduleFields').style.opacity=this.checked?'.45':'1';E('quickScheduleFields').querySelectorAll('input,select').forEach(function(x){if(x.id!=='quickScheduleLater')x.disabled=E('quickScheduleLater').checked})};E('quickAnytime').onchange=function(){E('quickTime').disabled=this.checked};E('quickSave').onclick=saveQuick;E('moreOptionsBtn').onclick=function(){if(quickType==='job')location.href='job-add.php?client_id='+encodeURIComponent(E('quickClient').value)+'&location_id='+encodeURIComponent(E('quickProperty').value);else if(quickType==='request')location.href='request-add.php?client_id='+encodeURIComponent(E('quickClient').value);else toast('warning','All available options are already shown here.')};
+E('saveInlineClient').onclick=saveInlineClient;E('addCrewBtn').onclick=function(){E('crewName').value='';Array.prototype.forEach.call(E('crewMembers').options,function(o){o.selected=false});E('crewModal').classList.add('show')};E('saveCrew').onclick=saveCrew;E('saveSettings').onclick=saveSettings;E('bulkMode').onchange=function(){E('bulkDateWrap').style.display=this.value==='specific'?'block':'none';E('bulkShiftWrap').style.display=this.value==='shift'?'block':'none'};E('shiftMinus').onclick=function(){E('bulkShift').value=Number(E('bulkShift').value||0)-1};E('shiftPlus').onclick=function(){E('bulkShift').value=Number(E('bulkShift').value||0)+1};E('bulkConfirm').onclick=bulkApply;E('openBulk').onclick=function(){openDrawer('bulkDrawer')};E('cancelBulk').onclick=function(){bulkMode=false;selected={};updateBulk();render()};E('findSearch').onclick=findTime;E('findResults').onclick=function(e){var b=e.target.closest('[data-use-slot]');if(!b)return;var s=b.dataset.useSlot;E('quickDate').value=s.slice(0,10);E('quickTime').value=s.slice(11,16);closeDrawers();openQuick(s.slice(0,10),s.slice(11,16))};E('detailFindTime').onclick=openFind;E('detailEdit').onclick=function(){if(!detail)return;if(detail.type==='visit')location.href='visit-edit.php?visit_id='+detail.id;else toast('warning','Use the related module to edit this item.')};E('detailOpen').onclick=function(){if(!detail)return;if(detail.type==='visit'&&detail.job_id)location.href='job-view.php?job_id='+detail.job_id;else if(detail.type==='request')location.href='request-view.php?request_id='+detail.id;else toast('warning','Details page is not configured for this item type.')};
+var q=new URLSearchParams(location.search);if(q.get('view')&&['month','week','day'].indexOf(q.get('view'))>=0)view=q.get('view');if(q.get('date')&&/^\d{4}-\d{2}-\d{2}$/.test(q.get('date')))anchor=parseDate(q.get('date'));
+req({action:'meta'}).then(function(d){meta=d;meta.users=(meta.users||[]).map(function(u){u.name=u.name||((u.first_name||'')+' '+(u.last_name||'')).trim();return u});if(!q.get('view'))view=(meta.settings||{}).default_view||'month';populateMeta();return load()}).catch(function(e){toast('error',e.message)});
 })();
 </script>
 </body>

@@ -952,26 +952,25 @@ include __DIR__ . '/topbar.php';
           <p>Reach out to the FieldPlx team for product questions, demos, support, partnerships, or general enquiries.</p>
 
           <div class="contact-detail">
-            <div class="contact-detail-icon">✉</div>
-            <div>
-              <strong>Email</strong>
-              <span>support@fieldplx.com</span>
-            </div>
-          </div>
+  <div class="contact-detail-icon">✉</div>
+  <div>
+    <strong>Email</strong>
+    <a class="text-black" href="mailto:support@coreplx.com">support@coreplx.com</a>
+  </div>
+</div>
 
-          <div class="contact-detail">
-            <div class="contact-detail-icon">↗</div>
-            <div>
-              <strong>Sales</strong>
-              <span>sales@fieldplx.com</span>
-            </div>
-          </div>
-
+<div class="contact-detail">
+  <div class="contact-detail-icon">↗</div>
+  <div>
+    <strong>Sales</strong>
+    <a class="text-black" href="mailto:support@coreplx.com">support@coreplx.com</a>
+  </div>
+</div>
           <div class="contact-detail">
             <div class="contact-detail-icon">☎</div>
             <div>
               <strong>Phone</strong>
-              <span>+91 7406 209000</span>
+              <span>5134464241</span>
             </div>
           </div>
 
@@ -979,7 +978,7 @@ include __DIR__ . '/topbar.php';
             <div class="contact-detail-icon">◷</div>
             <div>
               <strong>Business Hours</strong>
-              <span>[Days, hours, and time zone]</span>
+              <span>24 hours</span>
             </div>
           </div>
 
@@ -987,7 +986,7 @@ include __DIR__ . '/topbar.php';
             <div class="contact-detail-icon">●</div>
             <div>
               <strong>Address</strong>
-              <span>Hyderabad, India</span>
+              <span>6545 Market Ave N, Canton, OH 44721</span>
             </div>
           </div>
 

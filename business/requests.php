@@ -1,5 +1,5 @@
 <?php
-/* FieldPlx Service Requests Page - Version 2.2.0 - 2026-09-02 - Row Click Request View */
+/* FieldPlx Service Requests Page - Version 3.1.0 - 2026-09-09 - Canonical Invoice Reference UI */
 require_once __DIR__ . '/includes/auth.php';
 
 $pageTitle = 'Service Requests';
@@ -4273,6 +4273,819 @@ a:active{
 .fd-rq-table tbody tr.fd-rq-clickable-row{cursor:pointer;transition:background .15s ease}
 .fd-rq-table tbody tr.fd-rq-clickable-row:hover{background:#fbfcfa}
 .fd-rq-table tbody tr.fd-rq-clickable-row:focus{outline:2px solid rgba(116,184,36,.30);outline-offset:-2px;background:#fbfcfa}
+
+
+/* ==========================================================
+   Service Requests v3.0.0
+   Jobber request-list information architecture + FieldPlx
+   Add Invoice typography / controls / tenant shell.
+   ========================================================== */
+.fd-rq-head.fd-rq-head-v3{
+  align-items:center;
+  margin-bottom:26px;
+}
+.fd-rq-head-v3 .fd-rq-title{
+  margin:0;
+  font-size:24px;
+  line-height:1.2;
+  font-weight:700;
+  letter-spacing:-.2px;
+}
+.fd-rq-head-v3 .fd-rq-actions{gap:9px}
+.fd-rq-head-v3 .fd-rq-btn{
+  min-height:44px;
+  padding:0 16px;
+  border-radius:8px;
+  box-shadow:none;
+  font-size:14px;
+  font-weight:600;
+  white-space:nowrap;
+}
+.fd-rq-head-v3 .fd-rq-btn.primary{
+  border-color:var(--fd-green);
+  background:var(--fd-green-dark);
+  box-shadow:none;
+}
+.fd-rq-head-v3 .fd-rq-btn.primary:hover{background:#518618}
+
+.fd-rq-more-wrap{position:relative}
+.fd-rq-more-menu{
+  width:215px;
+  padding:7px;
+  position:absolute;
+  top:calc(100% + 7px);
+  right:0;
+  z-index:110;
+  display:none;
+  border:1px solid var(--fd-border);
+  border-radius:9px;
+  background:#fff;
+  box-shadow:0 12px 28px rgba(0,17,49,.14);
+}
+.fd-rq-more-menu.show{display:block}
+.fd-rq-more-item{
+  width:100%;
+  min-height:42px;
+  padding:8px 10px;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  border:0;
+  border-radius:7px;
+  color:#33465b!important;
+  background:transparent;
+  font-family:Arial,Helvetica,sans-serif;
+  font-size:14px;
+  font-weight:600;
+  text-align:left;
+  text-decoration:none!important;
+  cursor:pointer;
+}
+.fd-rq-more-item i{width:20px;font-size:17px;text-align:center}
+.fd-rq-more-item:hover{color:var(--fd-green-dark)!important;background:var(--fd-green-soft)}
+
+.fd-rq-summary-v3{
+  display:grid;
+  grid-template-columns:minmax(0,1.05fr) minmax(0,1.05fr) minmax(0,1.05fr) minmax(310px,1.7fr);
+  gap:12px;
+  margin-bottom:31px;
+}
+.fd-rq-summary-v3 .fd-rq-metric-card{
+  min-height:166px;
+  padding:18px 19px;
+  border:1px solid #dfe5ec;
+  border-radius:9px;
+  box-shadow:none;
+}
+.fd-rq-summary-v3 .fd-rq-metric-title{
+  color:var(--fd-text);
+  font-size:18px;
+  line-height:1.25;
+  font-weight:700;
+}
+.fd-rq-summary-v3 .fd-rq-metric-info{font-size:14px}
+.fd-rq-summary-v3 .fd-rq-card-arrow{top:18px;right:18px;font-size:14px}
+.fd-rq-summary-v3 .fd-rq-overview-list{margin-top:10px;gap:5px}
+.fd-rq-summary-v3 .fd-rq-overview-item{
+  min-height:17px;
+  grid-template-columns:8px minmax(0,1fr) auto;
+  gap:7px;
+  color:#3f5369;
+  font-size:13px;
+  line-height:1.2;
+}
+.fd-rq-summary-v3 .fd-rq-overview-dot{width:7px;height:7px}
+.fd-rq-summary-v3 .fd-rq-overview-count{font-size:13px;font-weight:500}
+.fd-rq-summary-v3 .fd-rq-metric-period{margin-top:3px;color:#65778a;font-size:13px}
+.fd-rq-summary-v3 .fd-rq-metric-value-row{margin-top:42px;gap:10px}
+.fd-rq-summary-v3 .fd-rq-metric-value{font-size:38px;letter-spacing:-.7px}
+.fd-rq-summary-v3 .fd-rq-metric-change{
+  min-height:27px;
+  padding:0 10px;
+  font-size:12px;
+  font-weight:600;
+}
+.fd-rq-summary-v3 .fd-rq-trend-popup-title,
+.fd-rq-summary-v3 .fd-rq-trend-popup-row,
+.fd-rq-summary-v3 .fd-rq-trend-popup-row strong{font-size:12px}
+.fd-rq-efficiency-copy{
+  max-width:470px;
+  margin:4px 0 0;
+  color:#53667c;
+  font-size:13px;
+  line-height:1.35;
+}
+.fd-rq-ai-link{
+  margin-top:43px;
+  padding:0;
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  border:0;
+  color:#1a8090;
+  background:transparent;
+  font-family:Arial,Helvetica,sans-serif;
+  font-size:14px;
+  font-weight:700;
+  text-decoration:underline;
+  cursor:pointer;
+}
+
+.fd-rq-list-section{margin-top:0}
+.fd-rq-list-heading{
+  display:flex;
+  align-items:baseline;
+  gap:9px;
+  margin:0 0 22px;
+}
+.fd-rq-list-heading h2{margin:0;color:var(--fd-text);font-size:20px;line-height:1.25;font-weight:700}
+.fd-rq-list-heading span{color:#5f7185;font-size:13px}
+.fd-rq-list-tools{
+  margin-bottom:17px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:15px;
+  flex-wrap:wrap;
+}
+.fd-rq-left-filters{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.fd-rq-filter-pill{
+  min-height:44px;
+  padding:0 12px;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  border:0;
+  border-radius:999px;
+  color:#263b50;
+  background:#ecebe7;
+  font-size:14px;
+  line-height:1;
+}
+.fd-rq-filter-pill > i{font-size:17px}
+.fd-rq-filter-pill .fd-rq-pill-label{font-weight:600}
+.fd-rq-filter-pill .fd-rq-pill-sep{color:#8492a0}
+.fd-rq-filter-pill select{
+  max-width:150px;
+  padding:0 21px 0 0;
+  border:0;
+  outline:0;
+  color:#263b50;
+  background:transparent;
+  font-family:Arial,Helvetica,sans-serif;
+  font-size:14px;
+  font-weight:400;
+  cursor:pointer;
+}
+.fd-rq-filter-pill select:focus{box-shadow:none}
+.fd-rq-search.fd-rq-search-v3{width:250px}
+.fd-rq-search-v3 i{left:15px;color:#577082;font-size:18px}
+.fd-rq-search-v3 input{
+  width:100%;
+  height:48px;
+  padding:10px 13px 10px 46px;
+  border:1px solid #dfe5ec;
+  border-radius:8px;
+  color:#263b50;
+  background:#fff;
+  font-family:Arial,Helvetica,sans-serif;
+  font-size:14px;
+}
+.fd-rq-search-v3 input:focus{border-color:#a9cf75;box-shadow:0 0 0 3px rgba(116,184,36,.11)}
+
+.fd-rq-table-wrap.fd-rq-table-wrap-v3{border:0;overflow-x:auto}
+.fd-rq-table.fd-rq-table-v3{
+  min-width:900px;
+  table-layout:fixed;
+  white-space:normal;
+}
+.fd-rq-table-v3 th{
+  padding:11px 10px 12px;
+  border-bottom:1px solid #d8e0e7;
+  color:#334b5f;
+  background:#fff;
+  font-size:13px;
+  line-height:1.2;
+  font-weight:500;
+  text-transform:none;
+}
+.fd-rq-table-v3 td{
+  padding:12px 10px;
+  border-bottom:1px solid #dfe5ec;
+  color:#263b50;
+  font-size:14px;
+  line-height:1.4;
+  vertical-align:middle;
+}
+.fd-rq-table-v3 th:nth-child(1),.fd-rq-table-v3 td:nth-child(1){width:17%;text-align:left}
+.fd-rq-table-v3 th:nth-child(2),.fd-rq-table-v3 td:nth-child(2){width:17%}
+.fd-rq-table-v3 th:nth-child(3),.fd-rq-table-v3 td:nth-child(3){width:19%}
+.fd-rq-table-v3 th:nth-child(4),.fd-rq-table-v3 td:nth-child(4){width:20%}
+.fd-rq-table-v3 th:nth-child(5),.fd-rq-table-v3 td:nth-child(5){width:15%}
+.fd-rq-table-v3 th:nth-child(6),.fd-rq-table-v3 td:nth-child(6){width:12%;text-align:right}
+.fd-rq-table-v3 tbody tr.fd-rq-clickable-row{cursor:pointer}
+.fd-rq-table-v3 tbody tr.fd-rq-clickable-row:hover{background:#fbfcfa}
+.fd-rq-table-v3 .fd-rq-client-name{color:#203548;font-size:14px;font-weight:700}
+.fd-rq-table-v3 .fd-rq-cell-title{color:#263b50;font-size:14px}
+.fd-rq-table-v3 .fd-rq-property{color:#334b5f;line-height:1.35}
+.fd-rq-table-v3 .fd-rq-contact strong,
+.fd-rq-table-v3 .fd-rq-contact small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fd-rq-table-v3 .fd-rq-contact strong{color:#334b5f;font-size:14px;font-weight:400}
+.fd-rq-table-v3 .fd-rq-contact small{margin-top:2px;color:#334b5f;font-size:13px}
+.fd-rq-table-v3 .fd-rq-requested{color:#334b5f;white-space:nowrap}
+.fd-rq-table-v3 .fd-rq-badge{
+  min-height:27px;
+  padding:5px 10px;
+  border-radius:999px;
+  font-size:12px;
+  font-weight:500;
+  text-transform:none;
+}
+.fd-rq-table-v3 .fd-rq-badge.new{color:#17648f;background:#e9f4ff}
+.fd-rq-table-v3 .fd-rq-badge.new:before{
+  width:7px;height:7px;margin-right:6px;display:inline-block;border-radius:50%;background:#38aaf0;content:"";
+}
+.fd-rq-table-v3 .fd-rq-empty{padding:35px 15px!important;font-size:13px!important}
+.fd-rq-pagination.fd-rq-pagination-v3{
+  min-height:51px;
+  padding:12px 0 0;
+  border-top:0;
+  color:#64768a;
+  font-size:12px;
+}
+.fd-rq-pagination-v3 .fd-rq-btn{min-width:39px;min-height:39px;font-size:13px;box-shadow:none}
+
+@media(max-width:1199.98px){
+  .fd-rq-summary-v3{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(max-width:767.98px){
+  .fd-rq-head.fd-rq-head-v3{align-items:stretch}
+  .fd-rq-head-v3 .fd-rq-actions{justify-content:flex-end}
+  .fd-rq-summary-v3{grid-template-columns:1fr}
+  .fd-rq-list-tools{align-items:stretch}
+  .fd-rq-left-filters{width:100%}
+  .fd-rq-search.fd-rq-search-v3{width:100%}
+}
+@media(max-width:575.98px){
+  .fd-rq-head-v3 .fd-rq-actions{display:grid;grid-template-columns:1fr 1fr}
+  .fd-rq-head-v3 .fd-rq-btn{width:100%}
+  .fd-rq-more-wrap{width:100%}
+  .fd-rq-more-menu{width:100%}
+  .fd-rq-summary-v3 .fd-rq-metric-card{min-height:145px}
+  .fd-rq-summary-v3 .fd-rq-metric-value-row{margin-top:30px}
+  .fd-rq-filter-pill{flex:1;min-width:145px}
+  .fd-rq-filter-pill select{min-width:0;max-width:100%;flex:1}
+}
+
+
+/* ==========================================================
+   Service Requests v3.1.0 - Invoice reference visual alignment
+   UI/template/font only. Existing hover interactions are preserved.
+   ========================================================== */
+body{
+  background:#fff!important;
+  color:#0b2b37;
+  font-family:Arial,Helvetica,sans-serif!important;
+  font-size:14px;
+}
+
+.fd-dashboard{
+  width:100%;
+  max-width:none;
+  margin:0;
+  padding:24px 22px 42px;
+  background:#fff;
+  min-height:calc(100vh - 70px);
+}
+
+.fd-rq-head.fd-rq-head-v3{
+  align-items:center;
+  gap:18px;
+  margin-bottom:25px;
+}
+.fd-rq-head-v3 .fd-rq-title{
+  margin:0;
+  color:#0b2b37;
+  font-size:31px;
+  line-height:1.1;
+  font-weight:700;
+  letter-spacing:-.7px;
+}
+.fd-rq-head-v3 .fd-rq-actions{gap:9px}
+.fd-rq-head-v3 .fd-rq-btn,
+.fd-rq-pagination-v3 .fd-rq-btn{
+  min-height:38px;
+  height:38px;
+  padding:0 14px;
+  gap:8px;
+  border:1px solid #dce4e8;
+  border-radius:7px;
+  color:#31505d;
+  background:#fff;
+  box-shadow:none;
+  font:700 14px Arial,Helvetica,sans-serif;
+  white-space:nowrap;
+}
+.fd-rq-head-v3 .fd-rq-btn.primary{
+  border-color:#2f8d25;
+  background:#2f8d25;
+  color:#fff;
+  box-shadow:none;
+}
+
+.fd-rq-more-menu{
+  width:182px;
+  padding:7px 0;
+  top:45px;
+  border:1px solid #dce4e8;
+  border-radius:8px;
+  background:#fff;
+  box-shadow:0 10px 25px rgba(0,17,49,.14);
+}
+.fd-rq-more-item{
+  min-height:44px;
+  padding:9px 14px;
+  gap:10px;
+  border-radius:0;
+  color:#294755!important;
+  background:#fff;
+  font:700 13px Arial,Helvetica,sans-serif;
+}
+.fd-rq-more-item i{font-size:18px;color:#315967}
+
+.fd-rq-summary-v3{
+  grid-template-columns:repeat(3,minmax(0,1fr));
+  gap:10px;
+  margin-bottom:26px;
+}
+.fd-rq-summary-v3 .fd-rq-metric-card{
+  min-width:0;
+  min-height:141px;
+  padding:15px 15px 14px;
+  border:1px solid #dce4e8;
+  border-radius:7px;
+  background:#fff;
+  box-shadow:none;
+}
+.fd-rq-summary-v3 .fd-rq-metric-title{
+  margin:0;
+  color:#123845;
+  font-size:15px;
+  line-height:1.25;
+  font-weight:700;
+}
+.fd-rq-summary-v3 .fd-rq-metric-info,
+.fd-rq-summary-v3 .fd-rq-card-arrow{
+  color:#355866;
+  font-size:12px;
+}
+.fd-rq-summary-v3 .fd-rq-card-arrow{top:15px;right:15px}
+.fd-rq-summary-v3 .fd-rq-overview-list{
+  margin-top:9px;
+  gap:4px;
+}
+.fd-rq-summary-v3 .fd-rq-overview-item{
+  min-height:auto;
+  grid-template-columns:8px minmax(0,1fr) auto;
+  gap:6px;
+  color:#405d6a;
+  font-size:12px;
+  line-height:1.25;
+}
+.fd-rq-summary-v3 .fd-rq-overview-dot{width:7px;height:7px}
+.fd-rq-summary-v3 .fd-rq-overview-count{
+  color:#405d6a;
+  font-size:12px;
+  font-weight:400;
+  text-align:right;
+  white-space:nowrap;
+}
+.fd-rq-summary-v3 .fd-rq-metric-period{
+  margin-top:2px;
+  color:#607782;
+  font-size:12px;
+  line-height:1.3;
+}
+.fd-rq-summary-v3 .fd-rq-metric-value-row{
+  margin-top:24px;
+  gap:8px;
+  flex-wrap:wrap;
+}
+.fd-rq-summary-v3 .fd-rq-metric-value{
+  color:#0b2b37;
+  font-size:34px;
+  line-height:.95;
+  font-weight:700;
+  letter-spacing:-1px;
+}
+.fd-rq-summary-v3 .fd-rq-metric-change{
+  min-height:25px;
+  padding:3px 8px;
+  border-radius:999px;
+  font-size:12px;
+  line-height:1;
+  font-weight:700;
+}
+.fd-rq-summary-v3 .fd-rq-trend-popup{
+  min-width:185px;
+  max-width:260px;
+  padding:12px 14px;
+  border:1px solid #d7e0e4;
+  border-radius:8px;
+  background:#fff;
+  box-shadow:0 7px 22px rgba(0,17,49,.16);
+}
+.fd-rq-summary-v3 .fd-rq-trend-popup-title{
+  margin-bottom:6px;
+  color:#71848e;
+  font-size:12px;
+  font-weight:400;
+  line-height:1.25;
+}
+.fd-rq-summary-v3 .fd-rq-trend-popup-row{
+  gap:10px;
+  padding:0;
+  margin-top:3px;
+  color:#294b59;
+  font-size:12px;
+  font-weight:700;
+  line-height:1.3;
+}
+.fd-rq-summary-v3 .fd-rq-trend-popup-row strong{
+  color:#294b59;
+  font-size:12px;
+  font-weight:700;
+}
+
+.fd-rq-list-heading{
+  align-items:baseline;
+  gap:8px;
+  margin:0 0 18px;
+}
+.fd-rq-list-heading h2{
+  margin:0;
+  color:#123845;
+  font-size:19px;
+  line-height:1.2;
+  font-weight:700;
+}
+.fd-rq-list-heading span{
+  color:#607782;
+  font-size:13px;
+  font-weight:400;
+}
+.fd-rq-list-tools{
+  position:relative;
+  min-height:47px;
+  margin-bottom:10px;
+  gap:8px;
+}
+.fd-rq-left-filters{gap:8px}
+.fd-rq-filter-pill{
+  min-height:38px;
+  height:38px;
+  padding:0 13px;
+  gap:7px;
+  border:0;
+  border-radius:999px;
+  color:#173846;
+  background:#e9e8e4;
+  font:700 13px Arial,Helvetica,sans-serif;
+}
+.fd-rq-filter-pill > i{font-size:17px}
+.fd-rq-filter-pill .fd-rq-pill-label{font-weight:700}
+.fd-rq-filter-pill .fd-rq-pill-sep{color:#6e7e85;font-weight:400}
+.fd-rq-filter-pill select{
+  max-width:150px;
+  padding:0 20px 0 0;
+  color:#173846;
+  background:transparent;
+  font:400 13px Arial,Helvetica,sans-serif;
+}
+.fd-rq-search.fd-rq-search-v3{
+  width:202px;
+  margin-left:auto;
+}
+.fd-rq-search-v3 i{
+  left:14px;
+  color:#587381;
+  font-size:17px;
+}
+.fd-rq-search-v3 input{
+  width:100%;
+  height:45px;
+  padding:0 13px 0 45px;
+  border:1px solid #dce4e8;
+  border-radius:7px;
+  color:#173846;
+  background:#fff;
+  outline:0;
+  font:13px Arial,Helvetica,sans-serif;
+}
+
+.fd-rq-table-wrap.fd-rq-table-wrap-v3{
+  width:100%;
+  overflow-x:auto;
+  overflow-y:visible;
+}
+.fd-rq-table.fd-rq-table-v3{
+  width:100%;
+  min-width:900px;
+  border-collapse:collapse;
+  table-layout:fixed;
+  white-space:normal;
+}
+.fd-rq-table-v3 th{
+  height:40px;
+  padding:0 6px;
+  border-bottom:1px solid #cfd9de;
+  color:#46616e;
+  background:#fff;
+  font-size:11.5px;
+  line-height:1.2;
+  font-weight:400;
+  text-align:left;
+  text-transform:none;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.fd-rq-table-v3 td{
+  min-height:46px;
+  padding:8px 6px;
+  border-bottom:1px solid #dde5e9;
+  color:#314f5d;
+  background:#fff;
+  font-size:12px;
+  line-height:1.3;
+  vertical-align:middle;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+.fd-rq-table-v3 th:nth-child(1),.fd-rq-table-v3 td:nth-child(1){width:16%;text-align:left}
+.fd-rq-table-v3 th:nth-child(2),.fd-rq-table-v3 td:nth-child(2){width:16%}
+.fd-rq-table-v3 th:nth-child(3),.fd-rq-table-v3 td:nth-child(3){width:22%}
+.fd-rq-table-v3 th:nth-child(4),.fd-rq-table-v3 td:nth-child(4){width:18%}
+.fd-rq-table-v3 th:nth-child(5),.fd-rq-table-v3 td:nth-child(5){width:13%}
+.fd-rq-table-v3 th:nth-child(6),.fd-rq-table-v3 td:nth-child(6){width:15%;text-align:left;white-space:nowrap;overflow:visible}
+.fd-rq-table-v3 .fd-rq-client-name{
+  color:#123845;
+  font-size:12px;
+  font-weight:700;
+}
+.fd-rq-table-v3 .fd-rq-cell-title,
+.fd-rq-table-v3 .fd-rq-property,
+.fd-rq-table-v3 .fd-rq-contact strong,
+.fd-rq-table-v3 .fd-rq-requested{
+  color:#314f5d;
+  font-size:12px;
+  font-weight:400;
+}
+.fd-rq-table-v3 .fd-rq-contact small{
+  margin-top:2px;
+  color:#6f7f89;
+  font-size:11px;
+}
+.fd-rq-table-v3 .fd-rq-badge{
+  min-height:23px;
+  max-width:100%;
+  padding:3px 9px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:flex-start;
+  gap:6px;
+  border-radius:999px;
+  font-size:12px;
+  line-height:1;
+  font-weight:400;
+  white-space:nowrap;
+  vertical-align:middle;
+}
+.fd-rq-table-v3 .fd-rq-badge:before{
+  width:7px;
+  height:7px;
+  margin-right:0;
+  display:inline-block;
+  border-radius:50%;
+  background:currentColor;
+  content:"";
+}
+.fd-rq-table-v3 .fd-rq-badge.new:before{background:currentColor}
+.fd-rq-table-v3 .fd-rq-badge.new,
+.fd-rq-table-v3 .fd-rq-badge.contacting,
+.fd-rq-table-v3 .fd-rq-badge.information_required{
+  color:#8b7410;
+  background:#f8f0c8;
+}
+.fd-rq-table-v3 .fd-rq-badge.assessment_required,
+.fd-rq-table-v3 .fd-rq-badge.quote_required,
+.fd-rq-table-v3 .fd-rq-badge.job_required{
+  color:#52717f;
+  background:#edf1f2;
+}
+.fd-rq-table-v3 .fd-rq-badge.converted,
+.fd-rq-table-v3 .fd-rq-badge.closed{
+  color:#3b8a33;
+  background:#e7f2e4;
+}
+.fd-rq-table-v3 .fd-rq-badge.cancelled{
+  color:#bc4941;
+  background:#fae8e6;
+}
+.fd-rq-table-v3 .fd-rq-empty{
+  height:150px!important;
+  padding:0 15px!important;
+  color:#71858f!important;
+  font-size:13px!important;
+  text-align:center!important;
+}
+.fd-rq-pagination.fd-rq-pagination-v3{
+  min-height:48px;
+  padding:11px 0 0;
+  border-top:0;
+  color:#6d818c;
+  background:#fff;
+  font-size:12px;
+}
+.fd-rq-pagination-v3 .fd-rq-btn{
+  width:32px;
+  min-width:32px;
+  height:32px;
+  min-height:32px;
+  padding:0 8px;
+  border-radius:6px;
+  font-size:13px;
+}
+
+.fd-rq-modal-bg{
+  padding:18px;
+  background:rgba(0,17,49,.33);
+  backdrop-filter:none;
+}
+.fd-rq-modal{
+  width:min(860px,calc(100vw - 30px));
+  max-height:calc(100vh - 36px);
+  border:1px solid #d8e0e4;
+  border-radius:10px;
+  background:#fff;
+  box-shadow:0 22px 60px rgba(0,17,49,.23);
+}
+.fd-rq-modal.small{width:min(540px,calc(100vw - 30px))}
+.fd-rq-modal-header{
+  min-height:auto;
+  padding:20px 22px 12px;
+  gap:12px;
+  border-bottom:0;
+  background:#fff;
+}
+.fd-rq-modal-icon{
+  width:32px;
+  height:32px;
+  border-radius:8px;
+  color:#24751d;
+  background:#f2f8ee;
+  font-size:14px;
+}
+.fd-rq-modal-heading h3{
+  margin:0;
+  color:#123845;
+  font-size:22px;
+  font-weight:700;
+}
+.fd-rq-modal-heading p{
+  margin:4px 0 0;
+  color:#5f7380;
+  font-size:11px;
+  line-height:1.4;
+}
+.fd-rq-modal-close{
+  width:34px;
+  height:34px;
+  border-radius:7px;
+  color:#274c5b;
+  font-size:20px;
+}
+.fd-rq-modal-body{padding:10px 22px 12px}
+.fd-rq-form-grid{gap:13px}
+.fd-rq-field label{
+  margin-bottom:5px;
+  color:#526b78;
+  font-size:12px;
+  font-weight:700;
+}
+.fd-rq-field input,
+.fd-rq-field select,
+.fd-rq-field textarea{
+  width:100%;
+  min-height:39px;
+  padding:7px 10px;
+  border:1px solid #dce4e8;
+  border-radius:7px;
+  color:#173846;
+  background:#fff;
+  font:14px Arial,Helvetica,sans-serif;
+}
+.fd-rq-field textarea{min-height:100px;line-height:1.5}
+.fd-rq-section{
+  padding:8px 0 3px;
+  border-bottom:1px solid #eef2f5;
+  color:#31425b;
+  font-size:11px;
+  font-weight:700;
+  letter-spacing:.04em;
+}
+.fd-rq-modal-footer{
+  padding:12px 22px 20px;
+  gap:8px;
+  border-top:0;
+  background:#fff;
+}
+.fd-rq-modal-footer .fd-rq-btn{
+  min-height:38px;
+  height:38px;
+  padding:0 14px;
+  border:1px solid #dce4e8;
+  border-radius:7px;
+  color:#31505d;
+  background:#fff;
+  box-shadow:none;
+  font:700 14px Arial,Helvetica,sans-serif;
+}
+.fd-rq-modal-footer .fd-rq-btn.primary{
+  border-color:#2f8d25;
+  background:#2f8d25;
+  color:#fff;
+}
+.fd-rq-history-item{
+  padding:10px 11px;
+  border:1px solid #dce4e8;
+  border-radius:7px;
+  background:#fbfcfc;
+}
+.fd-rq-history-top strong{color:#294b59;font-size:12px}
+.fd-rq-history-item small{color:#7c8e96;font-size:11px}
+.fd-rq-history-item p{color:#405d6a;font-size:12px;line-height:1.5}
+.fd-rq-toast{
+  width:min(390px,calc(100vw - 36px));
+  top:82px;
+  right:18px;
+  padding:12px 14px;
+  border-radius:8px;
+  font-size:14px;
+  font-weight:700;
+}
+.fd-rq-toast-msg{font-size:14px;font-weight:700}
+
+@media(max-width:1199.98px){
+  .fd-rq-summary-v3{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(max-width:991.98px){
+  .fd-dashboard{padding:20px 16px 36px}
+}
+@media(max-width:767.98px){
+  .fd-dashboard{padding:17px 13px 32px}
+  .fd-rq-head-v3 .fd-rq-title{font-size:27px}
+  .fd-rq-head.fd-rq-head-v3{align-items:flex-start;flex-direction:column}
+  .fd-rq-head-v3 .fd-rq-actions{width:100%}
+  .fd-rq-summary-v3{grid-template-columns:1fr}
+  .fd-rq-list-tools{align-items:flex-start;flex-wrap:wrap}
+  .fd-rq-left-filters{width:100%}
+  .fd-rq-search.fd-rq-search-v3{width:100%;order:-1;margin-left:0}
+  .fd-rq-modal-header{padding:16px 16px 10px}
+  .fd-rq-modal-body{padding:10px 16px 12px}
+  .fd-rq-modal-footer{padding:12px 16px 16px}
+}
+@media(max-width:575.98px){
+  .fd-rq-head-v3 .fd-rq-actions{display:grid;grid-template-columns:1fr 1fr}
+  .fd-rq-head-v3 .fd-rq-btn{width:100%}
+  .fd-rq-more-wrap{width:100%}
+  .fd-rq-more-menu{width:100%}
+  .fd-rq-filter-pill{flex:1;min-width:145px}
+  .fd-rq-filter-pill select{min-width:0;max-width:100%;flex:1}
+  .fd-rq-modal-footer{flex-direction:column-reverse}
+  .fd-rq-modal-footer .fd-rq-btn{width:100%}
+}
+
 </style>
 </head>
 
@@ -4284,200 +5097,181 @@ a:active{
             <div class="fieldplx-content-wrapper">
                 <div class="fd-dashboard">
 
-                    <section class="fd-rq-head">
+                    <section class="fd-rq-head fd-rq-head-v3">
                         <div>
-                            <h1 class="fd-rq-title">Service Requests</h1>
-                            <p class="fd-rq-sub">
-                                Capture customer service demand, understand requirements, assign ownership, and route each request toward assessment, quotation or direct job creation.
-                            </p>
+                            <h1 class="fd-rq-title">Requests</h1>
                         </div>
 
                         <div class="fd-rq-actions">
-                            <button type="button" class="fd-rq-btn" id="refreshButton">
-                                <i class="bi bi-arrow-clockwise"></i>
-                                Refresh
-                            </button>
-
                             <a href="add-request.php" class="fd-rq-btn primary">
-                                <i class="bi bi-plus-lg"></i>
-                                Add Request
+                                New Request
                             </a>
+
+                            <div class="fd-rq-more-wrap">
+                                <button type="button" class="fd-rq-btn" id="moreActionsButton" aria-expanded="false">
+                                    <i class="bi bi-three-dots"></i>
+                                    More Actions
+                                </button>
+                                <div class="fd-rq-more-menu" id="moreActionsMenu">
+                                    <a href="add-request.php" class="fd-rq-more-item">
+                                        <i class="bi bi-tools"></i>
+                                        <span>Customize Form</span>
+                                    </a>
+                                    <button type="button" class="fd-rq-more-item" id="shareRequestFormButton">
+                                        <i class="bi bi-code-square"></i>
+                                        <span>Share or Embed</span>
+                                    </button>
+                                </div>
+                            </div>
                         </div>
                     </section>
 
-                    <section class="row g-3 fd-rq-summary-v2">
-                        <div class="col-xl-4 col-md-12">
-                            <article class="fd-rq-metric-card">
-                                <h2 class="fd-rq-metric-title">Overview</h2>
-                                <div class="fd-rq-overview-list">
-                                    <a class="fd-rq-overview-item" href="#requestsTableCard" data-overview-status="quote_required">
-                                        <span class="fd-rq-overview-dot approval"></span>
-                                        <span>Needs approval</span>
-                                        <span class="fd-rq-overview-count"><?= (int)$requestStats['needs_approval'] ?></span>
-                                    </a>
-                                    <a class="fd-rq-overview-item" href="#requestsTableCard" data-overview-status="new">
-                                        <span class="fd-rq-overview-dot new"></span>
-                                        <span>New</span>
-                                        <span class="fd-rq-overview-count"><?= (int)$requestStats['new'] ?></span>
-                                    </a>
-                                    <div class="fd-rq-overview-item">
-                                        <span class="fd-rq-overview-dot assessment"></span>
-                                        <span>Assessment complete</span>
-                                        <span class="fd-rq-overview-count"><?= (int)$requestStats['assessment_completed'] ?></span>
-                                    </div>
-                                    <div class="fd-rq-overview-item">
-                                        <span class="fd-rq-overview-dot overdue"></span>
-                                        <span>Overdue</span>
-                                        <span class="fd-rq-overview-count"><?= (int)$requestStats['overdue'] ?></span>
-                                    </div>
-                                    <div class="fd-rq-overview-item">
-                                        <span class="fd-rq-overview-dot unscheduled"></span>
-                                        <span>Unscheduled</span>
-                                        <span class="fd-rq-overview-count"><?= (int)$requestStats['unscheduled'] ?></span>
-                                    </div>
+                    <section class="fd-rq-summary-v3">
+                        <article class="fd-rq-metric-card">
+                            <h2 class="fd-rq-metric-title">Overview</h2>
+                            <div class="fd-rq-overview-list">
+                                <a class="fd-rq-overview-item" href="#requestsTableCard" data-overview-status="quote_required">
+                                    <span class="fd-rq-overview-dot approval"></span>
+                                    <span>Needs approval</span>
+                                    <span class="fd-rq-overview-count"><?= (int)$requestStats['needs_approval'] ?></span>
+                                </a>
+                                <a class="fd-rq-overview-item" href="#requestsTableCard" data-overview-status="new">
+                                    <span class="fd-rq-overview-dot new"></span>
+                                    <span>New</span>
+                                    <span class="fd-rq-overview-count"><?= (int)$requestStats['new'] ?></span>
+                                </a>
+                                <div class="fd-rq-overview-item">
+                                    <span class="fd-rq-overview-dot assessment"></span>
+                                    <span>Assessment complete</span>
+                                    <span class="fd-rq-overview-count"><?= (int)$requestStats['assessment_completed'] ?></span>
                                 </div>
-                            </article>
-                        </div>
+                                <div class="fd-rq-overview-item">
+                                    <span class="fd-rq-overview-dot overdue"></span>
+                                    <span>Overdue</span>
+                                    <span class="fd-rq-overview-count"><?= (int)$requestStats['overdue'] ?></span>
+                                </div>
+                                <div class="fd-rq-overview-item">
+                                    <span class="fd-rq-overview-dot unscheduled"></span>
+                                    <span>Unscheduled</span>
+                                    <span class="fd-rq-overview-count"><?= (int)$requestStats['unscheduled'] ?></span>
+                                </div>
+                            </div>
+                        </article>
 
-                        <div class="col-xl-4 col-md-6">
-                            <article class="fd-rq-metric-card">
-                                <span class="fd-rq-card-arrow"><i class="bi bi-arrow-up-right"></i></span>
-                                <h2 class="fd-rq-metric-title">New requests</h2>
-                                <div class="fd-rq-metric-period">Past 30 days</div>
-                                <div class="fd-rq-metric-value-row">
-                                    <strong class="fd-rq-metric-value"><?= (int)$requestStats['new_requests_30'] ?></strong>
-                                    <span class="fd-rq-trend-wrap" tabindex="0">
-                                        <span class="fd-rq-metric-change <?= fieldplxRequestTrendClass($requestStats['new_requests_change']) ?>">
-                                            <?= fieldplxRequestTrendArrow($requestStats['new_requests_change']) ?> <?= number_format(abs((float)$requestStats['new_requests_change']), 0) ?>%
-                                        </span>
-                                        <span class="fd-rq-trend-popup" role="tooltip">
-                                            <span class="fd-rq-trend-popup-title">New requests</span>
-                                            <span class="fd-rq-trend-popup-row"><span><?= htmlspecialchars($requestStats['previous_period_label']) ?></span><strong><?= (int)$requestStats['previous_new_requests_30'] ?></strong></span>
-                                            <span class="fd-rq-trend-popup-row"><span><?= htmlspecialchars($requestStats['current_period_label']) ?></span><strong><?= (int)$requestStats['new_requests_30'] ?></strong></span>
-                                        </span>
+                        <article class="fd-rq-metric-card">
+                            <span class="fd-rq-card-arrow"><i class="bi bi-arrow-up-right"></i></span>
+                            <h2 class="fd-rq-metric-title">New requests</h2>
+                            <div class="fd-rq-metric-period">Past 30 days</div>
+                            <div class="fd-rq-metric-value-row">
+                                <strong class="fd-rq-metric-value"><?= (int)$requestStats['new_requests_30'] ?></strong>
+                                <span class="fd-rq-trend-wrap" tabindex="0">
+                                    <span class="fd-rq-metric-change <?= fieldplxRequestTrendClass($requestStats['new_requests_change']) ?>">
+                                        <?= fieldplxRequestTrendArrow($requestStats['new_requests_change']) ?> <?= number_format(abs((float)$requestStats['new_requests_change']), 0) ?>%
                                     </span>
-                                </div>
-                            </article>
-                        </div>
+                                    <span class="fd-rq-trend-popup" role="tooltip">
+                                        <span class="fd-rq-trend-popup-title">New requests</span>
+                                        <span class="fd-rq-trend-popup-row"><span><?= htmlspecialchars($requestStats['previous_period_label']) ?></span><strong><?= (int)$requestStats['previous_new_requests_30'] ?></strong></span>
+                                        <span class="fd-rq-trend-popup-row"><span><?= htmlspecialchars($requestStats['current_period_label']) ?></span><strong><?= (int)$requestStats['new_requests_30'] ?></strong></span>
+                                    </span>
+                                </span>
+                            </div>
+                        </article>
 
-                        <div class="col-xl-4 col-md-6">
-                            <article class="fd-rq-metric-card">
-                                <span class="fd-rq-card-arrow"><i class="bi bi-arrow-up-right"></i></span>
-                                <div class="fd-rq-metric-title-row">
-                                    <h2 class="fd-rq-metric-title">Conversion rate</h2>
-                                    <span class="fd-rq-metric-info" title="Quotes or jobs created from requests in the past 30 days"><i class="bi bi-info-circle"></i></span>
-                                </div>
-                                <div class="fd-rq-metric-period">Past 30 days</div>
-                                <div class="fd-rq-metric-value-row">
-                                    <strong class="fd-rq-metric-value"><?= number_format((float)$requestStats['conversion_rate'], 0) ?>%</strong>
-                                    <span class="fd-rq-trend-wrap" tabindex="0">
-                                        <span class="fd-rq-metric-change <?= fieldplxRequestTrendClass($requestStats['conversion_change']) ?>">
-                                            <?= fieldplxRequestTrendArrow($requestStats['conversion_change']) ?> <?= number_format(abs((float)$requestStats['conversion_change']), 0) ?>%
-                                        </span>
-                                        <span class="fd-rq-trend-popup" role="tooltip">
-                                            <span class="fd-rq-trend-popup-title">Conversion rate</span>
-                                            <span class="fd-rq-trend-popup-row"><span><?= htmlspecialchars($requestStats['previous_period_label']) ?></span><strong><?= number_format((float)$requestStats['previous_conversion_rate'], 0) ?>%</strong></span>
-                                            <span class="fd-rq-trend-popup-row"><span><?= htmlspecialchars($requestStats['current_period_label']) ?></span><strong><?= number_format((float)$requestStats['conversion_rate'], 0) ?>%</strong></span>
-                                        </span>
+                        <article class="fd-rq-metric-card">
+                            <div class="fd-rq-metric-title-row">
+                                <h2 class="fd-rq-metric-title">Conversion rate</h2>
+                                <span class="fd-rq-metric-info" title="Quotes or jobs created from requests in the past 30 days"><i class="bi bi-info-circle"></i></span>
+                            </div>
+                            <div class="fd-rq-metric-period">Past 30 days</div>
+                            <div class="fd-rq-metric-value-row">
+                                <strong class="fd-rq-metric-value"><?= number_format((float)$requestStats['conversion_rate'], 0) ?>%</strong>
+                                <span class="fd-rq-trend-wrap" tabindex="0">
+                                    <span class="fd-rq-metric-change <?= fieldplxRequestTrendClass($requestStats['conversion_change']) ?>">
+                                        <?= fieldplxRequestTrendArrow($requestStats['conversion_change']) ?> <?= number_format(abs((float)$requestStats['conversion_change']), 0) ?>%
                                     </span>
-                                </div>
-                            </article>
-                        </div>
+                                    <span class="fd-rq-trend-popup" role="tooltip">
+                                        <span class="fd-rq-trend-popup-title">Conversion rate</span>
+                                        <span class="fd-rq-trend-popup-row"><span><?= htmlspecialchars($requestStats['previous_period_label']) ?></span><strong><?= number_format((float)$requestStats['previous_conversion_rate'], 0) ?>%</strong></span>
+                                        <span class="fd-rq-trend-popup-row"><span><?= htmlspecialchars($requestStats['current_period_label']) ?></span><strong><?= number_format((float)$requestStats['conversion_rate'], 0) ?>%</strong></span>
+                                    </span>
+                                </span>
+                            </div>
+                        </article>
+
+                        
                     </section>
 
-                    <section class="fd-card fd-rq-card" id="requestsTableCard">
-                        <div class="fd-rq-toolbar">
-                            <div class="fd-rq-search">
-                                <i class="bi bi-search"></i>
-                                <input
-                                    type="search"
-                                    id="requestSearch"
-                                    placeholder="Search request no, title, client or phone"
-                                    autocomplete="off"
-                                >
+                    <section class="fd-rq-list-section" id="requestsTableCard">
+                        <div class="fd-rq-list-heading">
+                            <h2>All requests</h2>
+                            <span id="resultCount">(0 results)</span>
+                        </div>
+
+                        <div class="fd-rq-list-tools">
+                            <div class="fd-rq-left-filters">
+                                <label class="fd-rq-filter-pill" for="statusFilter">
+                                    <span class="fd-rq-pill-label">Status</span>
+                                    <span class="fd-rq-pill-sep">|</span>
+                                    <select id="statusFilter" aria-label="Filter requests by status">
+                                        <option value="">All</option>
+                                        <option value="new">New</option>
+                                        <option value="contacting">Contacting</option>
+                                        <option value="information_required">Information Required</option>
+                                        <option value="assessment_required">Assessment Required</option>
+                                        <option value="quote_required">Quote Required</option>
+                                        <option value="job_required">Job Required</option>
+                                        <option value="converted">Converted</option>
+                                        <option value="closed">Closed</option>
+                                        <option value="cancelled">Cancelled</option>
+                                    </select>
+                                </label>
+
+                                <label class="fd-rq-filter-pill" for="dateFilter">
+                                    <i class="bi bi-calendar3"></i>
+                                    <span class="fd-rq-pill-label">Date</span>
+                                    <span class="fd-rq-pill-sep">|</span>
+                                    <select id="dateFilter" aria-label="Filter requests by requested date">
+                                        <option value="">All</option>
+                                        <option value="today">Today</option>
+                                        <option value="last_7">Last 7 days</option>
+                                        <option value="last_30">Last 30 days</option>
+                                        <option value="this_month">This month</option>
+                                    </select>
+                                </label>
                             </div>
 
-                            <select class="fd-rq-filter" id="statusFilter">
-                                <option value="">All Status</option>
-                                <option value="new">New</option>
-                                <option value="contacting">Contacting</option>
-                                <option value="information_required">Information Required</option>
-                                <option value="assessment_required">Assessment Required</option>
-                                <option value="quote_required">Quote Required</option>
-                                <option value="job_required">Job Required</option>
-                                <option value="converted">Converted</option>
-                                <option value="closed">Closed</option>
-                                <option value="cancelled">Cancelled</option>
-                            </select>
-
-                            <select class="fd-rq-filter" id="priorityFilter">
-                                <option value="">All Priority</option>
-                                <option value="low">Low</option>
-                                <option value="normal">Normal</option>
-                                <option value="high">High</option>
-                                <option value="urgent">Urgent</option>
-                            </select>
-
-                            <select class="fd-rq-filter" id="branchFilter">
-                                <option value="">All Branches</option>
-                            </select>
-
-                            <select class="fd-rq-filter" id="serviceFilter">
-                                <option value="">All Services</option>
-                            </select>
-
-                            <div class="fd-rq-spacer"></div>
-
-                            <button type="button" class="fd-rq-btn" id="clearFilters">
-                                <i class="bi bi-x-circle"></i>
-                                Clear
-                            </button>
+                            <div class="fd-rq-search fd-rq-search-v3">
+                                <i class="bi bi-search"></i>
+                                <input type="search" id="requestSearch" placeholder="Search requests..." autocomplete="off">
+                            </div>
                         </div>
 
-                        <div class="fd-rq-table-wrap">
-                            <table class="fd-rq-table">
+                        <div class="fd-rq-table-wrap fd-rq-table-wrap-v3">
+                            <table class="fd-rq-table fd-rq-table-v3">
                                 <thead>
                                     <tr>
-                                        <th>S/No</th>
-                                        <th>Request</th>
-                                        <th>Client / Location</th>
-                                        <th>Service</th>
-                                        <th>Priority</th>
-                                        <th>Source</th>
-                                        <th>Preferred Schedule</th>
-                                        <th>Assigned To</th>
-                                        <th>Status</th>
-                                        <th>Updated</th>
-                                        <th>Action</th>
+                                        <th>Client <i class="bi bi-chevron-expand"></i></th>
+                                        <th>Title <i class="bi bi-chevron-expand"></i></th>
+                                        <th>Property</th>
+                                        <th>Contact</th>
+                                        <th>Requested <i class="bi bi-chevron-expand"></i></th>
+                                        <th>Status <i class="bi bi-chevron-expand"></i></th>
                                     </tr>
                                 </thead>
-
                                 <tbody id="requestsBody">
-                                    <tr>
-                                        <td colspan="11" class="fd-rq-empty">
-                                            Loading service requests...
-                                        </td>
-                                    </tr>
+                                    <tr><td colspan="6" class="fd-rq-empty">Loading requests...</td></tr>
                                 </tbody>
                             </table>
                         </div>
 
-                        <div class="fd-rq-pagination">
+                        <div class="fd-rq-pagination fd-rq-pagination-v3">
                             <span id="countText">Showing 0 requests</span>
-
                             <div class="fd-rq-pagination-actions">
-                                <button type="button" class="fd-rq-btn" id="prevPage">
-                                    <i class="bi bi-chevron-left"></i>
-                                </button>
-
-                                <button type="button" class="fd-rq-btn" id="nextPage">
-                                    <i class="bi bi-chevron-right"></i>
-                                </button>
+                                <button type="button" class="fd-rq-btn" id="prevPage" aria-label="Previous page"><i class="bi bi-chevron-left"></i></button>
+                                <button type="button" class="fd-rq-btn" id="nextPage" aria-label="Next page"><i class="bi bi-chevron-right"></i></button>
                             </div>
                         </div>
                     </section>
-
-                </div>
 
                 <!-- Add / Edit Request -->
                 <div class="fd-rq-modal-bg" id="requestModal" aria-hidden="true">
@@ -4721,6 +5515,7 @@ a:active{
                     perPage:10,
                     search:'',
                     status:'',
+                    dateFilter:'',
                     priority:'',
                     branchId:'',
                     serviceId:'',
@@ -4837,6 +5632,22 @@ a:active{
                     ).then(parseResponse);
                 }
 
+                function requestList(fd){
+                    fd.append('csrf_token',csrfToken);
+                    return fetch(
+                        'api/requests-list.php',
+                        {
+                            method:'POST',
+                            body:fd,
+                            credentials:'same-origin',
+                            headers:{
+                                'X-Requested-With':'XMLHttpRequest',
+                                'Accept':'application/json'
+                            }
+                        }
+                    ).then(parseResponse);
+                }
+
                 function formatDate(v){
                     if(!v) return '-';
 
@@ -4867,8 +5678,36 @@ a:active{
                     return h+':'+m+' '+ap;
                 }
 
+                function timeAgo(v){
+                    if(!v) return '-';
+                    var normalized = String(v).replace(' ','T');
+                    var d = new Date(normalized);
+                    if(isNaN(d.getTime())) return formatDate(v);
+                    var seconds = Math.max(0,Math.floor((Date.now()-d.getTime())/1000));
+                    if(seconds < 60) return 'Just now';
+                    var minutes = Math.floor(seconds/60);
+                    if(minutes < 60) return minutes+' minute'+(minutes===1?'':'s')+' ago';
+                    var hours = Math.floor(minutes/60);
+                    if(hours < 24) return hours+' hour'+(hours===1?'':'s')+' ago';
+                    var days = Math.floor(hours/24);
+                    if(days < 30) return days+' day'+(days===1?'':'s')+' ago';
+                    return formatDate(v);
+                }
+
+                function requestProperty(row){
+                    var line1 = row.location_address_line1 || row.location_name || '';
+                    var line2 = row.location_address_line2 || '';
+                    var cityLine = [row.location_city || '',row.location_state || ''].filter(Boolean).join(', ');
+                    if(row.location_postal_code){
+                        cityLine += (cityLine ? ' ' : '') + row.location_postal_code;
+                    }
+                    var parts = [line1,line2,cityLine].filter(function(x){return String(x || '').trim() !== '';});
+                    return parts.length ? parts : ['Property not confirmed'];
+                }
+
                 function fillSelect(id,rows,firstText){
                     var el = document.getElementById(id);
+                    if(!el) return;
                     var html = '<option value="">'+esc(firstText)+'</option>';
 
                     (rows || []).forEach(function(row){
@@ -4933,96 +5772,59 @@ a:active{
                 function render(rows){
                     if(!rows || !rows.length){
                         tableBody.innerHTML =
-                            '<tr><td colspan="11" class="fd-rq-empty">No service requests found.</td></tr>';
+                            '<tr><td colspan="6" class="fd-rq-empty">No requests found.</td></tr>';
                         return;
                     }
 
                     var html = '';
-
-                    rows.forEach(function(row,index){
-                        var preferred = '-';
-
-                        if(row.preferred_date){
-                            preferred = formatDate(row.preferred_date);
-
-                            if(row.preferred_time_from){
-                                preferred += '<br><small>'+
-                                    esc(time12(row.preferred_time_from))+
-                                    (row.preferred_time_to
-                                        ? ' - '+esc(time12(row.preferred_time_to))
-                                        : '')+
-                                    '</small>';
-                            }
-                        }
-
+                    rows.forEach(function(row){
+                        var property = requestProperty(row);
+                        var propertyHtml = property.map(function(part){return esc(part);}).join('<br>');
+                        var phone = row.client_phone || '-';
+                        var email = row.client_email || '';
                         html +=
-                            '<tr class="fd-rq-clickable-row" data-request-view="'+Number(row.id)+'" tabindex="0" role="link" aria-label="View '+esc(row.request_no || 'request')+'">'+
-                                '<td>'+((state.page-1)*state.perPage+index+1)+'</td>'+
-                                '<td><div class="fd-rq-request"><strong>'+esc(row.request_no)+'</strong><small>'+esc(row.title)+'</small></div></td>'+
-                                '<td><div class="fd-rq-client"><strong>'+esc(row.client_name)+'</strong><small><i class="bi bi-geo-alt"></i> '+esc(row.location_name || 'Location not confirmed')+'</small></div></td>'+
-                                '<td>'+esc(row.service_name || '-')+'</td>'+
-                                '<td><span class="fd-rq-badge '+esc(row.priority)+'">'+esc(readable(row.priority))+'</span></td>'+
-                                '<td>'+esc(readable(row.source))+'</td>'+
-                                '<td>'+preferred+'</td>'+
-                                '<td>'+esc(row.assigned_name || 'Unassigned')+'</td>'+
-                                '<td><span class="fd-rq-badge '+esc(row.status)+'">'+esc(readable(row.status))+'</span></td>'+
-                                '<td>'+formatDate(row.updated_at || row.created_at)+'</td>'+
-                                '<td>'+
-                                    '<div class="fd-rq-actions-cell">'+
-                                        '<a class="fd-rq-icon" href="edit-request.php?request_id='+Number(row.id)+'" title="Edit Request"><i class="bi bi-pencil"></i></a>'+
-                                        '<button type="button" class="fd-rq-icon" data-action="history" data-id="'+Number(row.id)+'" data-no="'+esc(row.request_no)+'" title="Status History"><i class="bi bi-clock-history"></i></button>'+
-                                        '<button type="button" class="fd-rq-icon danger" data-action="cancel" data-id="'+Number(row.id)+'" data-status="'+esc(row.status)+'" title="Cancel Request"><i class="bi bi-x-circle"></i></button>'+
-                                    '</div>'+
-                                '</td>'+
+                            '<tr class="fd-rq-clickable-row" data-request-view="'+Number(row.id)+'" tabindex="0" role="link" aria-label="View '+esc(row.title || row.request_no || 'request')+'">'+
+                                '<td><span class="fd-rq-client-name">'+esc(row.client_name || '-')+'</span></td>'+ 
+                                '<td><span class="fd-rq-cell-title">'+esc(row.title || '-')+'</span></td>'+ 
+                                '<td><div class="fd-rq-property">'+propertyHtml+'</div></td>'+ 
+                                '<td><div class="fd-rq-contact"><strong>'+esc(phone)+'</strong>'+(email ? '<small>'+esc(email)+'</small>' : '')+'</div></td>'+ 
+                                '<td><span class="fd-rq-requested" title="'+esc(formatDate(row.created_at))+'">'+esc(timeAgo(row.created_at))+'</span></td>'+ 
+                                '<td><span class="fd-rq-badge '+esc(row.status)+'">'+esc(readable(row.status))+'</span></td>'+ 
                             '</tr>';
                     });
-
                     tableBody.innerHTML = html;
                 }
 
                 function load(){
                     var fd = new FormData();
-
                     fd.append('action','list');
                     fd.append('page',state.page);
                     fd.append('per_page',state.perPage);
                     fd.append('search',state.search);
                     fd.append('status',state.status);
-                    fd.append('priority',state.priority);
-                    fd.append('branch_id',state.branchId);
-                    fd.append('product_service_id',state.serviceId);
+                    fd.append('date_filter',state.dateFilter);
 
                     tableBody.innerHTML =
-                        '<tr><td colspan="11" class="fd-rq-empty">Loading service requests...</td></tr>';
+                        '<tr><td colspan="6" class="fd-rq-empty">Loading requests...</td></tr>';
 
-                    request(fd)
+                    requestList(fd)
                         .then(function(data){
                             render(data.requests || []);
-                            applyMeta(data.meta || {});
-
                             var p = data.pagination || {};
-
+                            var total = Number(p.total || 0);
+                            document.getElementById('resultCount').textContent =
+                                '('+total+' result'+(total===1?'':'s')+')';
                             document.getElementById('countText').textContent =
-                                'Showing '+
-                                Number(p.from || 0)+
-                                '-'+
-                                Number(p.to || 0)+
-                                ' of '+
-                                Number(p.total || 0)+
-                                ' requests';
-
-                            document.getElementById('prevPage').disabled =
-                                state.page <= 1;
-
-                            document.getElementById('nextPage').disabled =
-                                state.page >= Number(p.pages || 1);
+                                total > 0
+                                    ? 'Showing '+Number(p.from || 0)+'-'+Number(p.to || 0)+' of '+total+' requests'
+                                    : 'Showing 0 requests';
+                            document.getElementById('prevPage').disabled = state.page <= 1;
+                            document.getElementById('nextPage').disabled = state.page >= Number(p.pages || 1);
                         })
                         .catch(function(error){
                             tableBody.innerHTML =
-                                '<tr><td colspan="11" class="fd-rq-empty">'+
-                                esc(error.message)+
-                                '</td></tr>';
-
+                                '<tr><td colspan="6" class="fd-rq-empty">'+esc(error.message)+'</td></tr>';
+                            document.getElementById('resultCount').textContent = '(0 results)';
                             notify('error',error.message);
                         });
                 }
@@ -5322,7 +6124,47 @@ a:active{
                     openRequestViewFromRow(row);
                 });
 
-                document.getElementById('refreshButton').onclick = load;
+                var moreActionsButton = document.getElementById('moreActionsButton');
+                var moreActionsMenu = document.getElementById('moreActionsMenu');
+                var shareRequestFormButton = document.getElementById('shareRequestFormButton');
+                var fieldplxAiLearnButton = document.getElementById('fieldplxAiLearnButton');
+
+                if(moreActionsButton && moreActionsMenu){
+                    moreActionsButton.addEventListener('click',function(event){
+                        event.stopPropagation();
+                        var open = moreActionsMenu.classList.toggle('show');
+                        moreActionsButton.setAttribute('aria-expanded',open ? 'true' : 'false');
+                    });
+                    document.addEventListener('click',function(event){
+                        if(!event.target.closest('.fd-rq-more-wrap')){
+                            moreActionsMenu.classList.remove('show');
+                            moreActionsButton.setAttribute('aria-expanded','false');
+                        }
+                    });
+                }
+
+                if(shareRequestFormButton){
+                    shareRequestFormButton.addEventListener('click',function(){
+                        var url = window.location.origin + window.location.pathname.replace(/requests(?:\.php)?$/,'add-request.php');
+                        if(navigator.clipboard && navigator.clipboard.writeText){
+                            navigator.clipboard.writeText(url).then(function(){
+                                notify('success','Request form link copied.');
+                            }).catch(function(){
+                                notify('info','Request form: '+url);
+                            });
+                        }else{
+                            notify('info','Request form: '+url);
+                        }
+                        if(moreActionsMenu) moreActionsMenu.classList.remove('show');
+                    });
+                }
+
+                if(fieldplxAiLearnButton){
+                    fieldplxAiLearnButton.addEventListener('click',function(){
+                        notify('info','FieldPlx AI request insights can be connected to this dashboard.');
+                    });
+                }
+
                 document.getElementById('requestModalClose').onclick = closeRequest;
                 document.getElementById('cancelRequest').onclick = closeRequest;
 
@@ -5342,7 +6184,6 @@ a:active{
                     'input',
                     function(event){
                         if(searchTimer) clearTimeout(searchTimer);
-
                         searchTimer = setTimeout(function(){
                             state.search = event.target.value.trim();
                             state.page = 1;
@@ -5351,48 +6192,15 @@ a:active{
                     }
                 );
 
-                document.getElementById('statusFilter').onchange =
-                    function(event){
-                        state.status = event.target.value;
-                        state.page = 1;
-                        load();
-                    };
-
-                document.getElementById('priorityFilter').onchange =
-                    function(event){
-                        state.priority = event.target.value;
-                        state.page = 1;
-                        load();
-                    };
-
-                document.getElementById('branchFilter').onchange =
-                    function(event){
-                        state.branchId = event.target.value;
-                        state.page = 1;
-                        load();
-                    };
-
-                document.getElementById('serviceFilter').onchange =
-                    function(event){
-                        state.serviceId = event.target.value;
-                        state.page = 1;
-                        load();
-                    };
-
-                document.getElementById('clearFilters').onclick = function(){
-                    document.getElementById('requestSearch').value = '';
-                    document.getElementById('statusFilter').value = '';
-                    document.getElementById('priorityFilter').value = '';
-                    document.getElementById('branchFilter').value = '';
-                    document.getElementById('serviceFilter').value = '';
-
-                    state.search = '';
-                    state.status = '';
-                    state.priority = '';
-                    state.branchId = '';
-                    state.serviceId = '';
+                document.getElementById('statusFilter').onchange = function(event){
+                    state.status = event.target.value;
                     state.page = 1;
+                    load();
+                };
 
+                document.getElementById('dateFilter').onchange = function(event){
+                    state.dateFilter = event.target.value;
+                    state.page = 1;
                     load();
                 };
 

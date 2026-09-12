@@ -55,6 +55,54 @@ function jbTable(PDO $pdo, $table)
     return $cache[$table];
 }
 
+function jbStoreCatalogImage($field, $tenant, $kind)
+{
+    if (empty($_FILES[$field]) || !is_array($_FILES[$field]))
+        return array('relative' => null, 'absolute' => null);
+
+    $file = $_FILES[$field];
+    $error = isset($file['error']) ? (int) $file['error'] : UPLOAD_ERR_NO_FILE;
+    if ($error === UPLOAD_ERR_NO_FILE)
+        return array('relative' => null, 'absolute' => null);
+    if ($error !== UPLOAD_ERR_OK)
+        throw new RuntimeException('Unable to upload the product / service image.');
+
+    $size = isset($file['size']) ? (int) $file['size'] : 0;
+    if ($size <= 0 || $size > 4 * 1024 * 1024)
+        throw new RuntimeException('Product / service image must be 4 MB or smaller.');
+
+    $tmp = isset($file['tmp_name']) ? (string) $file['tmp_name'] : '';
+    if ($tmp === '' || !is_uploaded_file($tmp))
+        throw new RuntimeException('Uploaded product / service image is invalid.');
+
+    $mime = '';
+    if (function_exists('finfo_open')) {
+        $fi = @finfo_open(FILEINFO_MIME_TYPE);
+        if ($fi) {
+            $mime = (string) @finfo_file($fi, $tmp);
+            @finfo_close($fi);
+        }
+    }
+
+    $allowed = array('image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp');
+    if (!isset($allowed[$mime]))
+        throw new RuntimeException('Product / service image must be JPG, PNG or WEBP.');
+
+    $folder = $kind === 'service' ? 'services' : 'products';
+    $relativeDir = 'uploads/product-masters/tenant-' . (int) $tenant . '/' . $folder;
+    $absoluteDir = dirname(__DIR__) . '/' . $relativeDir;
+    if (!is_dir($absoluteDir) && !@mkdir($absoluteDir, 0755, true) && !is_dir($absoluteDir))
+        throw new RuntimeException('Unable to create the product / service image upload folder.');
+
+    $prefix = $kind === 'service' ? 'service' : 'product';
+    $fileName = $prefix . '-' . date('YmdHis') . '-' . bin2hex(random_bytes(5)) . '.' . $allowed[$mime];
+    $absolutePath = $absoluteDir . '/' . $fileName;
+    if (!@move_uploaded_file($tmp, $absolutePath))
+        throw new RuntimeException('Unable to save the product / service image.');
+
+    return array('relative' => $relativeDir . '/' . $fileName, 'absolute' => $absolutePath);
+}
+
 function jbDate($value)
 {
     $value = trim((string) $value);
@@ -267,24 +315,118 @@ function jbNext(PDO $pdo, $tenant, $branch)
     return $number;
 }
 
-function jbMeta(PDO $pdo, $tenant, $jobId = 0)
+function jbPreviewNext(PDO $pdo, $tenant, $branch)
+{
+    $sep = jbCol($pdo, 'document_sequences', 'number_separator') ? 'number_separator' : 'separator';
+    $stmt = $pdo->prepare("SELECT ds.*,b.branch_code FROM document_sequences ds LEFT JOIN branches b ON b.id=ds.branch_id AND b.tenant_id=ds.tenant_id WHERE ds.tenant_id=:t AND ds.document_type='job' AND ds.is_active=1 AND (ds.branch_id=:b OR ds.branch_id IS NULL) ORDER BY CASE WHEN ds.branch_id=:b2 THEN 0 ELSE 1 END,ds.id LIMIT 1");
+    $stmt->execute(array(':t' => $tenant, ':b' => $branch > 0 ? $branch : 0, ':b2' => $branch > 0 ? $branch : 0));
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+
+    if (!$row) {
+        $q = $pdo->prepare("SELECT MAX(CAST(SUBSTRING_INDEX(job_no,'-',-1) AS UNSIGNED)) FROM jobs WHERE tenant_id=:t AND job_no LIKE 'JOB-%'");
+        $q->execute(array(':t' => $tenant));
+        $next = (int) $q->fetchColumn() + 1;
+        $candidate = 'JOB-' . str_pad((string) $next, 6, '0', STR_PAD_LEFT);
+        while (jbJobNoExists($pdo, $tenant, $candidate, 0) && $next < 999999999) {
+            $next++;
+            $candidate = 'JOB-' . str_pad((string) $next, 6, '0', STR_PAD_LEFT);
+        }
+        return $candidate;
+    }
+
+    $now = new DateTime('now');
+    $year = $now->format('Y');
+    $month = $now->format('m');
+    $fyStart = max(1, min(12, (int) $row['financial_year_start_month']));
+    $fyYear = (int) $now->format('n') >= $fyStart ? (int) $year : (int) $year - 1;
+    $fy = $fyYear . '-' . substr((string) ($fyYear + 1), -2);
+    $key = 'never';
+    if ($row['reset_period'] === 'monthly')
+        $key = $year . $month;
+    elseif ($row['reset_period'] === 'yearly')
+        $key = $year;
+    elseif ($row['reset_period'] === 'financial_year')
+        $key = $fy;
+
+    $current = (int) $row['current_number'];
+    if ($row['reset_period'] !== 'never' && (string) $row['last_reset_key'] !== (string) $key)
+        $current = 0;
+
+    $next = $current + 1;
+    $attempts = 0;
+    do {
+        $middle = '';
+        if ($row['middle_format'] === 'year')
+            $middle = $year;
+        elseif ($row['middle_format'] === 'year_month')
+            $middle = $year . $month;
+        elseif ($row['middle_format'] === 'financial_year')
+            $middle = $fy;
+        elseif ($row['middle_format'] === 'branch_year')
+            $middle = (!empty($row['branch_code']) ? $row['branch_code'] : 'BR') . $year;
+
+        $parts = array();
+        if (!empty($row['prefix']))
+            $parts[] = $row['prefix'];
+        if ($middle !== '')
+            $parts[] = $middle;
+        $parts[] = str_pad((string) $next, max(1, (int) $row['number_length']), '0', STR_PAD_LEFT);
+        if (!empty($row['suffix']))
+            $parts[] = $row['suffix'];
+
+        $candidate = implode(isset($row[$sep]) ? (string) $row[$sep] : '-', $parts);
+        if (!jbJobNoExists($pdo, $tenant, $candidate, 0))
+            return $candidate;
+
+        $next++;
+        $attempts++;
+    } while ($attempts < 100);
+
+    return $candidate;
+}
+
+function jbJobNoExists(PDO $pdo, $tenant, $jobNo, $excludeId = 0)
+{
+    $jobNo = trim((string)$jobNo);
+    if ($jobNo === '') return false;
+    $sql = "SELECT id FROM jobs WHERE tenant_id=:t AND job_no=:no";
+    $params = array(':t'=>(int)$tenant, ':no'=>$jobNo);
+    if ((int)$excludeId > 0) {
+        $sql .= " AND id<>:id";
+        $params[':id'] = (int)$excludeId;
+    }
+    $sql .= " LIMIT 1";
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    return $stmt->fetchColumn() ? true : false;
+}
+
+function jbMeta(PDO $pdo, $tenant, $jobId = 0, $branch = 0)
 {
     $meta = array();
     $stmt = $pdo->prepare("SELECT q.id,q.quote_no,q.title,q.client_id,q.location_id,q.request_id,q.branch_id,q.subtotal,q.tax_total,q.total,c.display_name client_name,c.email client_email,c.phone client_phone,c.allow_email,r.product_service_id,ps.name service_name FROM quotes q INNER JOIN clients c ON c.id=q.client_id AND c.tenant_id=q.tenant_id LEFT JOIN service_requests r ON r.id=q.request_id AND r.tenant_id=q.tenant_id LEFT JOIN product_services ps ON ps.id=r.product_service_id AND ps.tenant_id=q.tenant_id WHERE q.tenant_id=:t AND (q.status='approved' OR EXISTS(SELECT 1 FROM jobs j WHERE j.id=:jid AND j.tenant_id=q.tenant_id AND j.quote_id=q.id)) AND (NOT EXISTS(SELECT 1 FROM jobs j2 WHERE j2.tenant_id=q.tenant_id AND j2.quote_id=q.id AND j2.deleted_at IS NULL) OR EXISTS(SELECT 1 FROM jobs j3 WHERE j3.id=:jid2 AND j3.tenant_id=q.tenant_id AND j3.quote_id=q.id)) ORDER BY q.id DESC");
     $stmt->execute(array(':t' => $tenant, ':jid' => $jobId, ':jid2' => $jobId));
     $meta['quotes'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    $stmt = $pdo->prepare("SELECT c.id,c.display_name AS name,c.email,c.phone,c.branch_id,b.name AS branch_name FROM clients c LEFT JOIN branches b ON b.id=c.branch_id AND b.tenant_id=c.tenant_id WHERE c.tenant_id=:t AND c.deleted_at IS NULL AND c.client_type<>'archived' AND c.status<>'archived' ORDER BY c.display_name");
+    $stmt = $pdo->prepare("SELECT c.id,c.display_name AS name,c.display_name,c.company_name,c.email,c.phone,c.branch_id,b.name AS branch_name FROM clients c LEFT JOIN branches b ON b.id=c.branch_id AND b.tenant_id=c.tenant_id WHERE c.tenant_id=:t AND c.deleted_at IS NULL AND c.client_type<>'archived' AND c.status<>'archived' ORDER BY c.display_name");
     $stmt->execute(array(':t' => $tenant));
     $meta['clients'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    $stmt = $pdo->prepare("SELECT id,client_id,CONCAT(name, CASE WHEN address_line1 IS NOT NULL AND address_line1<>'' THEN CONCAT(' · ',address_line1) ELSE '' END, CASE WHEN city IS NOT NULL AND city<>'' THEN CONCAT(', ',city) ELSE '' END) AS name FROM client_locations WHERE tenant_id=:t AND status='active' ORDER BY is_primary DESC,name,id");
+    $locationSelect = "id,client_id,location_type,name,address_line1,address_line2,city,state,postal_code,is_primary,status";
+    if (jbCol($pdo, 'client_locations', 'country_id')) $locationSelect .= ",country_id"; else $locationSelect .= ",NULL AS country_id";
+    if (jbCol($pdo, 'client_locations', 'tax_rate_id')) $locationSelect .= ",tax_rate_id"; else $locationSelect .= ",NULL AS tax_rate_id";
+    $stmt = $pdo->prepare("SELECT " . $locationSelect . " FROM client_locations WHERE tenant_id=:t AND status='active' AND deleted_at IS NULL ORDER BY is_primary DESC,name,id");
     $stmt->execute(array(':t' => $tenant));
     $meta['locations'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     $stmt = $pdo->prepare("SELECT id,CONCAT(first_name,CASE WHEN last_name IS NOT NULL AND last_name<>'' THEN CONCAT(' ',last_name) ELSE '' END) name,email,department_id,job_title,is_field_worker FROM users WHERE tenant_id=:t AND status='active' AND deleted_at IS NULL AND (is_bookable=1 OR is_field_worker=1 OR is_tenant_admin=1) ORDER BY first_name,last_name");
     $stmt->execute(array(':t' => $tenant));
     $meta['users'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    /* All active tenant users are available for @mentions in Notes. */
+    $teamStmt = $pdo->prepare("SELECT id,CONCAT(first_name,CASE WHEN last_name IS NOT NULL AND last_name<>'' THEN CONCAT(' ',last_name) ELSE '' END) name,email,department_id,job_title FROM users WHERE tenant_id=:t AND status='active' AND deleted_at IS NULL ORDER BY first_name,last_name");
+    $teamStmt->execute(array(':t' => $tenant));
+    $meta['team_members'] = $teamStmt->fetchAll(PDO::FETCH_ASSOC);
 
     $stmt = $pdo->prepare("SELECT id,name,branch_id FROM departments WHERE tenant_id=:t AND status='active' ORDER BY name");
     $stmt->execute(array(':t' => $tenant));
@@ -295,7 +437,7 @@ function jbMeta(PDO $pdo, $tenant, $jobId = 0)
     $meta['branches'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     $serviceCols = array('id', 'name');
-    foreach (array('item_type', 'sku', 'description', 'unit_name', 'unit_cost', 'unit_price', 'tax_percent') as $c) {
+    foreach (array('item_type', 'sku', 'description', 'unit_name', 'unit_cost', 'unit_price', 'tax_percent', 'image_path') as $c) {
         if (jbCol($pdo, 'product_services', $c))
             $serviceCols[] = $c;
     }
@@ -325,6 +467,8 @@ function jbMeta(PDO $pdo, $tenant, $jobId = 0)
             $serviceRow['unit_price'] = 0;
         if (!isset($serviceRow['tax_percent']))
             $serviceRow['tax_percent'] = 0;
+        if (!isset($serviceRow['image_path']))
+            $serviceRow['image_path'] = '';
     }
     unset($serviceRow);
 
@@ -335,7 +479,7 @@ function jbMeta(PDO $pdo, $tenant, $jobId = 0)
 
     if (jbTable($pdo, 'product_services')) {
         $cols = array('id', 'name');
-        foreach (array('item_type', 'sku', 'description', 'unit_name', 'unit_cost', 'unit_price', 'tax_percent') as $c) {
+        foreach (array('item_type', 'sku', 'description', 'unit_name', 'unit_cost', 'unit_price', 'tax_percent', 'image_path') as $c) {
             if (jbCol($pdo, 'product_services', $c))
                 $cols[] = $c;
         }
@@ -360,13 +504,15 @@ function jbMeta(PDO $pdo, $tenant, $jobId = 0)
                 $row['unit_price'] = 0;
             if (!isset($row['tax_percent']))
                 $row['tax_percent'] = 0;
+            if (!isset($row['image_path']))
+                $row['image_path'] = '';
             $meta['catalog_items'][] = $row;
         }
     }
 
     if (jbTable($pdo, 'products')) {
         $productCols = array('id', 'name');
-        foreach (array('sku', 'description', 'unit_name', 'base_unit_price', 'selling_price', 'tax_percent') as $c) {
+        foreach (array('sku', 'description', 'unit_name', 'base_unit_price', 'selling_price', 'tax_percent', 'image_path') as $c) {
             if (jbCol($pdo, 'products', $c))
                 $productCols[] = $c;
         }
@@ -386,7 +532,8 @@ function jbMeta(PDO $pdo, $tenant, $jobId = 0)
                 'unit_name' => isset($row['unit_name']) ? (string) $row['unit_name'] : 'unit',
                 'base_unit_price' => isset($row['base_unit_price']) ? (float) $row['base_unit_price'] : 0,
                 'selling_price' => isset($row['selling_price']) ? (float) $row['selling_price'] : 0,
-                'tax_percent' => isset($row['tax_percent']) ? (float) $row['tax_percent'] : 0
+                'tax_percent' => isset($row['tax_percent']) ? (float) $row['tax_percent'] : 0,
+                'image_path' => isset($row['image_path']) ? (string) $row['image_path'] : ''
             );
             $meta['catalog_items'][] = array(
                 'catalog_key' => 'product:' . (int) $row['id'],
@@ -401,19 +548,56 @@ function jbMeta(PDO $pdo, $tenant, $jobId = 0)
                 'unit_name' => isset($row['unit_name']) ? (string) $row['unit_name'] : '',
                 'unit_cost' => isset($row['base_unit_price']) ? (float) $row['base_unit_price'] : 0,
                 'unit_price' => isset($row['selling_price']) ? (float) $row['selling_price'] : 0,
-                'tax_percent' => isset($row['tax_percent']) ? (float) $row['tax_percent'] : 0
+                'tax_percent' => isset($row['tax_percent']) ? (float) $row['tax_percent'] : 0,
+                'image_path' => isset($row['image_path']) ? (string) $row['image_path'] : ''
             );
         }
     }
 
-    /* Final job number comes from document_sequences inside jbNext() during save. */
-    $meta['next_job_no_preview'] = 'Auto';
+    /* Non-mutating preview: shows the next automatic job series but does not reserve it. */
+    $meta['next_job_no_preview'] = jbPreviewNext($pdo, $tenant, (int) $branch);
 
     $meta['checklist_templates'] = array();
     if (jbTable($pdo, 'checklist_templates')) {
         $stmt = $pdo->prepare("SELECT ct.id,ct.name,ct.description,(SELECT COUNT(*) FROM checklist_template_items cti WHERE cti.checklist_template_id=ct.id) item_count FROM checklist_templates ct WHERE ct.tenant_id=:t AND ct.status='active' ORDER BY ct.name");
         $stmt->execute(array(':t' => $tenant));
         $meta['checklist_templates'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    /* Jobber-style property and quote tax metadata. */
+    $meta['countries'] = array();
+    if (jbTable($pdo, 'countries')) {
+        $stmt = $pdo->query("SELECT id,name,iso2 FROM countries WHERE is_active=1 ORDER BY name");
+        $meta['countries'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    }
+
+    $meta['tax_rates'] = array();
+    $meta['default_tax_rate_id'] = 0;
+    if (jbTable($pdo, 'product_tax_rates')) {
+        $hasDefaultTax = jbCol($pdo, 'product_tax_rates', 'is_default');
+        $sql = "SELECT id,tax_name,rate_percent,jurisdiction_name,status," . ($hasDefaultTax ? "is_default" : "0 AS is_default") . " FROM product_tax_rates WHERE tenant_id=:t AND status='active' ORDER BY " . ($hasDefaultTax ? "is_default DESC," : "") . " tax_name,id";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute(array(':t' => $tenant));
+        $meta['tax_rates'] = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($meta['tax_rates'] as $taxRate) {
+            if (!empty($taxRate['is_default'])) {
+                $meta['default_tax_rate_id'] = (int)$taxRate['id'];
+                break;
+            }
+        }
+    }
+
+    $meta['location_custom_fields'] = array();
+    if (jbTable($pdo, 'client_custom_field_definitions')) {
+        $stmt = $pdo->prepare("SELECT id,applies_to,field_name,field_type,is_transferable,default_value,options_json,sort_order FROM client_custom_field_definitions WHERE tenant_id=:t AND applies_to='location' AND status='active' ORDER BY sort_order,field_name,id");
+        $stmt->execute(array(':t' => $tenant));
+        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($rows as &$fieldRow) {
+            $decodedOptions = !empty($fieldRow['options_json']) ? json_decode((string)$fieldRow['options_json'], true) : array();
+            $fieldRow['options'] = is_array($decodedOptions) ? array_values($decodedOptions) : array();
+        }
+        unset($fieldRow);
+        $meta['location_custom_fields'] = $rows;
     }
 
     $meta['currency'] = jbCurrency($pdo, $tenant);
@@ -534,6 +718,186 @@ function jbQuote(PDO $pdo, $tenant, $id, $jobId = 0)
     return $row;
 }
 
+
+function jbQuoteLineItems(PDO $pdo, $tenant, $quoteId)
+{
+    if (!jbTable($pdo, 'quote_line_items'))
+        return array();
+
+    $stmt = $pdo->prepare("SELECT * FROM quote_line_items WHERE tenant_id=:t AND quote_id=:q ORDER BY sort_order,id");
+    $stmt->execute(array(':t' => $tenant, ':q' => $quoteId));
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    foreach ($rows as &$row) {
+        $row['item_source'] = !empty($row['product_id'])
+            ? 'product'
+            : (!empty($row['product_service_id']) ? 'product_service' : 'manual');
+        if (empty($row['item_type']))
+            $row['item_type'] = !empty($row['product_id']) ? 'product' : (!empty($row['product_service_id']) ? 'service' : 'manual');
+    }
+    unset($row);
+
+    return $rows;
+}
+
+function jbRequestLineItems(PDO $pdo, $tenant, $requestId)
+{
+    if (!jbTable($pdo, 'service_request_line_items'))
+        return array();
+
+    $stmt = $pdo->prepare("SELECT * FROM service_request_line_items WHERE tenant_id=:t AND request_id=:r ORDER BY sort_order,id");
+    $stmt->execute(array(':t' => $tenant, ':r' => $requestId));
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    foreach ($rows as &$row) {
+        $row['item_source'] = !empty($row['product_id'])
+            ? 'product'
+            : (!empty($row['product_service_id']) ? 'product_service' : 'manual');
+        if (empty($row['item_type']))
+            $row['item_type'] = !empty($row['product_id']) ? 'product' : (!empty($row['product_service_id']) ? 'service' : 'manual');
+    }
+    unset($row);
+
+    return $rows;
+}
+
+function jbRequestContext(PDO $pdo, $tenant, $requestId, $jobId = 0)
+{
+    $requestId = (int) $requestId;
+    if ($requestId <= 0)
+        jbRes(422, false, 'Select a valid service request.');
+
+    $deletedSql = jbCol($pdo, 'service_requests', 'deleted_at') ? " AND r.deleted_at IS NULL" : "";
+    $stmt = $pdo->prepare("SELECT
+            r.*,
+            c.display_name AS client_name,
+            c.email AS client_email,
+            c.phone AS client_phone,
+            c.allow_email,
+            b.name AS branch_name,
+            ps.name AS service_name
+        FROM service_requests r
+        INNER JOIN clients c
+            ON c.id=r.client_id
+           AND c.tenant_id=r.tenant_id
+           AND c.deleted_at IS NULL
+        LEFT JOIN branches b
+            ON b.id=r.branch_id
+           AND b.tenant_id=r.tenant_id
+        LEFT JOIN product_services ps
+            ON ps.id=r.product_service_id
+           AND ps.tenant_id=r.tenant_id
+        WHERE r.id=:id
+          AND r.tenant_id=:t" . $deletedSql . "
+        LIMIT 1");
+    $stmt->execute(array(':id' => $requestId, ':t' => $tenant));
+    $row = $stmt->fetch(PDO::FETCH_ASSOC);
+    if (!$row)
+        jbRes(404, false, 'Service request not found.');
+
+    if ($jobId <= 0) {
+        $dup = $pdo->prepare("SELECT id,job_no FROM jobs WHERE tenant_id=:t AND request_id=:r AND deleted_at IS NULL AND status NOT IN('cancelled','archived') ORDER BY id DESC LIMIT 1");
+        $dup->execute(array(':t' => $tenant, ':r' => $requestId));
+        $existing = $dup->fetch(PDO::FETCH_ASSOC);
+        if ($existing)
+            jbRes(409, false, 'This request is already linked to job ' . $existing['job_no'] . '.');
+    }
+
+    $serviceId = !empty($row['product_service_id']) ? (int) $row['product_service_id'] : 0;
+    if ($serviceId <= 0) {
+        foreach (jbRequestLineItems($pdo, $tenant, $requestId) as $line) {
+            if (!empty($line['product_service_id']) && strtolower((string) $line['item_type']) === 'service') {
+                $serviceId = (int) $line['product_service_id'];
+                $service = jbService($pdo, $tenant, $serviceId);
+                if ($service) {
+                    $row['service_name'] = $service['name'];
+                    break;
+                }
+            }
+        }
+    }
+
+    $row['source_mode'] = 'request';
+    $row['request_id'] = $requestId;
+    $row['request_no'] = isset($row['request_no']) ? (string) $row['request_no'] : ('#' . $requestId);
+    $row['request_title'] = isset($row['title']) ? (string) $row['title'] : '';
+    $row['request_description'] = isset($row['description']) ? (string) $row['description'] : '';
+    $row['product_service_id'] = $serviceId > 0 ? $serviceId : null;
+    $row['quote_no'] = '';
+    $row['quote_id'] = null;
+    $row['subtotal'] = 0;
+    $row['tax_total'] = 0;
+    $row['total'] = 0;
+
+    return $row;
+}
+
+function jbRequestStatusAllows(PDO $pdo, $status)
+{
+    try {
+        $stmt = $pdo->prepare("SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='service_requests' AND COLUMN_NAME='status' LIMIT 1");
+        $stmt->execute();
+        $type = (string) $stmt->fetchColumn();
+        if (stripos($type, 'enum(') !== 0)
+            return true;
+        return strpos($type, "'" . str_replace("'", "''", (string) $status) . "'") !== false;
+    } catch (Throwable $e) {
+        return false;
+    }
+}
+
+function jbRecordRequestConversion(PDO $pdo, $tenant, $branch, $user, $request, $jobId, $jobNo)
+{
+    if (empty($request['request_id']))
+        return;
+
+    $requestId = (int) $request['request_id'];
+    $oldStatus = isset($request['status']) ? (string) $request['status'] : '';
+    $newStatus = $oldStatus;
+
+    if (jbRequestStatusAllows($pdo, 'converted')) {
+        $upd = $pdo->prepare("UPDATE service_requests SET status='converted' WHERE id=:r AND tenant_id=:t");
+        $upd->execute(array(':r' => $requestId, ':t' => $tenant));
+        $newStatus = 'converted';
+    }
+
+    if (jbTable($pdo, 'request_status_history') && $newStatus !== $oldStatus) {
+        $hist = $pdo->prepare("INSERT INTO request_status_history(tenant_id,request_id,old_status,new_status,notes,changed_by) VALUES(:t,:r,:old,:new,:notes,:u)");
+        $hist->execute(array(
+            ':t' => $tenant,
+            ':r' => $requestId,
+            ':old' => $oldStatus !== '' ? $oldStatus : null,
+            ':new' => $newStatus,
+            ':notes' => 'Request converted to Job ' . $jobNo,
+            ':u' => $user > 0 ? $user : null
+        ));
+    }
+
+    if (jbTable($pdo, 'activity_events')) {
+        try {
+            $activity = $pdo->prepare("INSERT INTO activity_events(tenant_id,branch_id,actor_user_id,actor_type,event_type,related_type,related_id,client_id,title,details_json,visible_to_client) VALUES(:t,:b,:u,'user','request_converted_to_job','service_request',:r,:c,:title,:details,0)");
+            $activity->execute(array(
+                ':t' => $tenant,
+                ':b' => $branch > 0 ? $branch : null,
+                ':u' => $user > 0 ? $user : null,
+                ':r' => $requestId,
+                ':c' => !empty($request['client_id']) ? (int) $request['client_id'] : null,
+                ':title' => 'Request ' . (isset($request['request_no']) ? $request['request_no'] : ('#' . $requestId)) . ' converted to Job ' . $jobNo,
+                ':details' => json_encode(array(
+                    'request_id' => $requestId,
+                    'request_no' => isset($request['request_no']) ? $request['request_no'] : null,
+                    'job_id' => (int) $jobId,
+                    'job_no' => (string) $jobNo,
+                    'old_status' => $oldStatus,
+                    'new_status' => $newStatus
+                ), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+            ));
+        } catch (Throwable $e) {
+            error_log('request conversion activity ' . $e->getMessage());
+        }
+    }
+}
+
 function jbDirectJobContext(PDO $pdo, $tenant, $clientId, $locationId, $serviceId, $branchId, $requestId, $sessionBranch)
 {
     $clientId = (int) $clientId;
@@ -604,11 +968,15 @@ function jbContextFromJob(PDO $pdo, $tenant, $job)
 {
     if (!empty($job['quote_id']))
         return jbQuote($pdo, $tenant, (int) $job['quote_id'], (int) $job['id']);
+
+    if (!empty($job['request_id']))
+        return jbRequestContext($pdo, $tenant, (int) $job['request_id'], (int) $job['id']);
+
     return array(
         'source_mode' => 'direct',
         'client_id' => (int) $job['client_id'],
         'location_id' => !empty($job['location_id']) ? (int) $job['location_id'] : null,
-        'request_id' => !empty($job['request_id']) ? (int) $job['request_id'] : null,
+        'request_id' => null,
         'branch_id' => !empty($job['branch_id']) ? (int) $job['branch_id'] : null,
         'subtotal' => isset($job['subtotal']) ? (float) $job['subtotal'] : 0,
         'tax_total' => isset($job['tax_total']) ? (float) $job['tax_total'] : 0,
@@ -621,7 +989,7 @@ function jbContextFromJob(PDO $pdo, $tenant, $job)
         'service_name' => isset($job['service_name']) ? (string) $job['service_name'] : '',
         'quote_no' => '',
         'title' => isset($job['title']) ? (string) $job['title'] : '',
-        'request_title' => isset($job['request_title']) ? (string) $job['request_title'] : ''
+        'request_title' => ''
     );
 }
 
@@ -828,7 +1196,7 @@ function jbScheduleText($job)
     return $start . ' to ' . $end;
 }
 
-function jbNotifyEmployees(PDO $pdo, $tenant, $branch, $job, $quote, $users, $includeInApp = true)
+function jbNotifyEmployees(PDO $pdo, $tenant, $branch, $job, $quote, $users, $includeInApp = true, $sendEmail = true)
 {
     $summary = array('in_app' => 0, 'employee_email_sent' => 0, 'employee_email_failed' => 0, 'employee_email_skipped' => 0, 'messages' => array());
     $cfg = jbSmtpConfig($pdo, $tenant, $branch);
@@ -858,7 +1226,7 @@ function jbNotifyEmployees(PDO $pdo, $tenant, $branch, $job, $quote, $users, $in
                 $summary['messages'][] = 'In-app notification failed for ' . $name . ': ' . $e->getMessage();
             }
         }
-        if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL) || !$cfg) {
+        if (!$sendEmail || $email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL) || !$cfg) {
             $summary['employee_email_skipped']++;
             continue;
         }
@@ -1018,14 +1386,26 @@ function jbParseSchedulePayload($raw)
     foreach ($decoded as $index => $row) {
         if (!is_array($row))
             jbRes(422, false, 'Invalid schedule data.');
+
         $startDate = jbDate(isset($row['start_date']) ? $row['start_date'] : '');
-        $endDate = jbDate(isset($row['end_date']) ? $row['end_date'] : '');
-        $startTime = jbTime(isset($row['start_time']) ? $row['start_time'] : '');
-        $endTime = jbTime(isset($row['end_time']) ? $row['end_time'] : '');
+        $endDate = jbDate(isset($row['end_date']) ? $row['end_date'] : (isset($row['start_date']) ? $row['start_date'] : ''));
+        $anytime = !empty($row['anytime']) ? 1 : 0;
+        $scheduleLater = !empty($row['schedule_later']) ? 1 : 0;
+
+        $startRaw = isset($row['start_time']) ? $row['start_time'] : '';
+        $endRaw = isset($row['end_time']) ? $row['end_time'] : '';
+        if (($anytime || $scheduleLater) && trim((string) $startRaw) === '')
+            $startRaw = '09:00';
+        if (($anytime || $scheduleLater) && trim((string) $endRaw) === '')
+            $endRaw = '10:00';
+
+        $startTime = jbTime($startRaw);
+        $endTime = jbTime($endRaw);
+
         if ($startDate === false || $endDate === false || $startDate === null || $endDate === null)
-            jbRes(422, false, 'Schedule ' . ($index + 1) . ': enter valid start and end dates.');
+            jbRes(422, false, 'Schedule ' . ($index + 1) . ': enter a valid date.');
         if ($startTime === false || $endTime === false || $startTime === null || $endTime === null)
-            jbRes(422, false, 'Schedule ' . ($index + 1) . ': enter valid start and end times.');
+            jbRes(422, false, 'Schedule ' . ($index + 1) . ': enter start and end time, or choose Anytime / Schedule later.');
 
         $startStamp = strtotime($startDate . ' ' . $startTime);
         $endStamp = strtotime($endDate . ' ' . $endTime);
@@ -1035,16 +1415,26 @@ function jbParseSchedulePayload($raw)
         $repeat = strtolower(trim(isset($row['repeat_type']) ? (string) $row['repeat_type'] : 'none'));
         if (!in_array($repeat, $validRepeat, true))
             $repeat = 'none';
+
         $interval = max(1, min(365, (int) (isset($row['repeat_interval']) ? $row['repeat_interval'] : 1)));
         $weekly = jbIntList(isset($row['weekly_days']) ? $row['weekly_days'] : array());
-        $weekly = array_values(array_filter($weekly, function ($x) {
-            return $x >= 0 && $x <= 6; }));
+        $weekly = array_values(array_filter($weekly, function ($x) { return $x >= 0 && $x <= 6; }));
         if ($repeat === 'weekly' && !$weekly)
             $weekly = array((int) date('w', $startStamp));
+
+        $monthlyMode = strtolower(trim(isset($row['monthly_mode']) ? (string) $row['monthly_mode'] : 'day_of_month'));
+        if (!in_array($monthlyMode, array('day_of_month', 'day_of_week'), true))
+            $monthlyMode = 'day_of_month';
+        $monthlyDay = isset($row['monthly_day']) ? (int) $row['monthly_day'] : (int) date('j', $startStamp);
+        if ($monthlyDay !== 0)
+            $monthlyDay = max(1, min(31, $monthlyDay));
+        $monthlyWeek = max(1, min(5, (int) (isset($row['monthly_week']) ? $row['monthly_week'] : (int) ceil(((int) date('j', $startStamp)) / 7))));
+        $monthlyWeekday = max(0, min(6, (int) (isset($row['monthly_weekday']) ? $row['monthly_weekday'] : (int) date('w', $startStamp))));
 
         $endMode = strtolower(trim(isset($row['end_mode']) ? (string) $row['end_mode'] : 'after_occurrences'));
         if (!in_array($endMode, $validEnd, true))
             $endMode = 'after_occurrences';
+
         $repeatEndDate = null;
         $occurrences = 1;
         $endAfterValue = null;
@@ -1063,17 +1453,8 @@ function jbParseSchedulePayload($raw)
                 $endAfterUnit = strtolower(trim(isset($row['end_after_unit']) ? (string) $row['end_after_unit'] : 'months'));
                 if (!in_array($endAfterUnit, array('days', 'weeks', 'months', 'years'), true))
                     $endAfterUnit = 'months';
-                $baseDurationDate = new DateTime($startDate . ' 00:00:00');
-                if ($endAfterUnit === 'days') {
-                    $durationDate = clone $baseDurationDate;
-                    $durationDate->modify('+' . $endAfterValue . ' days');
-                } elseif ($endAfterUnit === 'weeks') {
-                    $durationDate = clone $baseDurationDate;
-                    $durationDate->modify('+' . $endAfterValue . ' weeks');
-                } elseif ($endAfterUnit === 'years')
-                    $durationDate = jbYearOccurrence($baseDurationDate, $endAfterValue);
-                else
-                    $durationDate = jbMonthOccurrence($baseDurationDate, $endAfterValue);
+                $durationDate = new DateTime($startDate . ' 00:00:00');
+                $durationDate->modify('+' . $endAfterValue . ' ' . $endAfterUnit);
                 $repeatEndDate = $durationDate->format('Y-m-d');
                 $occurrences = null;
             } else {
@@ -1087,6 +1468,7 @@ function jbParseSchedulePayload($raw)
         }
 
         $out[] = array(
+            'title' => substr(trim(isset($row['title']) ? (string) $row['title'] : ''), 0, 190),
             'start_date' => $startDate,
             'start_time' => $startTime,
             'end_date' => $endDate,
@@ -1094,15 +1476,23 @@ function jbParseSchedulePayload($raw)
             'repeat_type' => $repeat,
             'repeat_interval' => $interval,
             'weekly_days' => $weekly,
+            'monthly_mode' => $monthlyMode,
+            'monthly_day' => $monthlyDay,
+            'monthly_week' => $monthlyWeek,
+            'monthly_weekday' => $monthlyWeekday,
             'end_mode' => $endMode,
             'repeat_end_date' => $repeatEndDate,
             'repeat_occurrences' => $occurrences,
             'end_after_value' => $endAfterValue,
             'end_after_unit' => $endAfterUnit,
             'instructions' => trim(isset($row['instructions']) ? (string) $row['instructions'] : ''),
-            'assignee_ids' => jbIntList(isset($row['assignee_ids']) ? $row['assignee_ids'] : array())
+            'assignee_ids' => jbIntList(isset($row['assignee_ids']) ? $row['assignee_ids'] : array()),
+            'schedule_later' => $scheduleLater,
+            'anytime' => $anytime,
+            'email_team_about_assignment' => !empty($row['email_team_about_assignment']) ? 1 : 0
         );
     }
+
     return $out;
 }
 
@@ -1126,6 +1516,32 @@ function jbYearOccurrence(DateTime $base, $years)
     $day = (int) $base->format('j');
     $last = (int) date('t', strtotime(sprintf('%04d-%02d-01', $year, $month)));
     return new DateTime(sprintf('%04d-%02d-%02d %s', $year, $month, min($day, $last), $base->format('H:i:s')));
+}
+
+function jbMonthlyCustomOccurrence(DateTime $base, $months, $mode, $day, $week, $weekday)
+{
+    $target = jbMonthOccurrence($base, $months);
+    $year = (int) $target->format('Y');
+    $month = (int) $target->format('n');
+    $hour = (int) $base->format('H');
+    $minute = (int) $base->format('i');
+    $second = (int) $base->format('s');
+
+    if ($mode === 'day_of_week') {
+        $first = new DateTime(sprintf('%04d-%02d-01 %02d:%02d:%02d', $year, $month, $hour, $minute, $second));
+        $firstDow = (int) $first->format('w');
+        $offset = (($weekday - $firstDow) + 7) % 7;
+        $candidateDay = 1 + $offset + (($week - 1) * 7);
+        $lastDay = (int) $first->format('t');
+        if ($candidateDay > $lastDay) {
+            $candidateDay -= 7;
+        }
+        return new DateTime(sprintf('%04d-%02d-%02d %02d:%02d:%02d', $year, $month, $candidateDay, $hour, $minute, $second));
+    }
+
+    $lastDay = (int) date('t', strtotime(sprintf('%04d-%02d-01', $year, $month)));
+    $targetDay = ((int) $day === 0) ? $lastDay : min(max(1, (int) $day), $lastDay);
+    return new DateTime(sprintf('%04d-%02d-%02d %02d:%02d:%02d', $year, $month, $targetDay, $hour, $minute, $second));
 }
 
 function jbBuildOccurrences($schedules)
@@ -1181,7 +1597,7 @@ function jbBuildOccurrences($schedules)
         } elseif ($repeat === 'monthly') {
             $i = 0;
             while (count($starts) < $globalCap) {
-                $d = jbMonthOccurrence($baseStart, $i * $s['repeat_interval']);
+                $d = jbMonthlyCustomOccurrence($baseStart, $i * $s['repeat_interval'], isset($s['monthly_mode']) ? $s['monthly_mode'] : 'day_of_month', isset($s['monthly_day']) ? $s['monthly_day'] : (int)$baseStart->format('j'), isset($s['monthly_week']) ? $s['monthly_week'] : 1, isset($s['monthly_weekday']) ? $s['monthly_weekday'] : (int)$baseStart->format('w'));
                 if (in_array($s['end_mode'], array('on_date', 'after_duration'), true) && $d->format('Y-m-d') > $s['repeat_end_date'])
                     break;
                 $starts[] = $d;
@@ -1420,6 +1836,45 @@ function jbSaveJobChecklists(PDO $pdo, $tenant, $jobId, $primaryUser, $createdBy
         $items = $pdo->prepare("SELECT $selectCols FROM checklist_template_items WHERE checklist_template_id=:ct ORDER BY sort_order,id");
         $items->execute(array(':ct' => $tid));
         foreach ($items->fetchAll(PDO::FETCH_ASSOC) as $item) {
+            /*
+             * Add Request stores structured checklist metadata in the
+             * checklist_template_items.description JSON on older/current
+             * request schemas. Prefer that metadata whenever it is present
+             * so Request -> Job keeps the original section, field type and
+             * choices instead of degrading every question to Checkbox.
+             */
+            $legacyMeta = array();
+            if (!empty($item['description'])) {
+                $decodedMeta = json_decode((string) $item['description'], true);
+                if (is_array($decodedMeta) && (
+                    isset($decodedMeta['section_title']) ||
+                    isset($decodedMeta['question_type']) ||
+                    isset($decodedMeta['options'])
+                )) {
+                    $legacyMeta = $decodedMeta;
+                }
+            }
+
+            if ($legacyMeta) {
+                if (isset($legacyMeta['section_title'])) {
+                    $item['section_title'] = trim((string) $legacyMeta['section_title']);
+                }
+                if (isset($legacyMeta['question_type'])) {
+                    $item['question_type'] = jbChecklistQuestionType($legacyMeta['question_type']);
+                }
+                if (isset($legacyMeta['options']) && is_array($legacyMeta['options'])) {
+                    $cleanOptions = array();
+                    foreach ($legacyMeta['options'] as $option) {
+                        $option = substr(trim((string) $option), 0, 190);
+                        if ($option !== '') $cleanOptions[] = $option;
+                    }
+                    $item['options_json'] = $cleanOptions
+                        ? json_encode($cleanOptions, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+                        : null;
+                }
+                $item['description'] = null;
+            }
+
             $itemCols = array('job_checklist_id', 'title', 'description', 'is_required', 'is_completed', 'sort_order');
             $itemVals = array(':jc', ':title', ':d', ':r', '0', ':o');
             $itemParams = array(':jc' => $jobChecklistId, ':title' => $item['title'], ':d' => $item['description'], ':r' => $item['is_required'], ':o' => $item['sort_order']);
@@ -1473,9 +1928,29 @@ function jbJobCustomFields(PDO $pdo, $tenant, $jobId)
 {
     if (!jbTable($pdo, 'job_custom_fields'))
         return array();
-    $stmt = $pdo->prepare("SELECT id,field_label,field_value,sort_order FROM job_custom_fields WHERE tenant_id=:t AND job_id=:j ORDER BY sort_order,id");
+
+    $cols = array('id', 'field_label', 'field_value', 'sort_order');
+    foreach (array('field_type', 'field_options_json', 'default_value', 'is_transferable') as $col) {
+        if (jbCol($pdo, 'job_custom_fields', $col))
+            $cols[] = $col;
+    }
+
+    $stmt = $pdo->prepare("SELECT " . implode(',', $cols) . " FROM job_custom_fields WHERE tenant_id=:t AND job_id=:j ORDER BY sort_order,id");
     $stmt->execute(array(':t' => $tenant, ':j' => $jobId));
-    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    foreach ($rows as &$row) {
+        $row['field_type'] = isset($row['field_type']) ? (string) $row['field_type'] : 'text';
+        $row['options'] = !empty($row['field_options_json']) ? json_decode((string) $row['field_options_json'], true) : array();
+        if (!is_array($row['options']))
+            $row['options'] = array();
+        $row['default_value'] = isset($row['default_value']) ? (string) $row['default_value'] : '';
+        $row['is_transferable'] = !empty($row['is_transferable']) ? 1 : 0;
+        unset($row['field_options_json']);
+    }
+    unset($row);
+
+    return $rows;
 }
 
 function jbParseCustomFields($raw)
@@ -1486,32 +1961,49 @@ function jbParseCustomFields($raw)
     $decoded = json_decode($raw, true);
     if (!is_array($decoded))
         jbRes(422, false, 'Custom field data is invalid.');
-    if (count($decoded) > 20)
-        jbRes(422, false, 'A job can contain a maximum of 20 custom fields.');
+    if (count($decoded) > 50)
+        jbRes(422, false, 'A job can contain a maximum of 50 custom fields.');
 
+    $validTypes = array('text', 'numeric', 'boolean', 'area', 'dropdown');
     $fields = array();
-    foreach ($decoded as $row) {
+
+    foreach ($decoded as $index => $row) {
         if (!is_array($row))
             continue;
+
         $label = trim(isset($row['field_label']) ? (string) $row['field_label'] : (isset($row['label']) ? (string) $row['label'] : ''));
         $value = trim(isset($row['field_value']) ? (string) $row['field_value'] : (isset($row['value']) ? (string) $row['value'] : ''));
+        $type = strtolower(trim(isset($row['field_type']) ? (string) $row['field_type'] : 'text'));
+        if (!in_array($type, $validTypes, true))
+            $type = 'text';
+
         if ($label === '' && $value === '')
             continue;
         if ($label === '')
-            jbRes(422, false, 'Each custom field value needs a custom label.');
-        if (function_exists('mb_substr')) {
-            $label = mb_substr($label, 0, 120, 'UTF-8');
-            $value = mb_substr($value, 0, 2000, 'UTF-8');
-        } else {
-            $label = substr($label, 0, 120);
-            $value = substr($value, 0, 2000);
+            jbRes(422, false, 'Custom field ' . ($index + 1) . ': enter a custom field name.');
+
+        $options = isset($row['options']) && is_array($row['options']) ? $row['options'] : array();
+        $cleanOptions = array();
+        foreach ($options as $option) {
+            $option = trim((string) $option);
+            if ($option !== '')
+                $cleanOptions[] = substr($option, 0, 190);
         }
+        if ($type === 'dropdown' && !$cleanOptions)
+            jbRes(422, false, 'Custom field ' . ($index + 1) . ': add at least one dropdown option.');
+
+        $defaultValue = trim(isset($row['default_value']) ? (string) $row['default_value'] : '');
         $fields[] = array(
-            'field_label' => $label,
-            'field_value' => $value,
+            'field_label' => substr($label, 0, 120),
+            'field_value' => substr($value, 0, 2000),
+            'field_type' => $type,
+            'options' => $cleanOptions,
+            'default_value' => substr($defaultValue, 0, 2000),
+            'is_transferable' => !empty($row['is_transferable']) ? 1 : 0,
             'sort_order' => count($fields) + 1
         );
     }
+
     return $fields;
 }
 
@@ -1529,15 +2021,45 @@ function jbSaveJobCustomFields(PDO $pdo, $tenant, $jobId, $fields)
     if (!$fields)
         return;
 
-    $stmt = $pdo->prepare("INSERT INTO job_custom_fields(tenant_id,job_id,field_label,field_value,sort_order) VALUES(:t,:j,:l,:v,:o)");
+    $hasType = jbCol($pdo, 'job_custom_fields', 'field_type');
+    $hasOptions = jbCol($pdo, 'job_custom_fields', 'field_options_json');
+    $hasDefault = jbCol($pdo, 'job_custom_fields', 'default_value');
+    $hasTransferable = jbCol($pdo, 'job_custom_fields', 'is_transferable');
+
     foreach ($fields as $field) {
-        $stmt->execute(array(
+        $cols = array('tenant_id', 'job_id', 'field_label', 'field_value', 'sort_order');
+        $vals = array(':t', ':j', ':l', ':v', ':o');
+        $params = array(
             ':t' => $tenant,
             ':j' => $jobId,
             ':l' => $field['field_label'],
             ':v' => $field['field_value'] !== '' ? $field['field_value'] : null,
             ':o' => (int) $field['sort_order']
-        ));
+        );
+
+        if ($hasType) {
+            $cols[] = 'field_type';
+            $vals[] = ':ft';
+            $params[':ft'] = $field['field_type'];
+        }
+        if ($hasOptions) {
+            $cols[] = 'field_options_json';
+            $vals[] = ':fo';
+            $params[':fo'] = $field['options'] ? json_encode($field['options'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null;
+        }
+        if ($hasDefault) {
+            $cols[] = 'default_value';
+            $vals[] = ':dv';
+            $params[':dv'] = $field['default_value'] !== '' ? $field['default_value'] : null;
+        }
+        if ($hasTransferable) {
+            $cols[] = 'is_transferable';
+            $vals[] = ':tr';
+            $params[':tr'] = !empty($field['is_transferable']) ? 1 : 0;
+        }
+
+        $stmt = $pdo->prepare("INSERT INTO job_custom_fields(" . implode(',', $cols) . ") VALUES(" . implode(',', $vals) . ")");
+        $stmt->execute($params);
     }
 }
 
@@ -1846,6 +2368,43 @@ function jbSaveInternalNote(PDO $pdo, $tenant, $jobId, $user, $note)
         $pdo->prepare("INSERT INTO notes(tenant_id,related_type,related_id,user_id,note,is_internal) VALUES(:t,'job',:j,:u,:n,1)")->execute(array(':t' => $tenant, ':j' => $jobId, ':u' => $user, ':n' => $note));
 }
 
+function jbJobNoteMentionIds(PDO $pdo, $tenant, $jobId)
+{
+    if (!jbTable($pdo, 'job_note_mentions'))
+        return array();
+    $stmt = $pdo->prepare("SELECT user_id FROM job_note_mentions WHERE tenant_id=:t AND job_id=:j ORDER BY id");
+    $stmt->execute(array(':t' => $tenant, ':j' => $jobId));
+    return array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+}
+
+function jbSaveJobNoteMentions(PDO $pdo, $tenant, $jobId, $raw)
+{
+    if (!jbTable($pdo, 'job_note_mentions'))
+        return;
+
+    $decoded = json_decode(trim((string)$raw), true);
+    if (!is_array($decoded))
+        $decoded = array();
+    $ids = jbIntList($decoded);
+
+    $pdo->prepare("DELETE FROM job_note_mentions WHERE tenant_id=:t AND job_id=:j")
+        ->execute(array(':t' => $tenant, ':j' => $jobId));
+
+    if (!$ids)
+        return;
+
+    $placeholders = implode(',', array_fill(0, count($ids), '?'));
+    $stmt = $pdo->prepare("SELECT id FROM users WHERE tenant_id=? AND status='active' AND deleted_at IS NULL AND id IN ($placeholders)");
+    $stmt->execute(array_merge(array((int)$tenant), $ids));
+    $valid = array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+    if (!$valid)
+        return;
+
+    $ins = $pdo->prepare("INSERT INTO job_note_mentions(tenant_id,job_id,user_id) VALUES(:t,:j,:u)");
+    foreach ($valid as $userId)
+        $ins->execute(array(':t' => $tenant, ':j' => $jobId, ':u' => $userId));
+}
+
 function jbSaveJobAttachments(PDO $pdo, $tenant, $jobId, $user)
 {
     $result = array('saved' => 0, 'skipped' => 0, 'messages' => array());
@@ -1910,13 +2469,55 @@ function jbPersistSchedules(PDO $pdo, $tenant, $branch, $jobId, $jobNo, $schedul
     $pdo->prepare("DELETE FROM job_schedule_assignees WHERE tenant_id=:t AND job_schedule_id IN (SELECT id FROM job_schedules WHERE tenant_id=:t2 AND job_id=:j)")->execute(array(':t' => $tenant, ':t2' => $tenant, ':j' => $jobId));
     $pdo->prepare("DELETE FROM job_schedules WHERE tenant_id=:t AND job_id=:j")->execute(array(':t' => $tenant, ':j' => $jobId));
 
+    $optionalCols = array(
+        'title' => 'title',
+        'schedule_later' => 'schedule_later',
+        'anytime' => 'anytime',
+        'email_team_about_assignment' => 'email_team_about_assignment',
+        'monthly_mode' => 'monthly_mode',
+        'monthly_day' => 'monthly_day',
+        'monthly_week' => 'monthly_week',
+        'monthly_weekday' => 'monthly_weekday'
+    );
+
     $scheduleIds = array();
     foreach ($schedules as $index => $schedule) {
         $ids = $schedule['assignee_ids'] ? $schedule['assignee_ids'] : $defaultIds;
-        $stmt = $pdo->prepare("INSERT INTO job_schedules(tenant_id,job_id,schedule_order,start_date,start_time,end_date,end_time,repeat_type,repeat_interval,weekly_days_json,end_mode,repeat_end_date,repeat_occurrences,end_after_value,end_after_unit,instructions) VALUES(:t,:j,:o,:sd,:st,:ed,:et,:rt,:ri,:wd,:em,:red,:ro,:eav,:eau,:ins)");
-        $stmt->execute(array(':t' => $tenant, ':j' => $jobId, ':o' => $index + 1, ':sd' => $schedule['start_date'], ':st' => $schedule['start_time'], ':ed' => $schedule['end_date'], ':et' => $schedule['end_time'], ':rt' => $schedule['repeat_type'], ':ri' => $schedule['repeat_interval'], ':wd' => $schedule['weekly_days'] ? json_encode($schedule['weekly_days']) : null, ':em' => $schedule['end_mode'], ':red' => $schedule['repeat_end_date'], ':ro' => $schedule['repeat_occurrences'], ':eav' => $schedule['end_after_value'], ':eau' => $schedule['end_after_unit'], ':ins' => $schedule['instructions'] !== '' ? $schedule['instructions'] : null));
+        $cols = array('tenant_id','job_id','schedule_order','start_date','start_time','end_date','end_time','repeat_type','repeat_interval','weekly_days_json','end_mode','repeat_end_date','repeat_occurrences','end_after_value','end_after_unit','instructions');
+        $vals = array(':t',':j',':o',':sd',':st',':ed',':et',':rt',':ri',':wd',':em',':red',':ro',':eav',':eau',':ins');
+        $params = array(
+            ':t' => $tenant,
+            ':j' => $jobId,
+            ':o' => $index + 1,
+            ':sd' => $schedule['start_date'],
+            ':st' => $schedule['start_time'],
+            ':ed' => $schedule['end_date'],
+            ':et' => $schedule['end_time'],
+            ':rt' => $schedule['repeat_type'],
+            ':ri' => $schedule['repeat_interval'],
+            ':wd' => $schedule['weekly_days'] ? json_encode($schedule['weekly_days']) : null,
+            ':em' => $schedule['end_mode'],
+            ':red' => $schedule['repeat_end_date'],
+            ':ro' => $schedule['repeat_occurrences'],
+            ':eav' => $schedule['end_after_value'],
+            ':eau' => $schedule['end_after_unit'],
+            ':ins' => $schedule['instructions'] !== '' ? $schedule['instructions'] : null
+        );
+
+        foreach ($optionalCols as $col => $key) {
+            if (!jbCol($pdo, 'job_schedules', $col))
+                continue;
+            $ph = ':x_' . $col;
+            $cols[] = $col;
+            $vals[] = $ph;
+            $params[$ph] = isset($schedule[$key]) && $schedule[$key] !== '' ? $schedule[$key] : null;
+        }
+
+        $stmt = $pdo->prepare("INSERT INTO job_schedules(" . implode(',', $cols) . ") VALUES(" . implode(',', $vals) . ")");
+        $stmt->execute($params);
         $scheduleId = (int) $pdo->lastInsertId();
         $scheduleIds[$index] = $scheduleId;
+
         $insA = $pdo->prepare("INSERT INTO job_schedule_assignees(tenant_id,job_schedule_id,user_id,is_primary) VALUES(:t,:s,:u,:p)");
         foreach ($ids as $pos => $uid)
             $insA->execute(array(':t' => $tenant, ':s' => $scheduleId, ':u' => $uid, ':p' => $pos === 0 ? 1 : 0));
@@ -1945,11 +2546,12 @@ function jbPersistSchedules(PDO $pdo, $tenant, $branch, $jobId, $jobNo, $schedul
             $visitAssign->execute(array(':t' => $tenant, ':v' => $visitId, ':u' => $uid, ':p' => $pos === 0 ? 1 : 0));
         $created++;
     }
+
     return $created;
 }
 
 $tenant = isset($_SESSION['tenant_id']) ? (int) $_SESSION['tenant_id'] : 0;
-$user = isset($_SESSION['tenant_user_id']) ? (int) $_SESSION['tenant_user_id'] : 0;
+$user = !empty($_SESSION['tenant_user_id']) ? (int) $_SESSION['tenant_user_id'] : (!empty($_SESSION['user_id']) ? (int) $_SESSION['user_id'] : 0);
 $sessionBranch = isset($_SESSION['branch_id']) ? (int) $_SESSION['branch_id'] : 0;
 if ($tenant <= 0 || $user <= 0)
     jbRes(401, false, 'Authentication required.');
@@ -1962,12 +2564,496 @@ $action = trim((string) jbP('action', ''));
 
 try {
     if ($action === 'meta') {
-        jbRes(200, true, 'Job form data loaded.', array('meta' => jbMeta($pdo, $tenant, (int) jbP('job_id', 0))));
+        $previewBranch = (int) jbP('branch_id', $sessionBranch);
+        jbRes(200, true, 'Job form data loaded.', array('meta' => jbMeta($pdo, $tenant, (int) jbP('job_id', 0), $previewBranch)));
+    }
+
+    if ($action === 'job_no_preview') {
+        $previewBranch = (int) jbP('branch_id', $sessionBranch);
+        if ($previewBranch > 0) {
+            $checkBranch = $pdo->prepare("SELECT id FROM branches WHERE id=:id AND tenant_id=:t AND status='active' LIMIT 1");
+            $checkBranch->execute(array(':id' => $previewBranch, ':t' => $tenant));
+            if (!$checkBranch->fetchColumn())
+                $previewBranch = $sessionBranch;
+        }
+        jbRes(200, true, 'Next job number loaded.', array('job_no' => jbPreviewNext($pdo, $tenant, $previewBranch)));
+    }
+
+    /* Quick-create customer from New Job, same workflow as Add Quotation. */
+    if ($action === 'create_customer') {
+        if (!jbTable($pdo, 'clients'))
+            jbRes(500, false, 'Customers table is not available.');
+
+        $display = substr(trim((string) jbP('display_name', '')), 0, 190);
+        $company = substr(trim((string) jbP('company_name', '')), 0, 190);
+        $email = strtolower(substr(trim((string) jbP('email', '')), 0, 190));
+        $phone = substr(trim((string) jbP('phone', '')), 0, 50);
+
+        if ($display === '')
+            jbRes(422, false, 'Customer name is required.');
+        if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL))
+            jbRes(422, false, 'Enter a valid customer email address.');
+
+        if ($email !== '') {
+            $du = $pdo->prepare("SELECT id FROM clients WHERE tenant_id=:t AND email=:e AND deleted_at IS NULL LIMIT 1");
+            $du->execute(array(':t' => $tenant, ':e' => $email));
+            if ($du->fetchColumn())
+                jbRes(409, false, 'This email is already used by another customer.');
+        }
+
+        $branch = $sessionBranch > 0 ? $sessionBranch : null;
+        $pref = $email !== '' ? 'email' : ($phone !== '' ? 'phone' : 'none');
+        $stmt = $pdo->prepare("INSERT INTO clients(tenant_id,branch_id,client_type,display_name,company_name,first_name,last_name,email,phone,alternate_phone,source,preferred_contact_method,allow_email,allow_sms,status,tax_number,notes,account_manager_id,created_by) VALUES(:t,:b,'client',:display,:company,:first,NULL,:email,:phone,NULL,'job',:pref,:ae,:as,'active',NULL,NULL,NULL,:u)");
+        $stmt->execute(array(
+            ':t' => $tenant,
+            ':b' => $branch,
+            ':display' => $display,
+            ':company' => $company !== '' ? $company : null,
+            ':first' => $display,
+            ':email' => $email !== '' ? $email : null,
+            ':phone' => $phone !== '' ? $phone : null,
+            ':pref' => $pref,
+            ':ae' => $email !== '' ? 1 : 0,
+            ':as' => $phone !== '' ? 1 : 0,
+            ':u' => $user
+        ));
+        $id = (int) $pdo->lastInsertId();
+        $client = array(
+            'id' => $id,
+            'branch_id' => $branch,
+            'name' => $display,
+            'display_name' => $display,
+            'company_name' => $company,
+            'email' => $email,
+            'phone' => $phone,
+            'status' => 'active'
+        );
+        if (function_exists('tenantAuditLog')) {
+            try {
+                tenantAuditLog($pdo, 'CLIENT_CREATED_FROM_JOB', $tenant, $branch, $user, 'client', $id, null, $client);
+            } catch (Throwable $ae) {
+                error_log('job quick customer audit ' . $ae->getMessage());
+            }
+        }
+        jbRes(200, true, 'Customer created successfully.', array('client' => $client));
+    }
+
+    /* Create a Jobber-style property/location for the selected customer. */
+    if ($action === 'create_location') {
+        if (!jbTable($pdo, 'client_locations'))
+            jbRes(500, false, 'Customer locations table is not available.');
+
+        $clientId = (int) jbP('client_id', 0);
+        $clientStmt = $pdo->prepare("SELECT id,branch_id FROM clients WHERE id=:id AND tenant_id=:t AND deleted_at IS NULL AND status<>'archived' LIMIT 1");
+        $clientStmt->execute(array(':id' => $clientId, ':t' => $tenant));
+        $client = $clientStmt->fetch(PDO::FETCH_ASSOC);
+        if (!$client)
+            jbRes(422, false, 'Select a valid customer first.');
+
+        $type = strtolower(trim((string) jbP('location_type', 'site')));
+        $allowedTypes = array('home', 'office', 'warehouse', 'factory', 'farm', 'shop', 'site', 'other');
+        if (!in_array($type, $allowedTypes, true))
+            $type = 'other';
+
+        $name = substr(trim((string) jbP('name', '')), 0, 190);
+        $a1 = substr(trim((string) jbP('address_line1', '')), 0, 255);
+        $a2 = substr(trim((string) jbP('address_line2', '')), 0, 255);
+        $city = substr(trim((string) jbP('city', '')), 0, 120);
+        $state = substr(trim((string) jbP('state', '')), 0, 120);
+        $postal = substr(trim((string) jbP('postal_code', '')), 0, 40);
+        $countryId = max(0, (int)jbP('country_id', 0));
+        $taxRateId = max(0, (int)jbP('tax_rate_id', 0));
+
+        if ($name === '')
+            jbRes(422, false, 'Property name is required.');
+        if ($a1 === '')
+            jbRes(422, false, 'Street 1 is required.');
+
+        if ($countryId > 0) {
+            if (!jbTable($pdo, 'countries'))
+                jbRes(422, false, 'Country master is unavailable.');
+            $checkCountry = $pdo->prepare("SELECT id FROM countries WHERE id=:id AND is_active=1 LIMIT 1");
+            $checkCountry->execute(array(':id' => $countryId));
+            if (!$checkCountry->fetchColumn())
+                jbRes(422, false, 'Select a valid country.');
+        }
+
+        if ($taxRateId > 0) {
+            if (!jbTable($pdo, 'product_tax_rates'))
+                jbRes(422, false, 'Tax rate master is unavailable.');
+            $checkTax = $pdo->prepare("SELECT id FROM product_tax_rates WHERE id=:id AND tenant_id=:t AND status='active' LIMIT 1");
+            $checkTax->execute(array(':id' => $taxRateId, ':t' => $tenant));
+            if (!$checkTax->fetchColumn())
+                jbRes(422, false, 'Select a valid tax rate.');
+        }
+
+        $customValues = json_decode(trim((string)jbP('custom_values_json', '')), true);
+        if (!is_array($customValues))
+            $customValues = array();
+        $contacts = json_decode(trim((string)jbP('contacts_json', '')), true);
+        if (!is_array($contacts))
+            $contacts = array();
+        if (count($contacts) > 20)
+            jbRes(422, false, 'A property can contain a maximum of 20 contacts.');
+
+        $cnt = $pdo->prepare("SELECT COUNT(*) FROM client_locations WHERE tenant_id=:t AND client_id=:c AND deleted_at IS NULL");
+        $cnt->execute(array(':t' => $tenant, ':c' => $clientId));
+        $primary = ((int) $cnt->fetchColumn() === 0 || (int) jbP('is_primary', 0) === 1) ? 1 : 0;
+
+        $pdo->beginTransaction();
+        try {
+            if ($primary === 1) {
+                $pdo->prepare("UPDATE client_locations SET is_primary=0 WHERE tenant_id=:t AND client_id=:c AND deleted_at IS NULL")
+                    ->execute(array(':t' => $tenant, ':c' => $clientId));
+            }
+
+            $columns = array('tenant_id','client_id','location_type','name','address_line1','address_line2','city','state','postal_code');
+            $values = array(':t',':c',':type',':name',':a1',':a2',':city',':state',':postal');
+            $params = array(
+                ':t' => $tenant, ':c' => $clientId, ':type' => $type, ':name' => $name, ':a1' => $a1,
+                ':a2' => $a2 !== '' ? $a2 : null, ':city' => $city !== '' ? $city : null,
+                ':state' => $state !== '' ? $state : null, ':postal' => $postal !== '' ? $postal : null
+            );
+            if (jbCol($pdo, 'client_locations', 'country_id')) {
+                $columns[] = 'country_id'; $values[] = ':country'; $params[':country'] = $countryId > 0 ? $countryId : null;
+            }
+            if (jbCol($pdo, 'client_locations', 'tax_rate_id')) {
+                $columns[] = 'tax_rate_id'; $values[] = ':taxrate'; $params[':taxrate'] = $taxRateId > 0 ? $taxRateId : null;
+            }
+            if (jbCol($pdo, 'client_locations', 'billing_same_as_property')) {
+                $columns[] = 'billing_same_as_property'; $values[] = '1';
+            }
+            $columns[] = 'is_primary'; $values[] = ':primary'; $params[':primary'] = $primary;
+            $columns[] = 'status'; $values[] = "'active'";
+
+            $stmt = $pdo->prepare("INSERT INTO client_locations(" . implode(',', $columns) . ") VALUES(" . implode(',', $values) . ")");
+            $stmt->execute($params);
+            $id = (int) $pdo->lastInsertId();
+
+            /* Save values for existing property custom fields. */
+            if ($customValues && jbTable($pdo, 'client_location_custom_field_values') && jbTable($pdo, 'client_custom_field_definitions')) {
+                $fieldCheck = $pdo->prepare("SELECT id FROM client_custom_field_definitions WHERE id=:id AND tenant_id=:t AND applies_to='location' AND status='active' LIMIT 1");
+                $fieldInsert = $pdo->prepare("INSERT INTO client_location_custom_field_values(tenant_id,location_id,field_id,field_value) VALUES(:t,:l,:f,:v)");
+                foreach ($customValues as $fieldIdRaw => $fieldValueRaw) {
+                    $fieldId = (int)$fieldIdRaw;
+                    $fieldValue = trim((string)$fieldValueRaw);
+                    if ($fieldId <= 0 || $fieldValue === '')
+                        continue;
+                    $fieldCheck->execute(array(':id' => $fieldId, ':t' => $tenant));
+                    if (!$fieldCheck->fetchColumn())
+                        continue;
+                    $fieldInsert->execute(array(':t' => $tenant, ':l' => $id, ':f' => $fieldId, ':v' => substr($fieldValue, 0, 4000)));
+                }
+            }
+
+            /* Save contacts limited to this property. */
+            if ($contacts && jbTable($pdo, 'client_contacts') && jbCol($pdo, 'client_contacts', 'location_id')) {
+                foreach ($contacts as $contactIndex => $contact) {
+                    if (!is_array($contact))
+                        continue;
+                    $first = substr(trim(isset($contact['first_name']) ? (string)$contact['first_name'] : ''), 0, 120);
+                    if ($first === '')
+                        jbRes(422, false, 'Property contact ' . ($contactIndex + 1) . ': first name is required.');
+                    $email = strtolower(substr(trim(isset($contact['email']) ? (string)$contact['email'] : ''), 0, 190));
+                    if ($email !== '' && !filter_var($email, FILTER_VALIDATE_EMAIL))
+                        jbRes(422, false, 'Property contact ' . ($contactIndex + 1) . ': enter a valid email address.');
+
+                    $contactCols = array('tenant_id','client_id','location_id','first_name');
+                    $contactVals = array(':t',':c',':l',':first');
+                    $contactParams = array(':t'=>$tenant, ':c'=>$clientId, ':l'=>$id, ':first'=>$first);
+                    $optional = array(
+                        'title_prefix' => substr(trim(isset($contact['title_prefix']) ? (string)$contact['title_prefix'] : ''),0,20),
+                        'last_name' => substr(trim(isset($contact['last_name']) ? (string)$contact['last_name'] : ''),0,120),
+                        'role_name' => substr(trim(isset($contact['role_name']) ? (string)$contact['role_name'] : ''),0,120),
+                        'email' => $email,
+                        'phone' => substr(trim(isset($contact['phone']) ? (string)$contact['phone'] : ''),0,50)
+                    );
+                    foreach ($optional as $col => $val) {
+                        if (jbCol($pdo, 'client_contacts', $col)) {
+                            $key = ':' . $col;
+                            $contactCols[] = $col; $contactVals[] = $key; $contactParams[$key] = $val !== '' ? $val : null;
+                        }
+                    }
+                    $bools = array('is_billing_contact','portal_access','quote_followups','invoice_followups','visit_reminders','job_close_followups');
+                    foreach ($bools as $col) {
+                        if (jbCol($pdo, 'client_contacts', $col)) {
+                            $key = ':' . $col;
+                            $contactCols[] = $col; $contactVals[] = $key; $contactParams[$key] = !empty($contact[$col]) ? 1 : 0;
+                        }
+                    }
+                    if (jbCol($pdo, 'client_contacts', 'is_primary')) {
+                        $contactCols[] = 'is_primary'; $contactVals[] = '0';
+                    }
+                    $insContact = $pdo->prepare("INSERT INTO client_contacts(" . implode(',', $contactCols) . ") VALUES(" . implode(',', $contactVals) . ")");
+                    $insContact->execute($contactParams);
+                    $contactId = (int)$pdo->lastInsertId();
+                    if (!empty($contact['portal_access']) && jbTable($pdo, 'client_portal_users') && $contactId > 0 && ($email !== '' || !empty($contactParams[':phone']))) {
+                        $portalPhone = isset($contactParams[':phone']) ? trim((string)$contactParams[':phone']) : '';
+                        if ($email !== '') {
+                            $portalCheck = $pdo->prepare("SELECT id FROM client_portal_users WHERE tenant_id=:t AND email=:e LIMIT 1");
+                            $portalCheck->execute(array(':t'=>$tenant, ':e'=>$email));
+                            if ($portalCheck->fetchColumn())
+                                throw new RuntimeException('A property contact email is already used for another client portal login.');
+                        }
+                        if ($portalPhone !== '' && jbCol($pdo, 'client_portal_users', 'phone')) {
+                            $portalCheck = $pdo->prepare("SELECT id FROM client_portal_users WHERE tenant_id=:t AND phone=:p LIMIT 1");
+                            $portalCheck->execute(array(':t'=>$tenant, ':p'=>$portalPhone));
+                            if ($portalCheck->fetchColumn())
+                                throw new RuntimeException('A property contact phone number is already used for another client portal login.');
+                        }
+                        $portalCols = array('tenant_id','client_id','contact_id','email','password_hash','status');
+                        $portalVals = array(':t',':c',':contact',':email','NULL',"'invited'");
+                        $portalParams = array(':t'=>$tenant, ':c'=>$clientId, ':contact'=>$contactId, ':email'=>$email !== '' ? $email : null);
+                        if (jbCol($pdo, 'client_portal_users', 'phone')) {
+                            $portalCols[]='phone'; $portalVals[]=':phone'; $portalParams[':phone']=$portalPhone !== '' ? $portalPhone : null;
+                        }
+                        $portalIns=$pdo->prepare("INSERT INTO client_portal_users(".implode(',',$portalCols).") VALUES(".implode(',',$portalVals).")");
+                        $portalIns->execute($portalParams);
+                    }
+                }
+            }
+
+            $pdo->commit();
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction())
+                $pdo->rollBack();
+            throw $e;
+        }
+
+        $location = array(
+            'id' => $id, 'client_id' => $clientId, 'location_type' => $type, 'name' => $name,
+            'address_line1' => $a1, 'address_line2' => $a2, 'city' => $city, 'state' => $state,
+            'postal_code' => $postal, 'country_id' => $countryId > 0 ? $countryId : null,
+            'tax_rate_id' => $taxRateId > 0 ? $taxRateId : null, 'is_primary' => $primary, 'status' => 'active'
+        );
+        if (function_exists('tenantAuditLog')) {
+            try {
+                tenantAuditLog($pdo, 'CLIENT_LOCATION_CREATED_FROM_JOB', $tenant, !empty($client['branch_id']) ? (int) $client['branch_id'] : $sessionBranch, $user, 'client_location', $id, null, $location);
+            } catch (Throwable $ae) {
+                error_log('job quick location audit ' . $ae->getMessage());
+            }
+        }
+        jbRes(200, true, 'Property created successfully.', array('location' => $location));
+    }
+
+    /* Create a tax rate from the Job form, matching Add Quotation behavior. */
+    if ($action === 'create_tax_rate') {
+        if (!jbTable($pdo, 'product_tax_rates'))
+            jbRes(500, false, 'Tax rate master is not available.');
+
+        $name = substr(trim((string)jbP('name', '')), 0, 120);
+        $rate = (float)jbP('rate_percent', 0);
+        $description = substr(trim((string)jbP('description', '')), 0, 190);
+        $isDefault = (int)jbP('is_default', 0) === 1 ? 1 : 0;
+        if ($name === '')
+            jbRes(422, false, 'Tax rate name is required.');
+        if ($rate < 0 || $rate > 100)
+            jbRes(422, false, 'Tax rate must be between 0 and 100.');
+
+        $dup = $pdo->prepare("SELECT id FROM product_tax_rates WHERE tenant_id=:t AND LOWER(tax_name)=LOWER(:n) AND status='active' LIMIT 1");
+        $dup->execute(array(':t'=>$tenant, ':n'=>$name));
+        if ($dup->fetchColumn())
+            jbRes(409, false, 'A tax rate with this name already exists.');
+
+        $countryCode = 'US';
+        if (jbTable($pdo, 'countries') && jbTable($pdo, 'tenants') && jbCol($pdo, 'tenants', 'country_id')) {
+            $countryStmt = $pdo->prepare("SELECT c.iso2 FROM tenants t LEFT JOIN countries c ON c.id=t.country_id WHERE t.id=:t LIMIT 1");
+            $countryStmt->execute(array(':t'=>$tenant));
+            $candidate = strtoupper(trim((string)$countryStmt->fetchColumn()));
+            if (preg_match('/^[A-Z]{2}$/', $candidate))
+                $countryCode = $candidate;
+        }
+
+        $pdo->beginTransaction();
+        try {
+            $hasDefault = jbCol($pdo, 'product_tax_rates', 'is_default');
+            if ($isDefault && $hasDefault)
+                $pdo->prepare("UPDATE product_tax_rates SET is_default=0 WHERE tenant_id=:t")->execute(array(':t'=>$tenant));
+
+            $cols = array('tenant_id','tax_name','rate_percent','country_code','state_code','state_name','tax_type','jurisdiction_name','status');
+            $vals = array(':t',':n',':r',':cc',"''",'NULL',"'other'",':desc',"'active'");
+            $params = array(':t'=>$tenant, ':n'=>$name, ':r'=>$rate, ':cc'=>$countryCode, ':desc'=>$description !== '' ? $description : null);
+            if ($hasDefault) {
+                $cols[]='is_default'; $vals[]=':def'; $params[':def']=$isDefault;
+            }
+            if (jbCol($pdo, 'product_tax_rates', 'created_by')) {
+                $cols[]='created_by'; $vals[]=':u'; $params[':u']=$user;
+            }
+            $stmt=$pdo->prepare("INSERT INTO product_tax_rates(".implode(',',$cols).") VALUES(".implode(',',$vals).")");
+            $stmt->execute($params);
+            $taxId=(int)$pdo->lastInsertId();
+            $pdo->commit();
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            throw $e;
+        }
+
+        $sel = "SELECT id,tax_name,rate_percent,jurisdiction_name,status," . (jbCol($pdo,'product_tax_rates','is_default') ? 'is_default' : '0 AS is_default') . " FROM product_tax_rates WHERE id=:id AND tenant_id=:t LIMIT 1";
+        $stmt=$pdo->prepare($sel);$stmt->execute(array(':id'=>$taxId,':t'=>$tenant));
+        jbRes(200, true, 'Tax rate created successfully.', array('tax_rate'=>$stmt->fetch(PDO::FETCH_ASSOC)));
+    }
+
+    /* Create a custom field that applies to all properties. */
+    if ($action === 'create_location_custom_field') {
+        if (!jbTable($pdo, 'client_custom_field_definitions'))
+            jbRes(500, false, 'Property custom fields are not installed.');
+
+        $name = substr(trim((string)jbP('field_name', '')), 0, 190);
+        $type = strtolower(trim((string)jbP('field_type', 'text')));
+        $allowed = array('text','numeric','boolean','area','dropdown');
+        if (!in_array($type, $allowed, true)) $type='text';
+        $transferable = (int)jbP('is_transferable',0)===1 ? 1 : 0;
+        $defaultValue = trim((string)jbP('default_value',''));
+        $options = json_decode(trim((string)jbP('options_json','')), true);
+        if (!is_array($options)) $options=array();
+        $cleanOptions=array();
+        foreach ($options as $option) {
+            $option=substr(trim((string)$option),0,190);
+            if ($option!=='') $cleanOptions[]=$option;
+        }
+        if ($name==='') jbRes(422,false,'Custom field name is required.');
+        if ($type==='dropdown' && !$cleanOptions) jbRes(422,false,'Add at least one dropdown option.');
+
+        $dup=$pdo->prepare("SELECT id FROM client_custom_field_definitions WHERE tenant_id=:t AND applies_to='location' AND LOWER(field_name)=LOWER(:n) AND status='active' LIMIT 1");
+        $dup->execute(array(':t'=>$tenant,':n'=>$name));
+        if ($dup->fetchColumn()) jbRes(409,false,'A property custom field with this name already exists.');
+
+        $max=$pdo->prepare("SELECT COALESCE(MAX(sort_order),0) FROM client_custom_field_definitions WHERE tenant_id=:t AND applies_to='location'");
+        $max->execute(array(':t'=>$tenant));
+        $sort=(int)$max->fetchColumn()+100;
+        $stmt=$pdo->prepare("INSERT INTO client_custom_field_definitions(tenant_id,applies_to,field_name,field_type,is_transferable,default_value,options_json,status,sort_order,created_by) VALUES(:t,'location',:n,:ft,:tr,:dv,:opts,'active',:so,:u)");
+        $stmt->execute(array(':t'=>$tenant,':n'=>$name,':ft'=>$type,':tr'=>$transferable,':dv'=>$defaultValue!==''?$defaultValue:null,':opts'=>$cleanOptions?json_encode($cleanOptions,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES):null,':so'=>$sort,':u'=>$user));
+        $fieldId=(int)$pdo->lastInsertId();
+        jbRes(200,true,'Property custom field created successfully.',array('custom_field'=>array('id'=>$fieldId,'applies_to'=>'location','field_name'=>$name,'field_type'=>$type,'is_transferable'=>$transferable,'default_value'=>$defaultValue,'options'=>$cleanOptions,'sort_order'=>$sort)));
+    }
+
+    /* Quick-create Product / Service from a job line. */
+    if ($action === 'create_catalog_item') {
+        $itemType = strtolower(trim((string) jbP('item_type', 'service')));
+        if (!in_array($itemType, array('service', 'product'), true))
+            jbRes(422, false, 'Select Service or Product.');
+
+        $name = substr(trim((string) jbP('name', '')), 0, 190);
+        $description = trim((string) jbP('description', ''));
+        $unitCost = max(0, (float) jbP('unit_cost', 0));
+        $markupPercent = max(0, (float) jbP('markup_percent', 0));
+        $unitPriceRaw = trim((string) jbP('unit_price', ''));
+        $unitPrice = $unitPriceRaw === '' ? round($unitCost * (1 + ($markupPercent / 100)), 2) : max(0, (float) $unitPriceRaw);
+        $exemptTax = (int) jbP('exempt_tax', 0) === 1;
+        $taxPercent = $exemptTax ? 0.0 : max(0, (float) jbP('tax_percent', 0));
+        $taxRateId = $exemptTax ? 0 : max(0, (int) jbP('tax_rate_id', 0));
+        if ($name === '')
+            jbRes(422, false, 'Product / Service name is required.');
+
+        $hasUploadedImage = !empty($_FILES['item_image']) && is_array($_FILES['item_image']) && isset($_FILES['item_image']['error']) && (int) $_FILES['item_image']['error'] !== UPLOAD_ERR_NO_FILE;
+
+        if ($itemType === 'service') {
+            $serviceHasImage = jbCol($pdo, 'product_services', 'image_path');
+            $serviceImageSelect = $serviceHasImage ? ',image_path' : ',NULL AS image_path';
+            $find = $pdo->prepare("SELECT id,item_type,name,sku,description,unit_name,unit_cost,unit_price,tax_percent" . $serviceImageSelect . " FROM product_services WHERE tenant_id=:t AND item_type='service' AND LOWER(name)=LOWER(:n) AND deleted_at IS NULL AND status='active' LIMIT 1");
+            $find->execute(array(':t' => $tenant, ':n' => $name));
+            $existing = $find->fetch(PDO::FETCH_ASSOC);
+            if ($existing) {
+                $existing['catalog_key'] = 'ps:' . (int) $existing['id'];
+                $existing['source_type'] = 'product_service';
+                $existing['source_label'] = 'Service';
+                $existing['product_service_id'] = (int) $existing['id'];
+                $existing['product_id'] = null;
+                jbRes(200, true, 'Existing service selected.', array('created' => 0, 'item_kind' => 'service', 'item' => $existing));
+            }
+            if ($hasUploadedImage && !$serviceHasImage)
+                jbRes(500, false, 'Service image storage is not available.');
+
+            $image = array('relative' => null, 'absolute' => null);
+            try {
+                if ($hasUploadedImage)
+                    $image = jbStoreCatalogImage('item_image', $tenant, 'service');
+                if ($serviceHasImage) {
+                    $stmt = $pdo->prepare("INSERT INTO product_services(tenant_id,category_id,item_type,name,sku,image_path,description,unit_name,unit_cost,unit_price,tax_percent,is_bookable,estimated_duration_minutes,status,created_at,updated_at,deleted_at) VALUES(:t,NULL,'service',:n,NULL,:img,:d,'Service',:cost,:price,:tax,0,NULL,'active',NOW(),NOW(),NULL)");
+                    $stmt->execute(array(':t' => $tenant, ':n' => $name, ':img' => $image['relative'], ':d' => $description !== '' ? $description : null, ':cost' => $unitCost, ':price' => $unitPrice, ':tax' => $taxPercent));
+                } else {
+                    $stmt = $pdo->prepare("INSERT INTO product_services(tenant_id,category_id,item_type,name,sku,description,unit_name,unit_cost,unit_price,tax_percent,is_bookable,estimated_duration_minutes,status,created_at,updated_at,deleted_at) VALUES(:t,NULL,'service',:n,NULL,:d,'Service',:cost,:price,:tax,0,NULL,'active',NOW(),NOW(),NULL)");
+                    $stmt->execute(array(':t' => $tenant, ':n' => $name, ':d' => $description !== '' ? $description : null, ':cost' => $unitCost, ':price' => $unitPrice, ':tax' => $taxPercent));
+                }
+            } catch (Throwable $e) {
+                if (!empty($image['absolute']) && is_file($image['absolute']))
+                    @unlink($image['absolute']);
+                throw $e;
+            }
+
+            $newId = (int) $pdo->lastInsertId();
+            $item = array('id' => $newId, 'item_type' => 'service', 'name' => $name, 'sku' => '', 'image_path' => $image['relative'], 'description' => $description, 'unit_name' => 'Service', 'unit_cost' => $unitCost, 'unit_price' => $unitPrice, 'tax_percent' => $taxPercent, 'catalog_key' => 'ps:' . $newId, 'source_type' => 'product_service', 'source_label' => 'Service', 'product_service_id' => $newId, 'product_id' => null);
+            if (function_exists('tenantAuditLog')) {
+                try { tenantAuditLog($pdo, 'SERVICE_CREATED', $tenant, $sessionBranch, $user, 'service', $newId, null, $item); }
+                catch (Throwable $ae) { error_log('job catalog service audit ' . $ae->getMessage()); }
+            }
+            jbRes(200, true, 'Service created successfully.', array('created' => 1, 'item_kind' => 'service', 'item' => $item));
+        }
+
+        if (!jbTable($pdo, 'products'))
+            jbRes(500, false, 'Products table is not available.');
+
+        $deletedFilter = jbCol($pdo, 'products', 'deleted_at') ? " AND deleted_at IS NULL" : "";
+        $productHasImage = jbCol($pdo, 'products', 'image_path');
+        $productImageSelect = $productHasImage ? ',image_path' : ',NULL AS image_path';
+        $find = $pdo->prepare("SELECT id,sku,name,description,unit_name,base_unit_price,selling_price,tax_percent" . $productImageSelect . " FROM products WHERE tenant_id=:t AND LOWER(name)=LOWER(:n) AND status='active'" . $deletedFilter . " LIMIT 1");
+        $find->execute(array(':t' => $tenant, ':n' => $name));
+        $existing = $find->fetch(PDO::FETCH_ASSOC);
+        if ($existing) {
+            $existing['catalog_key'] = 'product:' . (int) $existing['id'];
+            $existing['source_type'] = 'product';
+            $existing['source_label'] = 'Product';
+            $existing['product_service_id'] = null;
+            $existing['product_id'] = (int) $existing['id'];
+            $existing['unit_cost'] = isset($existing['base_unit_price']) ? (float) $existing['base_unit_price'] : 0;
+            $existing['unit_price'] = isset($existing['selling_price']) ? (float) $existing['selling_price'] : 0;
+            jbRes(200, true, 'Existing product selected.', array('created' => 0, 'item_kind' => 'product', 'item' => $existing));
+        }
+        if ($hasUploadedImage && !$productHasImage)
+            jbRes(500, false, 'Product image storage is not available.');
+
+        $image = array('relative' => null, 'absolute' => null);
+        try {
+            if ($hasUploadedImage)
+                $image = jbStoreCatalogImage('item_image', $tenant, 'product');
+            if ($productHasImage) {
+                $stmt = $pdo->prepare("INSERT INTO products(tenant_id,category_id,sku,name,image_path,description,unit_of_measure_id,unit_name,base_unit_price,markup_type,markup_value,selling_price,tax_id,tax_percent,track_inventory,status,created_by,created_at,updated_at,deleted_at) VALUES(:t,NULL,NULL,:n,:img,:d,NULL,'Unit',:cost,'percentage',:markup,:price,:taxid,:tax,0,'active',:u,NOW(),NOW(),NULL)");
+                $stmt->execute(array(':t' => $tenant, ':n' => $name, ':img' => $image['relative'], ':d' => $description !== '' ? $description : null, ':cost' => $unitCost, ':markup' => $markupPercent, ':price' => $unitPrice, ':taxid' => $taxRateId > 0 ? $taxRateId : null, ':tax' => $taxPercent, ':u' => $user));
+            } else {
+                $stmt = $pdo->prepare("INSERT INTO products(tenant_id,category_id,sku,name,description,unit_of_measure_id,unit_name,base_unit_price,markup_type,markup_value,selling_price,tax_id,tax_percent,track_inventory,status,created_by,created_at,updated_at,deleted_at) VALUES(:t,NULL,NULL,:n,:d,NULL,'Unit',:cost,'percentage',:markup,:price,:taxid,:tax,0,'active',:u,NOW(),NOW(),NULL)");
+                $stmt->execute(array(':t' => $tenant, ':n' => $name, ':d' => $description !== '' ? $description : null, ':cost' => $unitCost, ':markup' => $markupPercent, ':price' => $unitPrice, ':taxid' => $taxRateId > 0 ? $taxRateId : null, ':tax' => $taxPercent, ':u' => $user));
+            }
+        } catch (Throwable $e) {
+            if (!empty($image['absolute']) && is_file($image['absolute']))
+                @unlink($image['absolute']);
+            throw $e;
+        }
+
+        $newId = (int) $pdo->lastInsertId();
+        $item = array('id' => $newId, 'name' => $name, 'sku' => '', 'image_path' => $image['relative'], 'description' => $description, 'unit_name' => 'Unit', 'base_unit_price' => $unitCost, 'selling_price' => $unitPrice, 'unit_cost' => $unitCost, 'unit_price' => $unitPrice, 'tax_id' => $taxRateId > 0 ? $taxRateId : null, 'tax_percent' => $taxPercent, 'catalog_key' => 'product:' . $newId, 'source_type' => 'product', 'source_label' => 'Product', 'product_service_id' => null, 'product_id' => $newId);
+        if (function_exists('tenantAuditLog')) {
+            try { tenantAuditLog($pdo, 'PRODUCT_CREATED', $tenant, $sessionBranch, $user, 'product', $newId, null, $item); }
+            catch (Throwable $ae) { error_log('job catalog product audit ' . $ae->getMessage()); }
+        }
+        jbRes(200, true, 'Product created successfully.', array('created' => 1, 'item_kind' => 'product', 'item' => $item));
     }
 
     if ($action === 'quote_details') {
         $id = (int) jbP('quote_id', 0);
-        jbRes(200, true, 'Approved quotation loaded.', array('quotation' => jbQuote($pdo, $tenant, $id, (int) jbP('job_id', 0)), 'currency' => jbCurrency($pdo, $tenant)));
+        jbRes(200, true, 'Approved quotation loaded.', array(
+            'quotation' => jbQuote($pdo, $tenant, $id, (int) jbP('job_id', 0)),
+            'line_items' => jbQuoteLineItems($pdo, $tenant, $id),
+            'currency' => jbCurrency($pdo, $tenant)
+        ));
+    }
+
+    if ($action === 'request_details') {
+        $id = (int) jbP('request_id', 0);
+        jbRes(200, true, 'Service request loaded.', array(
+            'request' => jbRequestContext($pdo, $tenant, $id, (int) jbP('job_id', 0)),
+            'line_items' => jbRequestLineItems($pdo, $tenant, $id),
+            'currency' => jbCurrency($pdo, $tenant)
+        ));
     }
 
     if ($action === 'get') {
@@ -1981,9 +3067,10 @@ try {
             'attachments' => jbJobAttachments($pdo, $tenant, $id),
             'line_items' => jbJobLineItems($pdo, $tenant, $id),
             'internal_note' => jbJobInternalNote($pdo, $tenant, $id),
+            'note_mention_ids' => jbJobNoteMentionIds($pdo, $tenant, $id),
             'custom_fields' => jbJobCustomFields($pdo, $tenant, $id),
             'checklist_template_ids' => jbJobChecklistTemplateIds($pdo, $tenant, $id),
-            'meta' => jbMeta($pdo, $tenant, $id),
+            'meta' => jbMeta($pdo, $tenant, $id, !empty($job['branch_id']) ? (int) $job['branch_id'] : $sessionBranch),
             'currency' => jbCurrency($pdo, $tenant)
         ));
     }
@@ -2105,21 +3192,45 @@ try {
         }
 
         $id = (int) jbP('job_id', 0);
+        $requestedJobNo = trim((string)jbP('job_no', ''));
+        $jobNoAutoPosted = isset($_POST['job_no_auto']) ? (int) jbP('job_no_auto', 0) : null;
+        $jobNoAuto = $id <= 0
+            ? ($jobNoAutoPosted === null ? $requestedJobNo === '' : $jobNoAutoPosted === 1)
+            : false;
+        if (strlen($requestedJobNo) > 80)
+            jbRes(422, false, 'Job number cannot exceed 80 characters.');
+        if ($requestedJobNo !== '' && preg_match('/[\x00-\x1F\x7F]/', $requestedJobNo))
+            jbRes(422, false, 'Job number contains invalid characters.');
+        if (!$jobNoAuto && $requestedJobNo !== '' && jbJobNoExists($pdo, $tenant, $requestedJobNo, $id))
+            jbRes(409, false, 'Job number already exists. Enter a different job number.');
+
         $quoteId = (int) jbP('quote_id', 0);
-        $jobSource = trim((string) jbP('job_source', $quoteId > 0 ? 'quotation' : 'direct'));
-        if (!in_array($jobSource, array('direct', 'quotation'), true))
+        $requestId = (int) jbP('request_id', 0);
+        $jobSource = trim((string) jbP('job_source', $quoteId > 0 ? 'quotation' : ($requestId > 0 ? 'request' : 'direct')));
+        if (!in_array($jobSource, array('direct', 'quotation', 'request'), true))
             jbRes(422, false, 'Invalid job source.');
+
         if ($jobSource === 'quotation') {
             if ($quoteId <= 0)
                 jbRes(422, false, 'Select an approved quotation.');
             $quote = jbQuote($pdo, $tenant, $quoteId, $id);
+            $requestId = !empty($quote['request_id']) ? (int) $quote['request_id'] : 0;
+        } elseif ($jobSource === 'request') {
+            $quoteId = 0;
+            if ($requestId <= 0)
+                jbRes(422, false, 'Select a valid service request.');
+            $quote = jbRequestContext($pdo, $tenant, $requestId, $id);
         } else {
             $quoteId = 0;
-            $quote = jbDirectJobContext($pdo, $tenant, (int) jbP('client_id', 0), (int) jbP('location_id', 0), (int) jbP('direct_product_service_id', 0), (int) jbP('direct_branch_id', 0), (int) jbP('request_id', 0), $sessionBranch);
+            $requestId = 0;
+            $quote = jbDirectJobContext($pdo, $tenant, (int) jbP('client_id', 0), (int) jbP('location_id', 0), (int) jbP('direct_product_service_id', 0), (int) jbP('direct_branch_id', 0), 0, $sessionBranch);
         }
+
         $title = trim((string) jbP('title', ''));
         if ($title === '' && $jobSource === 'quotation')
             $title = trim((string) $quote['title']);
+        if ($title === '' && $jobSource === 'request')
+            $title = trim((string) $quote['request_title']);
         if ($title === '' && $jobSource === 'quotation')
             $title = trim((string) $quote['request_title']);
         if ($title === '')
@@ -2129,6 +3240,7 @@ try {
         $status = trim((string) jbP('status', 'scheduled'));
         $mode = trim((string) jbP('assignment_mode', 'single_user'));
         $completion = trim((string) jbP('assignment_completion_mode', 'primary_only'));
+        $emailTeamAboutAssignment = (string) jbP('email_team_about_assignment', '0') === '1';
 
         if (!in_array($priority, array('low', 'normal', 'high', 'urgent'), true))
             jbRes(422, false, 'Invalid priority.');
@@ -2217,23 +3329,62 @@ try {
             }
         }
 
-        $billingType = trim((string) jbP('billing_type', 'visit_based'));
+        $billingType = trim((string) jbP('billing_type', 'fixed_price'));
         if (!in_array($billingType, array('visit_based', 'fixed_price'), true))
-            jbRes(422, false, 'Invalid billing type.');
-        $automaticPayments = 0;
-        $invoiceFrequency = trim((string) jbP('invoice_frequency', 'monthly_last_day'));
-        if (!in_array($invoiceFrequency, array('monthly_last_day', 'after_each_visit', 'job_completion'), true)) {
-            $invoiceFrequency = 'monthly_last_day';
+            $billingType = 'fixed_price';
+        $automaticPayments = (string) jbP('automatic_payments_enabled', '0') === '1' ? 1 : 0;
+
+        /* Jobber-style Billing preferences. */
+        $remindToInvoiceOnClose = (string)jbP('remind_to_invoice_on_close', '0') === '1' ? 1 : 0;
+        $splitPaymentSchedule = (string)jbP('split_payment_schedule', '0') === '1' ? 1 : 0;
+        $paymentSplitType = strtolower(trim((string)jbP('payment_split_type', 'percentage')));
+        if (!in_array($paymentSplitType, array('percentage','amount'), true))
+            $paymentSplitType = 'percentage';
+
+        $paymentScheduleRaw = trim((string)jbP('payment_schedule_json', ''));
+        $paymentSchedule = json_decode($paymentScheduleRaw, true);
+        if (!is_array($paymentSchedule)) $paymentSchedule = array();
+        if (count($paymentSchedule) > 50)
+            jbRes(422, false, 'A payment schedule can contain a maximum of 50 invoices.');
+
+        $cleanPaymentSchedule = array();
+        $scheduledValue = 0.0;
+        foreach ($paymentSchedule as $idx => $row) {
+            if (!is_array($row)) continue;
+            $description = substr(trim(isset($row['description']) ? (string)$row['description'] : ''), 0, 190);
+            if ($description === '') $description = 'Payment ' . ($idx + 1);
+            $value = max(0, (float)(isset($row['value']) ? $row['value'] : 0));
+            $dueDateRaw = trim(isset($row['due_date']) ? (string)$row['due_date'] : '');
+            $dueDate = null;
+            if ($dueDateRaw !== '') {
+                $validDueDate = jbDate($dueDateRaw);
+                if ($validDueDate === false || $validDueDate === null)
+                    jbRes(422, false, 'Payment ' . ($idx + 1) . ': select a valid due date.');
+                $dueDate = $validDueDate;
+            }
+            $scheduledValue += $value;
+            $cleanPaymentSchedule[] = array('description'=>$description,'value'=>round($value,2),'due_date'=>$dueDate);
         }
-        $invoiceCount = count($occurrences);
-        $firstInvoiceDate = substr($firstOccurrence['start'], 0, 10);
-        $lastInvoiceDate = substr($lastOccurrence['start'], 0, 10);
-        $fixedAmount = (float) jbP('fixed_invoice_amount', 0);
-        if ($billingType === 'fixed_price' && $fixedAmount <= 0 && $invoiceCount > 0)
-            $fixedAmount = round((float) $lineData['total'] / $invoiceCount, 2);
-        if ($billingType === 'fixed_price' && $fixedAmount <= 0)
-            jbRes(422, false, 'Enter a fixed amount for each invoice.');
-        $invoicingPreference = $billingType === 'visit_based' ? 'after_each_visit' : 'recurring_schedule';
+        if ($splitPaymentSchedule && !$cleanPaymentSchedule)
+            $cleanPaymentSchedule = array(array('description'=>'Payment 1','value'=>0,'due_date'=>null),array('description'=>'Payment 2','value'=>0,'due_date'=>null));
+        if ($splitPaymentSchedule && $paymentSplitType === 'percentage' && $scheduledValue > 100.00001)
+            jbRes(422, false, 'Payment schedule percentages cannot exceed 100%.');
+        if ($splitPaymentSchedule && $paymentSplitType === 'amount' && $lineData['total'] > 0 && $scheduledValue > $lineData['total'] + 0.01)
+            jbRes(422, false, 'Payment schedule amount cannot exceed the job total.');
+
+        $invoiceFrequency = $remindToInvoiceOnClose ? 'job_completion' : 'as_needed';
+        $billingScheduleJson = '';
+        $invoiceCount = $splitPaymentSchedule ? count($cleanPaymentSchedule) : ($remindToInvoiceOnClose ? 1 : 0);
+        $dates = array();
+        foreach ($cleanPaymentSchedule as $row) if (!empty($row['due_date'])) $dates[] = $row['due_date'];
+        sort($dates);
+        $firstInvoiceDate = $dates ? $dates[0] : ($remindToInvoiceOnClose ? substr($lastOccurrence['start'],0,10) : null);
+        $lastInvoiceDate = $dates ? $dates[count($dates)-1] : $firstInvoiceDate;
+        $fixedAmount = max(0, (float)jbP('fixed_invoice_amount', $lineData['total']));
+        if ($fixedAmount <= 0 && $lineData['total'] > 0)
+            $fixedAmount = $splitPaymentSchedule && $invoiceCount > 0 ? round((float)$lineData['total']/$invoiceCount,2) : (float)$lineData['total'];
+        $paymentScheduleJson = $splitPaymentSchedule ? json_encode($cleanPaymentSchedule, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null;
+        $invoicingPreference = $remindToInvoiceOnClose ? 'when_job_complete' : 'manual';
 
         $old = $id > 0 ? jbJob($pdo, $tenant, $id) : null;
         $oldAssignments = $id > 0 ? jbAssignments($pdo, $tenant, $id) : array();
@@ -2265,21 +3416,31 @@ try {
             $hasJobDiscount = jbCol($pdo, 'jobs', 'discount_type') && jbCol($pdo, 'jobs', 'discount_value') && jbCol($pdo, 'jobs', 'discount_total');
 
             if ($id > 0) {
-                $sql = "UPDATE jobs SET branch_id=:b,client_id=:c,location_id=:l,request_id=:r,quote_id=:q,product_service_id=:ps,workflow_id=:w,title=:title,description=:d,job_type=:jt,priority=:p,assignment_mode=:am,assignment_completion_mode=:cm,status=:st,start_date=:sd,start_time=:stm,end_date=:ed,end_time=:etm,recurrence_rule=:rr,invoicing_preference=:ip,subtotal=:sub,tax_total=:tax,total=:tot";
+                $jobNo = $requestedJobNo !== '' ? $requestedJobNo : (string)$old['job_no'];
+                $sql = "UPDATE jobs SET job_no=:no,branch_id=:b,client_id=:c,location_id=:l,request_id=:r,quote_id=:q,product_service_id=:ps,workflow_id=:w,title=:title,description=:d,job_type=:jt,priority=:p,assignment_mode=:am,assignment_completion_mode=:cm,status=:st,start_date=:sd,start_time=:stm,end_date=:ed,end_time=:etm,recurrence_rule=:rr,invoicing_preference=:ip,subtotal=:sub,tax_total=:tax,total=:tot";
                 if ($hasJobDiscount)
                     $sql .= ",discount_type=:dtype,discount_value=:dvalue,discount_total=:dtotal";
                 $sql .= " WHERE id=:id AND tenant_id=:t";
                 $stmt = $pdo->prepare($sql);
-                $params = array(':b' => $branch > 0 ? $branch : null, ':c' => $quote['client_id'], ':l' => $quote['location_id'], ':r' => $quote['request_id'], ':q' => $quoteId > 0 ? $quoteId : null, ':ps' => $service > 0 ? $service : null, ':w' => $workflow, ':title' => $title, ':d' => $description !== '' ? $description : null, ':jt' => $jobType, ':p' => $priority, ':am' => $dbMode, ':cm' => $completion, ':st' => $status, ':sd' => $startDate, ':stm' => $startTime, ':ed' => $endDate, ':etm' => $endTime, ':rr' => $recurrenceRule, ':ip' => $invoicingPreference, ':sub' => $lineData['subtotal'], ':tax' => $lineData['tax_total'], ':tot' => $lineData['total'], ':id' => $id, ':t' => $tenant);
+                $params = array(':no' => $jobNo, ':b' => $branch > 0 ? $branch : null, ':c' => $quote['client_id'], ':l' => $quote['location_id'], ':r' => $quote['request_id'], ':q' => $quoteId > 0 ? $quoteId : null, ':ps' => $service > 0 ? $service : null, ':w' => $workflow, ':title' => $title, ':d' => $description !== '' ? $description : null, ':jt' => $jobType, ':p' => $priority, ':am' => $dbMode, ':cm' => $completion, ':st' => $status, ':sd' => $startDate, ':stm' => $startTime, ':ed' => $endDate, ':etm' => $endTime, ':rr' => $recurrenceRule, ':ip' => $invoicingPreference, ':sub' => $lineData['subtotal'], ':tax' => $lineData['tax_total'], ':tot' => $lineData['total'], ':id' => $id, ':t' => $tenant);
                 if ($hasJobDiscount) {
                     $params[':dtype'] = $lineData['discount_type'];
                     $params[':dvalue'] = $lineData['discount_value'];
                     $params[':dtotal'] = $lineData['discount_total'];
                 }
                 $stmt->execute($params);
-                $jobNo = (string) $old['job_no'];
             } else {
-                $jobNo = jbNext($pdo, $tenant, $branch);
+                if (!$jobNoAuto && $requestedJobNo !== '') {
+                    $jobNo = $requestedJobNo;
+                } else {
+                    $attempts = 0;
+                    do {
+                        $jobNo = jbNext($pdo, $tenant, $branch);
+                        $attempts++;
+                    } while (jbJobNoExists($pdo, $tenant, $jobNo, 0) && $attempts < 100);
+                    if (jbJobNoExists($pdo, $tenant, $jobNo, 0))
+                        throw new RuntimeException('Unable to generate a unique job number. Please enter a job number manually.');
+                }
                 $columns = array('tenant_id', 'branch_id', 'job_no', 'client_id', 'location_id', 'request_id', 'quote_id', 'product_service_id', 'workflow_id', 'title', 'description', 'job_type', 'priority', 'assignment_mode', 'assignment_completion_mode', 'status', 'start_date', 'start_time', 'end_date', 'end_time', 'recurrence_rule', 'invoicing_preference', 'subtotal', 'tax_total', 'total');
                 $values = array(':t', ':b', ':no', ':c', ':l', ':r', ':q', ':ps', ':w', ':title', ':d', ':jt', ':p', ':am', ':cm', ':st', ':sd', ':stm', ':ed', ':etm', ':rr', ':ip', ':sub', ':tax', ':tot');
                 if ($hasJobDiscount) {
@@ -2306,20 +3467,40 @@ try {
 
             $createdVisits = jbPersistSchedules($pdo, $tenant, $branch, $id, $jobNo, $schedules, $occurrences, $defaultIds, $user);
 
+            $billingCols = array('tenant_id','job_id','billing_type','automatic_payments_enabled','total_invoices','first_invoice_date','last_invoice_date','fixed_invoice_amount');
+            $billingVals = array(':t',':j',':bt',':ap',':ti',':fd',':ld',':fa');
+            $billingUpdates = array('billing_type=VALUES(billing_type)','automatic_payments_enabled=VALUES(automatic_payments_enabled)','total_invoices=VALUES(total_invoices)','first_invoice_date=VALUES(first_invoice_date)','last_invoice_date=VALUES(last_invoice_date)','fixed_invoice_amount=VALUES(fixed_invoice_amount)');
+            $billingParams = array(':t'=>$tenant,':j'=>$id,':bt'=>$billingType,':ap'=>$automaticPayments,':ti'=>$invoiceCount,':fd'=>$firstInvoiceDate,':ld'=>$lastInvoiceDate,':fa'=>$billingType === 'fixed_price' ? $fixedAmount : null);
             if (jbCol($pdo, 'job_billing_settings', 'invoice_frequency')) {
-                $billing = $pdo->prepare("INSERT INTO job_billing_settings(tenant_id,job_id,billing_type,automatic_payments_enabled,total_invoices,first_invoice_date,last_invoice_date,fixed_invoice_amount,invoice_frequency) VALUES(:t,:j,:bt,:ap,:ti,:fd,:ld,:fa,:ifr) ON DUPLICATE KEY UPDATE billing_type=VALUES(billing_type),automatic_payments_enabled=VALUES(automatic_payments_enabled),total_invoices=VALUES(total_invoices),first_invoice_date=VALUES(first_invoice_date),last_invoice_date=VALUES(last_invoice_date),fixed_invoice_amount=VALUES(fixed_invoice_amount),invoice_frequency=VALUES(invoice_frequency)");
-                $billing->execute(array(':t' => $tenant, ':j' => $id, ':bt' => $billingType, ':ap' => $automaticPayments, ':ti' => $invoiceCount, ':fd' => $firstInvoiceDate, ':ld' => $lastInvoiceDate, ':fa' => $billingType === 'fixed_price' ? $fixedAmount : null, ':ifr' => $invoiceFrequency));
-            } else {
-                $billing = $pdo->prepare("INSERT INTO job_billing_settings(tenant_id,job_id,billing_type,automatic_payments_enabled,total_invoices,first_invoice_date,last_invoice_date,fixed_invoice_amount) VALUES(:t,:j,:bt,:ap,:ti,:fd,:ld,:fa) ON DUPLICATE KEY UPDATE billing_type=VALUES(billing_type),automatic_payments_enabled=VALUES(automatic_payments_enabled),total_invoices=VALUES(total_invoices),first_invoice_date=VALUES(first_invoice_date),last_invoice_date=VALUES(last_invoice_date),fixed_invoice_amount=VALUES(fixed_invoice_amount)");
-                $billing->execute(array(':t' => $tenant, ':j' => $id, ':bt' => $billingType, ':ap' => $automaticPayments, ':ti' => $invoiceCount, ':fd' => $firstInvoiceDate, ':ld' => $lastInvoiceDate, ':fa' => $billingType === 'fixed_price' ? $fixedAmount : null));
+                $billingCols[]='invoice_frequency';$billingVals[]=':ifr';$billingUpdates[]='invoice_frequency=VALUES(invoice_frequency)';$billingParams[':ifr']=$invoiceFrequency;
             }
+            if (jbCol($pdo, 'job_billing_settings', 'billing_schedule_json')) {
+                $billingCols[]='billing_schedule_json';$billingVals[]=':bsj';$billingUpdates[]='billing_schedule_json=VALUES(billing_schedule_json)';$billingParams[':bsj']=null;
+            }
+            if (jbCol($pdo, 'job_billing_settings', 'remind_to_invoice_on_close')) {
+                $billingCols[]='remind_to_invoice_on_close';$billingVals[]=':ric';$billingUpdates[]='remind_to_invoice_on_close=VALUES(remind_to_invoice_on_close)';$billingParams[':ric']=$remindToInvoiceOnClose;
+            }
+            if (jbCol($pdo, 'job_billing_settings', 'split_payment_schedule')) {
+                $billingCols[]='split_payment_schedule';$billingVals[]=':sps';$billingUpdates[]='split_payment_schedule=VALUES(split_payment_schedule)';$billingParams[':sps']=$splitPaymentSchedule;
+            }
+            if (jbCol($pdo, 'job_billing_settings', 'payment_split_type')) {
+                $billingCols[]='payment_split_type';$billingVals[]=':pst';$billingUpdates[]='payment_split_type=VALUES(payment_split_type)';$billingParams[':pst']=$paymentSplitType;
+            }
+            if (jbCol($pdo, 'job_billing_settings', 'payment_schedule_json')) {
+                $billingCols[]='payment_schedule_json';$billingVals[]=':psj';$billingUpdates[]='payment_schedule_json=VALUES(payment_schedule_json)';$billingParams[':psj']=$paymentScheduleJson;
+            }
+            $billing = $pdo->prepare("INSERT INTO job_billing_settings(".implode(',',$billingCols).") VALUES(".implode(',',$billingVals).") ON DUPLICATE KEY UPDATE ".implode(',',$billingUpdates));
+            $billing->execute($billingParams);
 
             jbSaveLineItems($pdo, $tenant, $id, $lineData);
             jbSaveInternalNote($pdo, $tenant, $id, $user, jbP('internal_note', ''));
+            jbSaveJobNoteMentions($pdo, $tenant, $id, jbP('note_mentions_json', '[]'));
             jbSaveJobCustomFields($pdo, $tenant, $id, $customFields);
             $checklistIds = jbSaveJobChecklists($pdo, $tenant, $id, (int) $assignUsers[0]['id'], $user);
             if ($quoteId > 0)
                 $pdo->prepare("UPDATE quotes SET status='converted' WHERE id=:q AND tenant_id=:t AND status='approved'")->execute(array(':q' => $quoteId, ':t' => $tenant));
+            if ($jobSource === 'request' && !$old && !empty($quote['request_id']))
+                jbRecordRequestConversion($pdo, $tenant, $branch, $user, $quote, $id, $jobNo);
             jbInitWorkflow($pdo, $tenant, $id, $workflow, (int) $assignUsers[0]['id']);
             $pdo->commit();
         } catch (Throwable $e) {
@@ -2335,7 +3516,7 @@ try {
             if (!$old || !in_array((int) $assignedUser['id'], $oldIds, true))
                 $newUsers[] = $assignedUser;
 
-        $employeeNotif = $newUsers ? jbNotifyEmployees($pdo, $tenant, $branch, $job, $quote, $newUsers) : array('in_app' => 0, 'employee_email_sent' => 0, 'employee_email_failed' => 0, 'employee_email_skipped' => 0, 'messages' => array());
+        $employeeNotif = $newUsers ? jbNotifyEmployees($pdo, $tenant, $branch, $job, $quote, $newUsers, true, $emailTeamAboutAssignment) : array('in_app' => 0, 'employee_email_sent' => 0, 'employee_email_failed' => 0, 'employee_email_skipped' => 0, 'messages' => array());
         $customerNotif = !$old ? jbNotifyCustomer($pdo, $tenant, $branch, $job, $quote) : array('customer_in_app_sent' => 0, 'customer_in_app_skipped' => 1, 'customer_email_sent' => 0, 'customer_email_failed' => 0, 'customer_email_skipped' => 0, 'messages' => array());
         $notifications = array_merge($employeeNotif, $customerNotif);
         $notifications['email_sent'] = (int) $notifications['employee_email_sent'] + (int) $notifications['customer_email_sent'];
@@ -2343,7 +3524,7 @@ try {
         $notifications['email_skipped'] = (int) $notifications['employee_email_skipped'] + (int) $notifications['customer_email_skipped'];
         $notifications['messages'] = array_merge(isset($employeeNotif['messages']) ? $employeeNotif['messages'] : array(), isset($customerNotif['messages']) ? $customerNotif['messages'] : array(), isset($attachments['messages']) ? $attachments['messages'] : array());
 
-        jbActivity($pdo, $tenant, $branch, $user, $old ? 'job_reassigned' : 'job_created', $id, (int) $quote['client_id'], ($old ? 'Job updated: ' : 'Job created: ') . $job['job_no'], array('job_source' => $jobSource, 'quote_id' => $quoteId > 0 ? $quoteId : null, 'product_service_id' => $service, 'workflow_id' => $workflow, 'job_type' => $jobType, 'schedules' => count($schedules), 'visits' => count($occurrences), 'billing_type' => $billingType, 'custom_fields' => count($customFields), 'assignees' => $allAssigneeIds, 'checklists' => $checklistIds, 'attachments' => $attachments, 'notifications' => $notifications));
+        jbActivity($pdo, $tenant, $branch, $user, $old ? 'job_reassigned' : 'job_created', $id, (int) $quote['client_id'], ($old ? 'Job updated: ' : 'Job created: ') . $job['job_no'], array('job_source' => $jobSource, 'quote_id' => $quoteId > 0 ? $quoteId : null, 'request_id' => !empty($quote['request_id']) ? (int)$quote['request_id'] : null, 'product_service_id' => $service, 'workflow_id' => $workflow, 'job_type' => $jobType, 'schedules' => count($schedules), 'visits' => count($occurrences), 'billing_type' => $billingType, 'invoice_frequency' => $invoiceFrequency, 'remind_to_invoice_on_close' => $remindToInvoiceOnClose, 'split_payment_schedule' => $splitPaymentSchedule, 'payment_split_type' => $paymentSplitType, 'custom_fields' => count($customFields), 'assignees' => $allAssigneeIds, 'checklists' => $checklistIds, 'attachments' => $attachments, 'notifications' => $notifications));
 
         if (function_exists('tenantAuditLog')) {
             try {
@@ -2353,7 +3534,7 @@ try {
             }
         }
 
-        jbRes(200, true, ($old ? 'Job updated' : 'Job created') . ' successfully with ' . count($occurrences) . ' visit schedule(s).', array('job_id' => $id, 'job_no' => $job['job_no'], 'visit_count' => count($occurrences), 'new_visits_created' => $createdVisits, 'billing' => array('type' => $billingType, 'total_invoices' => $invoiceCount, 'first' => $firstInvoiceDate, 'last' => $lastInvoiceDate), 'attachments' => $attachments, 'notifications' => $notifications));
+        jbRes(200, true, ($old ? 'Job updated' : 'Job created') . ' successfully with ' . count($occurrences) . ' visit schedule(s).', array('job_id' => $id, 'job_no' => $job['job_no'], 'visit_count' => count($occurrences), 'new_visits_created' => $createdVisits, 'billing' => array('type' => $billingType, 'total_invoices' => $invoiceCount, 'first' => $firstInvoiceDate, 'last' => $lastInvoiceDate, 'remind_to_invoice_on_close' => $remindToInvoiceOnClose, 'split_payment_schedule' => $splitPaymentSchedule, 'payment_split_type' => $paymentSplitType), 'attachments' => $attachments, 'notifications' => $notifications));
     }
 
     if ($action === 'cancel') {
