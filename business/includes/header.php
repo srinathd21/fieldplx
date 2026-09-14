@@ -29,8 +29,18 @@ $activeMenu = $activeMenu ?? '';
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Lato:wght@300;400;700;900&family=Montserrat:wght@300;400;500;600;700;800;900&family=Nunito:wght@300;400;500;600;700;800;900&family=Open+Sans:wght@300;400;500;600;700;800&family=Poppins:wght@300;400;500;600;700;800;900&family=Raleway:wght@300;400;500;600;700;800;900&family=Roboto:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+
+  <!-- Bootstrap Icons - REQUIRED FOR SIDEBAR -->
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
+  >
+
+  <!-- Keep Lucide only if another page still uses data-lucide icons -->
   <script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+
   <link rel="stylesheet" href="assets/css/theme.css.php?v=<?= time() ?>">
   <link rel="stylesheet" href="assets/css/app.css">
 </head>
