@@ -1,6 +1,6 @@
 <?php
 /**
- * FieldPlx - Schedule Settings
+ * FieldPlx - Schedule Settings v1.1
  * File: business/schedule-settings.php
  * Compatible with PHP 7.2+ / MariaDB 11.x
  */
@@ -41,6 +41,19 @@ function ss_table_exists(PDO $pdo, $table)
           AND TABLE_NAME = :table_name
     ");
     $q->execute(array(':table_name' => $table));
+    return ((int)$q->fetchColumn() > 0);
+}
+
+function ss_column_exists(PDO $pdo, $table, $column)
+{
+    $q = $pdo->prepare("
+        SELECT COUNT(*)
+        FROM information_schema.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = :table_name
+          AND COLUMN_NAME = :column_name
+    ");
+    $q->execute(array(':table_name' => $table, ':column_name' => $column));
     return ((int)$q->fetchColumn() > 0);
 }
 
@@ -91,6 +104,7 @@ if ($tenantId > 0 && ss_table_exists($pdo, 'users')) {
 }
 
 $colorAssignments = array();
+$calendarColorHasSortOrder = ss_table_exists($pdo, 'calendar_color_assignments') && ss_column_exists($pdo, 'calendar_color_assignments', 'sort_order');
 $calendarSync = array(
     'sync_tasks' => 1,
     'sync_reminders' => 1,
@@ -116,6 +130,8 @@ if ($schemaReady && $tenantId > 0 && $userId > 0 && ss_table_exists($pdo, 'calen
 }
 
 if ($schemaReady && $tenantId > 0) {
+    $sortSelect = $calendarColorHasSortOrder ? 'cca.sort_order' : 'cca.id';
+    $sortOrder = $calendarColorHasSortOrder ? 'cca.sort_order ASC, cca.id ASC' : 'cca.id ASC';
     $q = $pdo->prepare("
         SELECT
             cca.id,
@@ -123,6 +139,7 @@ if ($schemaReady && $tenantId > 0) {
             cca.rule_type,
             cca.rule_value,
             cca.color_hex,
+            " . $sortSelect . " AS sort_order,
             u.first_name,
             u.last_name,
             u.email
@@ -131,7 +148,7 @@ if ($schemaReady && $tenantId > 0) {
             ON u.id = cca.user_id
            AND u.tenant_id = cca.tenant_id
         WHERE cca.tenant_id = :tenant_id
-        ORDER BY cca.id ASC
+        ORDER BY " . $sortOrder . "
     ");
     $q->execute(array(':tenant_id' => $tenantId));
     $colorAssignments = $q->fetchAll(PDO::FETCH_ASSOC);
@@ -155,6 +172,107 @@ if (file_exists(__DIR__ . '/includes/toast.php')) {
 }
 .schedule-settings-main{min-width:0}
 .schedule-page-title{margin:0 0 16px}
+.schedule-page-title-row{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:14px;
+    position:relative;
+}
+.schedule-mobile-settings-btn{
+    display:none;
+    min-height:42px;
+    padding:0 14px;
+    border:1px solid var(--ss-border,#d8e0e6);
+    border-radius:9px;
+    background:var(--ss-surface,#fff);
+    color:var(--ss-text,#173644);
+    font:inherit;
+    font-size:12px;
+    font-weight:700;
+    align-items:center;
+    gap:7px;
+    cursor:pointer;
+}
+.schedule-mobile-settings-btn svg{width:16px;height:16px;transition:transform .16s ease}
+.schedule-mobile-settings-btn.open svg{transform:rotate(180deg)}
+.schedule-mobile-settings-backdrop{
+    position:fixed;
+    inset:0;
+    z-index:11990;
+    display:none;
+    background:rgba(9,25,34,.38);
+}
+.schedule-mobile-settings-backdrop.open{display:block}
+body.schedule-settings-menu-open{overflow:hidden}
+.schedule-mobile-settings-popover{
+    position:absolute;
+    top:calc(100% + 12px);
+    right:0;
+    z-index:12010;
+    display:none;
+    width:min(330px,calc(100vw - 32px));
+    max-height:min(72vh,560px);
+    overflow-y:auto;
+    overflow-x:hidden;
+    padding:18px 13px 16px;
+    border:1px solid var(--ss-border,#dfe5eb);
+    border-radius:4px;
+    background:var(--ss-surface,#fff);
+    box-shadow:0 12px 30px rgba(0,17,49,.22);
+    scrollbar-width:thin;
+    scrollbar-color:#b7c2cc transparent;
+}
+.schedule-mobile-settings-popover.open{display:block}
+.schedule-mobile-settings-popover:before{
+    content:"";
+    position:absolute;
+    top:-8px;
+    right:17px;
+    width:14px;
+    height:14px;
+    border-left:1px solid var(--ss-border,#dfe5eb);
+    border-top:1px solid var(--ss-border,#dfe5eb);
+    background:var(--ss-surface,#fff);
+    transform:rotate(45deg);
+}
+.schedule-mobile-settings-popover::-webkit-scrollbar{width:3px}
+.schedule-mobile-settings-popover::-webkit-scrollbar-track{background:transparent}
+.schedule-mobile-settings-popover::-webkit-scrollbar-thumb{background:#b7c2cc;border-radius:999px}
+.schedule-mobile-settings-popover .fieldplx-settings-nav{
+    display:block!important;
+    position:static!important;
+    width:100%!important;
+    height:auto!important;
+    max-height:none!important;
+    min-height:0!important;
+    overflow:visible!important;
+    padding:0!important;
+}
+.schedule-mobile-settings-popover .fieldplx-settings-nav>h2{display:none!important}
+.schedule-mobile-settings-popover .fieldplx-settings-nav-group{margin:0 0 20px!important}
+.schedule-mobile-settings-popover .fieldplx-settings-nav-group:last-child{margin-bottom:0!important}
+.schedule-mobile-settings-popover .fieldplx-settings-nav-label{
+    margin:0 0 8px!important;
+    color:var(--ss-text,#0b1933)!important;
+    font-size:10px!important;
+    font-weight:800!important;
+    line-height:1.05!important;
+    text-transform:uppercase!important;
+}
+.schedule-mobile-settings-popover .fieldplx-settings-nav a{
+    display:block!important;
+    padding:6px 0!important;
+    color:var(--ss-muted,#405b6b)!important;
+    font-size:12px!important;
+    line-height:1.25!important;
+    text-decoration:none!important;
+}
+.schedule-mobile-settings-popover .fieldplx-settings-nav a:hover,
+.schedule-mobile-settings-popover .fieldplx-settings-nav a.active{
+    color:var(--ss-primary,#318d27)!important;
+    font-weight:700!important;
+}
 .schedule-page-title h1{
     margin:0;
     color:var(--fieldplx-text,#0b1933);
@@ -235,16 +353,18 @@ if (file_exists(__DIR__ . '/includes/toast.php')) {
     pointer-events:none;
 }
 .schedule-choice-preview{
-    height:104px;
-    padding:8px;
-    border:1px solid #dce4ea;
+    display:block;
+    width:100%;
+    border:1px solid var(--ss-border,#dce4ea);
     border-radius:8px;
-    background:#fff;
-    transition:border-color .16s ease,box-shadow .16s ease;
+    background:var(--ss-surface,#fff);
+    object-fit:contain;
+    object-position:center;
+    transition:border-color .16s ease,box-shadow .16s ease,background-color .16s ease,filter .16s ease;
 }
 .schedule-choice input:checked + .schedule-choice-preview{
-    border-color:#74b824;
-    box-shadow:0 0 0 2px rgba(116,184,36,.10);
+    border-color:var(--ss-primary,#74b824);
+    box-shadow:0 0 0 2px color-mix(in srgb,var(--ss-primary,#74b824) 16%,transparent);
 }
 .schedule-choice-label{
     display:flex;
@@ -647,6 +767,20 @@ if (file_exists(__DIR__ . '/includes/toast.php')) {
 @media(max-width:980px){
     .schedule-settings-layout{grid-template-columns:1fr;padding:0 14px 30px}
     .schedule-settings-layout>.fieldplx-settings-nav{display:none}
+    .schedule-mobile-settings-btn{display:inline-flex}
+    .schedule-page-title{margin-bottom:14px}
+}
+@media(max-width:520px){
+    .schedule-settings-layout{padding-left:12px;padding-right:12px}
+    .schedule-mobile-settings-popover{
+        position:fixed;
+        top:184px;
+        left:16px;
+        right:16px;
+        width:auto;
+        max-height:calc(100vh - 205px);
+    }
+    .schedule-mobile-settings-popover:before{right:18px}
 }
 @media(max-width:760px){
     .schedule-setting-row{grid-template-columns:1fr}
@@ -659,6 +793,187 @@ if (file_exists(__DIR__ . '/includes/toast.php')) {
     .color-palette{grid-template-columns:repeat(8,1fr)}
     .availability-row{grid-template-columns:1fr}
 }
+
+
+/* ==========================================================
+   Schedule Settings theme integration + image previews
+   Keeps this page aligned with the shared FieldPlx light/dark theme.
+   ========================================================== */
+:root{
+    --ss-primary:var(--primary,#318d27);
+    --ss-primary-strong:var(--primary-dark,#26751f);
+    --ss-surface:var(--card-bg,var(--fieldplx-surface,#ffffff));
+    --ss-surface-soft:var(--table-header-bg,#f6f8fa);
+    --ss-input:var(--input-bg,var(--card-bg,#ffffff));
+    --ss-text:var(--text,var(--fieldplx-text,#0b2e40));
+    --ss-muted:var(--muted,var(--fieldplx-muted,#607481));
+    --ss-border:var(--card-border,var(--fieldplx-border,#dfe5eb));
+    --ss-border-soft:var(--table-border,#edf1f4);
+    --ss-hover:var(--table-hover-bg,#f4f7f8);
+    --ss-overlay:rgba(0,17,49,.38);
+    --ss-warning-bg:#fff8e7;
+    --ss-warning-border:#efd393;
+    --ss-warning-text:#7b5b08;
+}
+
+html.app-dark-mode,
+html[data-theme="dark"],
+body.app-dark-mode,
+body.dark-mode,
+body[data-theme="dark"]{
+    --ss-surface:#131f26;
+    --ss-surface-soft:#17262e;
+    --ss-input:#101b21;
+    --ss-text:#e8f1f5;
+    --ss-muted:#9aadb7;
+    --ss-border:#30424c;
+    --ss-border-soft:#25363f;
+    --ss-hover:#1b2c34;
+    --ss-overlay:rgba(0,0,0,.64);
+    --ss-warning-bg:#332a13;
+    --ss-warning-border:#66521d;
+    --ss-warning-text:#f2d27a;
+}
+
+.schedule-page-title h1,
+.schedule-card h2,
+.schedule-setting-copy strong,
+.schedule-toggle-copy strong,
+.availability-row strong,
+.color-empty strong,
+.color-user strong,
+.schedule-modal-head h3{
+    color:var(--ss-text)!important;
+}
+.schedule-page-title p,
+.schedule-card-intro,
+.schedule-setting-copy p,
+.schedule-toggle-copy p,
+.availability-row p,
+.color-empty p,
+.color-user small,
+.day-sheet-option small{
+    color:var(--ss-muted)!important;
+}
+.schedule-card,
+.schedule-modal{
+    background:var(--ss-surface)!important;
+    border-color:var(--ss-border)!important;
+    color:var(--ss-text)!important;
+}
+.schedule-setting-row,
+.schedule-toggle-row,
+.availability-row,
+.color-list-row{
+    border-color:var(--ss-border-soft)!important;
+}
+.schedule-schema-warning{
+    background:var(--ss-warning-bg)!important;
+    border-color:var(--ss-warning-border)!important;
+    color:var(--ss-warning-text)!important;
+}
+.schedule-choice-label,
+.day-sheet-option,
+.sync-checks label{
+    color:var(--ss-text)!important;
+}
+.schedule-radio-dot{
+    background:var(--ss-input)!important;
+    border-color:var(--ss-border)!important;
+}
+.schedule-choice input:checked ~ .schedule-choice-label .schedule-radio-dot{
+    border-color:var(--ss-primary)!important;
+}
+.schedule-choice input:checked ~ .schedule-choice-label .schedule-radio-dot:after{
+    background:var(--ss-primary)!important;
+}
+.schedule-toggle-track{background:color-mix(in srgb,var(--ss-muted) 32%,var(--ss-surface))!important}
+.schedule-toggle-track:after{background:var(--ss-surface)!important}
+.schedule-toggle input:checked + .schedule-toggle-track{background:var(--ss-primary)!important}
+.schedule-btn{
+    background:var(--ss-surface)!important;
+    border-color:var(--ss-border)!important;
+    color:var(--ss-text)!important;
+}
+.schedule-btn:hover{
+    border-color:var(--ss-primary)!important;
+    color:var(--ss-primary)!important;
+    background:var(--ss-hover)!important;
+}
+.schedule-btn.primary{
+    background:var(--ss-primary)!important;
+    border-color:var(--ss-primary)!important;
+    color:#fff!important;
+}
+.color-empty-icon{
+    background:var(--ss-surface-soft)!important;
+    color:var(--ss-text)!important;
+}
+.color-dot{border-color:var(--ss-border)!important}
+.schedule-textarea,
+.schedule-select{
+    background:var(--ss-input)!important;
+    border-color:var(--ss-border)!important;
+    color:var(--ss-text)!important;
+}
+.schedule-textarea::placeholder,
+.schedule-select::placeholder{color:var(--ss-muted)!important}
+.schedule-textarea:focus,
+.schedule-select:focus{
+    border-color:var(--ss-primary)!important;
+    box-shadow:0 0 0 2px color-mix(in srgb,var(--ss-primary) 18%,transparent)!important;
+}
+.schedule-select option{
+    background:var(--ss-surface)!important;
+    color:var(--ss-text)!important;
+}
+.schedule-modal-bg{background:var(--ss-overlay)!important;backdrop-filter:blur(2px)}
+.schedule-modal-x{color:var(--ss-text)!important}
+.schedule-modal-x:hover{background:var(--ss-hover)!important}
+.color-palette button{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ss-text) 16%,transparent)!important}
+.color-palette button.selected{border-color:var(--ss-surface)!important;outline-color:var(--ss-text)!important}
+#colorModal .schedule-modal-body > div:first-child,
+#calendarSyncModal .schedule-modal-body > p,
+#calendarSyncModal .schedule-modal-body > strong{
+    color:var(--ss-muted)!important;
+}
+#calendarSyncModal .schedule-modal-body > strong{color:var(--ss-text)!important}
+
+html.app-dark-mode .schedule-choice-preview,
+html[data-theme="dark"] .schedule-choice-preview,
+body.app-dark-mode .schedule-choice-preview,
+body.dark-mode .schedule-choice-preview,
+body[data-theme="dark"] .schedule-choice-preview{
+    background:#eef3f5!important;
+    filter:brightness(.86) saturate(.82);
+}
+
+html.app-dark-mode .schedule-choice input:checked + .schedule-choice-preview,
+html[data-theme="dark"] .schedule-choice input:checked + .schedule-choice-preview,
+body.app-dark-mode .schedule-choice input:checked + .schedule-choice-preview,
+body.dark-mode .schedule-choice input:checked + .schedule-choice-preview,
+body[data-theme="dark"] .schedule-choice input:checked + .schedule-choice-preview{
+    filter:brightness(.94) saturate(.95);
+}
+
+
+/* Jobber-style Calendar colors */
+.calendar-color-card .schedule-card-body{padding:16px}
+.calendar-color-head{margin-bottom:12px}
+.color-rule-list{display:grid;gap:8px}
+.color-rule-row{min-height:46px;display:flex;align-items:center;gap:10px;padding:0 12px 0 8px;border:1px solid var(--ss-border,#dfe5eb);border-radius:8px;background:var(--ss-surface,#fff);color:var(--ss-text,#0b2e40);cursor:pointer;user-select:none;transition:border-color .14s ease,background-color .14s ease,box-shadow .14s ease,transform .14s ease}
+.color-rule-row:hover{border-color:color-mix(in srgb,var(--ss-primary,#318d27) 55%,var(--ss-border,#dfe5eb));background:var(--ss-hover,#f4f7f8)}
+.color-rule-row:focus-visible{outline:2px solid color-mix(in srgb,var(--ss-primary,#318d27) 32%,transparent);outline-offset:2px}
+.color-rule-row.dragging{opacity:.55;transform:scale(.995);box-shadow:0 8px 24px rgba(0,0,0,.12)}
+.color-rule-row.drag-over{border-color:var(--ss-primary,#318d27);box-shadow:0 0 0 2px color-mix(in srgb,var(--ss-primary,#318d27) 14%,transparent)}
+.color-drag-handle{width:22px;height:34px;flex:0 0 22px;display:grid;place-items:center;color:var(--ss-muted,#607481);cursor:grab;touch-action:none}
+.color-drag-handle:active{cursor:grabbing}.color-drag-handle svg{width:15px;height:15px}
+.color-rule-swatch{width:10px;height:10px;flex:0 0 10px;border-radius:2px;border:1px solid rgba(0,0,0,.10)}
+.color-rule-text{min-width:0;flex:1;font-size:11px;line-height:1.3;color:var(--ss-text,#0b2e40)}
+.color-rule-prefix{color:var(--ss-muted,#607481)}.color-rule-value{color:var(--ss-primary,#318d27);font-weight:500}
+.color-sort-note{margin:8px 1px 0;color:var(--ss-muted,#607481);font-size:9px}
+.color-modal-delete{margin-right:auto!important;border-color:rgba(214,69,69,.35)!important;color:#d64545!important}.color-modal-delete:hover{background:rgba(214,69,69,.07)!important;border-color:#d64545!important;color:#d64545!important}
+@media(max-width:520px){.color-sort-note{display:none}}
 </style>
 
 <div class="schedule-settings-layout">
@@ -666,8 +981,16 @@ if (file_exists(__DIR__ . '/includes/toast.php')) {
 
     <main class="schedule-settings-main">
         <div class="schedule-page-title">
-            <h1>Schedule</h1>
+            <div class="schedule-page-title-row">
+                <h1>Schedule</h1>
+                <button type="button" class="schedule-mobile-settings-btn" id="mobileSettingsBtn" aria-expanded="false" aria-controls="mobileSettingsPopover">
+                    <span>Settings</span>
+                    <i data-lucide="chevron-down"></i>
+                </button>
+                <div class="schedule-mobile-settings-popover" id="mobileSettingsPopover" aria-hidden="true"></div>
+            </div>
         </div>
+        <div class="schedule-mobile-settings-backdrop" id="mobileSettingsBackdrop" aria-hidden="true"></div>
 
         <?php if (!$schemaReady): ?>
             <div class="schedule-schema-warning">
@@ -694,12 +1017,12 @@ if (file_exists(__DIR__ . '/includes/toast.php')) {
                         <div class="schedule-choice-grid">
                             <label class="schedule-choice">
                                 <input type="radio" name="appointment_layout" value="nested" <?= $settings['appointment_layout'] === 'nested' ? 'checked' : '' ?>>
-                                <div class="schedule-choice-preview"><div class="mock-calendar"><span></span><span></span><span></span><span></span><span></span><span></span></div></div>
+                                <img class="schedule-choice-preview" src="assets/settings-schedule/nested.png" alt="Nested appointment layout preview">
                                 <div class="schedule-choice-label"><span class="schedule-radio-dot"></span>Nested</div>
                             </label>
                             <label class="schedule-choice">
                                 <input type="radio" name="appointment_layout" value="stacked" <?= $settings['appointment_layout'] === 'stacked' ? 'checked' : '' ?>>
-                                <div class="schedule-choice-preview"><div class="mock-stacked"><span></span><span></span><span></span></div></div>
+                                <img class="schedule-choice-preview" src="assets/settings-schedule/stacked.png" alt="Stacked appointment layout preview">
                                 <div class="schedule-choice-label"><span class="schedule-radio-dot"></span>Stacked</div>
                             </label>
                         </div>
@@ -713,12 +1036,12 @@ if (file_exists(__DIR__ . '/includes/toast.php')) {
                         <div class="schedule-choice-grid">
                             <label class="schedule-choice">
                                 <input type="radio" name="completed_appointment_style" value="grayed_out" <?= $settings['completed_appointment_style'] === 'grayed_out' ? 'checked' : '' ?>>
-                                <div class="schedule-choice-preview"><div class="mock-stacked" style="opacity:.62"><span></span><span></span><span></span></div></div>
+                                <img class="schedule-choice-preview" src="assets/settings-schedule/Grayed out.png" alt="Grayed out completed appointment preview">
                                 <div class="schedule-choice-label"><span class="schedule-radio-dot"></span>Grayed out</div>
                             </label>
                             <label class="schedule-choice">
                                 <input type="radio" name="completed_appointment_style" value="strikethrough" <?= $settings['completed_appointment_style'] === 'strikethrough' ? 'checked' : '' ?>>
-                                <div class="schedule-choice-preview"><div class="mock-strike"><i></i></div></div>
+                                <img class="schedule-choice-preview" src="assets/settings-schedule/Strikethrough.png" alt="Strikethrough completed appointment preview">
                                 <div class="schedule-choice-label"><span class="schedule-radio-dot"></span>Strikethrough</div>
                             </label>
                         </div>
@@ -732,12 +1055,12 @@ if (file_exists(__DIR__ . '/includes/toast.php')) {
                         <div class="schedule-choice-grid">
                             <label class="schedule-choice">
                                 <input type="radio" name="day_view_orientation" value="vertical" <?= $settings['day_view_orientation'] === 'vertical' ? 'checked' : '' ?>>
-                                <div class="schedule-choice-preview"><div class="mock-calendar"><span></span><span></span><span></span><span></span><span></span><span></span></div></div>
+                                <img class="schedule-choice-preview" src="assets/settings-schedule/vertical.png" alt="Vertical day view preview">
                                 <div class="schedule-choice-label"><span class="schedule-radio-dot"></span>Vertical</div>
                             </label>
                             <label class="schedule-choice">
                                 <input type="radio" name="day_view_orientation" value="horizontal" <?= $settings['day_view_orientation'] === 'horizontal' ? 'checked' : '' ?>>
-                                <div class="schedule-choice-preview"><div class="mock-stacked"><span></span><span></span><span></span></div></div>
+                                <img class="schedule-choice-preview" src="assets/settings-schedule/Horizontal.png" alt="Horizontal day view preview">
                                 <div class="schedule-choice-label"><span class="schedule-radio-dot"></span>Horizontal</div>
                             </label>
                         </div>
@@ -789,56 +1112,34 @@ if (file_exists(__DIR__ . '/includes/toast.php')) {
                 </div>
             </section>
 
-            <section class="schedule-card">
+            <section class="schedule-card calendar-color-card">
                 <div class="schedule-card-body">
                     <div class="calendar-color-head">
                         <h2>Calendar colors</h2>
                         <button type="button" class="schedule-btn primary" id="assignColorBtn">Assign a Color</button>
                     </div>
-
                     <?php if (empty($colorAssignments)): ?>
                         <div class="color-empty" id="colorEmpty">
                             <div class="color-empty-icon"><i data-lucide="calendar-days"></i></div>
-                            <div>
-                                <strong>No colors are assigned</strong>
-                                <p>Quickly identify team members by color on the schedule.</p>
-                                <button type="button" class="schedule-btn" id="assignColorBtnEmpty">Assign a Color</button>
-                            </div>
+                            <div><strong>No colors are assigned</strong><p>Quickly identify team members by color on the schedule.</p><button type="button" class="schedule-btn" id="assignColorBtnEmpty">Assign a Color</button></div>
                         </div>
                     <?php else: ?>
-                        <div class="color-list" id="colorList">
+                        <div class="color-rule-list" id="colorList">
                             <?php foreach ($colorAssignments as $assignment): ?>
                                 <?php
                                 $ruleType = isset($assignment['rule_type']) ? (string)$assignment['rule_type'] : 'assigned_to';
                                 $ruleValue = isset($assignment['rule_value']) ? (string)$assignment['rule_value'] : '';
-                                if ($ruleType === 'title_contains') {
-                                    $name = 'Item title contains';
-                                    $subText = $ruleValue !== '' ? $ruleValue : 'No text';
-                                } else {
-                                    $name = trim((string)$assignment['first_name'] . ' ' . (string)$assignment['last_name']);
-                                    if ($name === '') $name = (string)$assignment['email'];
-                                    $subText = 'When assigned to';
-                                }
+                                if ($ruleType === 'title_contains') { $prefix = 'Item title contains'; $name = $ruleValue !== '' ? $ruleValue : 'No text'; }
+                                else { $prefix = 'Assigned to'; $name = trim((string)$assignment['first_name'] . ' ' . (string)$assignment['last_name']); if ($name === '') $name = (string)$assignment['email']; }
                                 ?>
-                                <div class="color-list-row">
-                                    <div class="color-user">
-                                        <span class="color-dot" style="background:<?= ss_h($assignment['color_hex']) ?>"></span>
-                                        <div>
-                                            <strong><?= ss_h($name) ?></strong>
-                                            <small><?= ss_h($subText) ?></small>
-                                        </div>
-                                    </div>
-                                    <button
-                                        type="button"
-                                        class="schedule-btn edit-color-btn"
-                                        data-user-id="<?= (int)$assignment['user_id'] ?>"
-                                        data-rule-type="<?= ss_h($ruleType) ?>"
-                                        data-rule-value="<?= ss_h($ruleValue) ?>"
-                                        data-color="<?= ss_h($assignment['color_hex']) ?>"
-                                    >Edit</button>
+                                <div class="color-rule-row" draggable="true" tabindex="0" role="button" aria-label="Edit <?= ss_h($prefix . ' ' . $name) ?>" data-assignment-id="<?= (int)$assignment['id'] ?>" data-user-id="<?= (int)$assignment['user_id'] ?>" data-rule-type="<?= ss_h($ruleType) ?>" data-rule-value="<?= ss_h($ruleValue) ?>" data-color="<?= ss_h($assignment['color_hex']) ?>">
+                                    <span class="color-drag-handle" aria-hidden="true"><i data-lucide="grip-vertical"></i></span>
+                                    <span class="color-rule-swatch" style="background:<?= ss_h($assignment['color_hex']) ?>"></span>
+                                    <span class="color-rule-text"><span class="color-rule-prefix"><?= ss_h($prefix) ?></span> <span class="color-rule-value"><?= ss_h($name) ?></span></span>
                                 </div>
                             <?php endforeach; ?>
                         </div>
+                        <div class="color-sort-note">Drag color rules to change priority. Click a rule to edit it.</div>
                     <?php endif; ?>
                 </div>
             </section>
@@ -903,6 +1204,7 @@ if (file_exists(__DIR__ . '/includes/toast.php')) {
             <div class="schedule-modal-body">
                 <input type="hidden" name="csrf_token" value="<?= ss_h($csrfToken) ?>">
                 <input type="hidden" name="action" value="save_color">
+                <input type="hidden" name="assignment_id" id="colorAssignmentId" value="0">
                 <input type="hidden" name="color_hex" id="selectedColor" value="#0B1933">
 
                 <div style="font-size:11px;color:#45606f">Choose a color</div>
@@ -935,6 +1237,7 @@ if (file_exists(__DIR__ . '/includes/toast.php')) {
             </div>
 
             <div class="schedule-modal-foot">
+                <button type="button" class="schedule-btn color-modal-delete" id="deleteColorBtn" style="display:none">Delete</button>
                 <button type="button" class="schedule-btn" data-close-color>Cancel</button>
                 <button type="submit" class="schedule-btn primary" <?= $schemaReady ? '' : 'disabled' ?>>Save</button>
             </div>
@@ -1000,13 +1303,50 @@ if (file_exists(__DIR__ . '/includes/toast.php')) {
 (function(window, document){
     'use strict';
 
+    var mobileSettingsBtn = document.getElementById('mobileSettingsBtn');
+    var mobileSettingsPopover = document.getElementById('mobileSettingsPopover');
+    var mobileSettingsBackdrop = document.getElementById('mobileSettingsBackdrop');
+    var desktopSettingsNav = document.querySelector('.schedule-settings-layout > .fieldplx-settings-nav');
+
+    function buildMobileSettingsNav(){
+        if(!mobileSettingsPopover || !desktopSettingsNav || mobileSettingsPopover.children.length) return;
+        var clone = desktopSettingsNav.cloneNode(true);
+        clone.removeAttribute('aria-label');
+        clone.setAttribute('aria-label','Mobile settings navigation');
+        mobileSettingsPopover.appendChild(clone);
+    }
+    function setMobileSettings(open){
+        if(!mobileSettingsBtn || !mobileSettingsPopover || !mobileSettingsBackdrop) return;
+        if(open) buildMobileSettingsNav();
+        mobileSettingsBtn.classList.toggle('open',!!open);
+        mobileSettingsPopover.classList.toggle('open',!!open);
+        mobileSettingsBackdrop.classList.toggle('open',!!open);
+        mobileSettingsBtn.setAttribute('aria-expanded',open?'true':'false');
+        mobileSettingsPopover.setAttribute('aria-hidden',open?'false':'true');
+        mobileSettingsBackdrop.setAttribute('aria-hidden',open?'false':'true');
+        document.body.classList.toggle('schedule-settings-menu-open',!!open);
+    }
+    if(mobileSettingsBtn){
+        mobileSettingsBtn.addEventListener('click',function(e){
+            e.stopPropagation();
+            setMobileSettings(!mobileSettingsPopover.classList.contains('open'));
+        });
+    }
+    if(mobileSettingsBackdrop){mobileSettingsBackdrop.addEventListener('click',function(){setMobileSettings(false);});}
+    if(mobileSettingsPopover){mobileSettingsPopover.addEventListener('click',function(e){if(e.target.closest('a')) setMobileSettings(false);});}
+    window.addEventListener('resize',function(){if(window.innerWidth>980) setMobileSettings(false);});
+
     var apiUrl = 'api/schedule-settings.php';
+    var colorApiUrl = 'api/schedule-color-settings.php';
     var colorModal = document.getElementById('colorModal');
     var colorForm = document.getElementById('colorForm');
     var selectedColor = document.getElementById('selectedColor');
     var colorUserId = document.getElementById('colorUserId');
     var colorRuleType = document.getElementById('colorRuleType');
     var colorRuleValue = document.getElementById('colorRuleValue');
+    var colorAssignmentId = document.getElementById('colorAssignmentId');
+    var colorModalTitle = document.getElementById('colorModalTitle');
+    var deleteColorBtn = document.getElementById('deleteColorBtn');
     var assignedToWrap = document.getElementById('assignedToWrap');
     var titleContainsWrap = document.getElementById('titleContainsWrap');
 
@@ -1051,6 +1391,16 @@ if (file_exists(__DIR__ . '/includes/toast.php')) {
         });
     }
 
+    function colorRequest(formData){
+        return fetch(colorApiUrl,{method:'POST',body:formData,credentials:'same-origin',headers:{'X-Requested-With':'XMLHttpRequest','Accept':'application/json'}}).then(function(response){
+            return response.text().then(function(raw){
+                var data; try{data=JSON.parse(raw);}catch(e){throw new Error('Invalid calendar color server response.');}
+                if(!response.ok||!data.success)throw new Error(data.message||'Unable to update calendar colors.');
+                return data;
+            });
+        });
+    }
+
     function renderPalette(){
         var wrap = document.getElementById('colorPalette');
         wrap.innerHTML = '';
@@ -1081,38 +1431,34 @@ if (file_exists(__DIR__ . '/includes/toast.php')) {
         colorRuleValue.required = isTitle;
     }
 
-    function openColorModal(userId, color, ruleType, ruleValue){
-        colorRuleType.value = ruleType || 'assigned_to';
-        colorUserId.value = userId ? String(userId) : '';
-        colorRuleValue.value = ruleValue || '';
-        selectedColor.value = color || '#0B1933';
-        syncColorRuleInputs();
-        renderPalette();
-        colorModal.classList.add('open');
-        colorModal.setAttribute('aria-hidden', 'false');
+    function openColorModal(assignmentId,userId,color,ruleType,ruleValue){
+        var isEdit=Number(assignmentId||0)>0;
+        colorAssignmentId.value=isEdit?String(assignmentId):'0';
+        colorRuleType.value=ruleType||'assigned_to';
+        colorUserId.value=userId?String(userId):'';
+        colorRuleValue.value=ruleValue||'';
+        selectedColor.value=color||'#0B1933';
+        colorModalTitle.textContent=isEdit?'Edit Color':'Assign a color';
+        deleteColorBtn.style.display=isEdit?'inline-flex':'none';
+        syncColorRuleInputs(); renderPalette();
+        colorModal.classList.add('open'); colorModal.setAttribute('aria-hidden','false');
     }
+    function closeColorModal(){colorModal.classList.remove('open');colorModal.setAttribute('aria-hidden','true');colorAssignmentId.value='0';}
+    var assignBtn=document.getElementById('assignColorBtn');
+    if(assignBtn)assignBtn.addEventListener('click',function(){openColorModal(0,'','#0B1933','assigned_to','');});
+    var emptyAssignBtn=document.getElementById('assignColorBtnEmpty');
+    if(emptyAssignBtn)emptyAssignBtn.addEventListener('click',function(){openColorModal(0,'','#0B1933','assigned_to','');});
 
-    function closeColorModal(){
-        colorModal.classList.remove('open');
-        colorModal.setAttribute('aria-hidden', 'true');
+    var colorList=document.getElementById('colorList');
+    if(colorList){
+        colorList.addEventListener('click',function(e){if(e.target.closest('.color-drag-handle'))return;var row=e.target.closest('.color-rule-row');if(!row)return;openColorModal(row.dataset.assignmentId,row.dataset.userId,row.dataset.color,row.dataset.ruleType,row.dataset.ruleValue);});
+        colorList.addEventListener('keydown',function(e){var row=e.target.closest('.color-rule-row');if(!row||(e.key!=='Enter'&&e.key!==' '))return;e.preventDefault();openColorModal(row.dataset.assignmentId,row.dataset.userId,row.dataset.color,row.dataset.ruleType,row.dataset.ruleValue);});
+        var draggedRow=null;
+        colorList.addEventListener('dragstart',function(e){var row=e.target.closest('.color-rule-row');if(!row)return;draggedRow=row;row.classList.add('dragging');if(e.dataTransfer){e.dataTransfer.effectAllowed='move';e.dataTransfer.setData('text/plain',row.dataset.assignmentId||'');}});
+        colorList.addEventListener('dragover',function(e){if(!draggedRow)return;e.preventDefault();var target=e.target.closest('.color-rule-row');colorList.querySelectorAll('.color-rule-row').forEach(function(r){r.classList.remove('drag-over');});if(!target||target===draggedRow)return;target.classList.add('drag-over');var rect=target.getBoundingClientRect();if(e.clientY<rect.top+rect.height/2)colorList.insertBefore(draggedRow,target);else colorList.insertBefore(draggedRow,target.nextSibling);});
+        colorList.addEventListener('drop',function(e){if(draggedRow)e.preventDefault();});
+        colorList.addEventListener('dragend',function(){if(!draggedRow)return;draggedRow.classList.remove('dragging');colorList.querySelectorAll('.color-rule-row').forEach(function(r){r.classList.remove('drag-over');});draggedRow=null;var ids=Array.prototype.map.call(colorList.querySelectorAll('.color-rule-row'),function(r){return Number(r.dataset.assignmentId||0);}).filter(Boolean);var fd=new FormData();fd.append('csrf_token',<?= json_encode($csrfToken) ?>);fd.append('action','save_color_order');fd.append('order_json',JSON.stringify(ids));colorRequest(fd).then(function(data){toast('success',data.message||'Calendar color order updated.');}).catch(function(error){toast('error',error.message);});});
     }
-
-    var assignBtn = document.getElementById('assignColorBtn');
-    if (assignBtn) assignBtn.addEventListener('click', function(){ openColorModal('', '#0B1933', 'assigned_to', ''); });
-
-    var emptyAssignBtn = document.getElementById('assignColorBtnEmpty');
-    if (emptyAssignBtn) emptyAssignBtn.addEventListener('click', function(){ openColorModal('', '#0B1933', 'assigned_to', ''); });
-
-    document.querySelectorAll('.edit-color-btn').forEach(function(button){
-        button.addEventListener('click', function(){
-            openColorModal(
-                button.getAttribute('data-user-id'),
-                button.getAttribute('data-color'),
-                button.getAttribute('data-rule-type'),
-                button.getAttribute('data-rule-value')
-            );
-        });
-    });
 
     colorRuleType.addEventListener('change', syncColorRuleInputs);
 
@@ -1126,6 +1472,7 @@ if (file_exists(__DIR__ . '/includes/toast.php')) {
 
     document.addEventListener('keydown', function(e){
         if (e.key === 'Escape') {
+            setMobileSettings(false);
             closeColorModal();
             if (calendarSyncModal) {
                 calendarSyncModal.classList.remove('open');
@@ -1160,26 +1507,12 @@ if (file_exists(__DIR__ . '/includes/toast.php')) {
         });
     });
 
-    colorForm.addEventListener('submit', function(e){
-        e.preventDefault();
-
-        var button = colorForm.querySelector('[type="submit"]');
-        var oldText = button.textContent;
-
-        button.disabled = true;
-        button.textContent = 'Saving...';
-
-        request(new FormData(colorForm)).then(function(data){
-            toast('success', data.message);
-            closeColorModal();
-            window.location.reload();
-        }).catch(function(error){
-            toast('error', error.message);
-        }).then(function(){
-            button.disabled = false;
-            button.textContent = oldText;
-        });
+    colorForm.addEventListener('submit',function(e){
+        e.preventDefault();var button=colorForm.querySelector('[type="submit"]');var oldText=button.textContent;button.disabled=true;button.textContent='Saving...';
+        colorRequest(new FormData(colorForm)).then(function(data){toast('success',data.message);closeColorModal();window.location.reload();}).catch(function(error){toast('error',error.message);}).then(function(){button.disabled=false;button.textContent=oldText;});
     });
+    if(deleteColorBtn){deleteColorBtn.addEventListener('click',function(){var id=Number(colorAssignmentId.value||0);if(!id)return;if(!window.confirm('Delete this calendar color rule?'))return;var oldText=deleteColorBtn.textContent;deleteColorBtn.disabled=true;deleteColorBtn.textContent='Deleting...';var fd=new FormData();fd.append('csrf_token',<?= json_encode($csrfToken) ?>);fd.append('action','delete_color');fd.append('assignment_id',String(id));colorRequest(fd).then(function(data){toast('success',data.message||'Calendar color deleted.');closeColorModal();window.location.reload();}).catch(function(error){toast('error',error.message);}).then(function(){deleteColorBtn.disabled=false;deleteColorBtn.textContent=oldText;});});}
+
 
 
     var openCalendarSyncBtn = document.getElementById('openCalendarSyncBtn');

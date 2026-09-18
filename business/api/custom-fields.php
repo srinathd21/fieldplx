@@ -138,7 +138,7 @@ function cf_normalize_options($raw)
 function cf_fetch_one(PDO $pdo, $tenantId, $source, $id)
 {
     if ($source === 'client') {
-        $stmt = $pdo->prepare("SELECT id, applies_to, field_name, field_type, is_transferable, default_value, options_json, sort_order FROM client_custom_field_definitions WHERE id=:id AND tenant_id=:t AND status='active' LIMIT 1");
+        $stmt = $pdo->prepare("SELECT id, applies_to, field_name, field_type, is_transferable, default_value, options_json, status, sort_order FROM client_custom_field_definitions WHERE id=:id AND tenant_id=:t LIMIT 1");
         $stmt->execute(array(':id' => $id, ':t' => $tenantId));
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         if (!$row) {
@@ -172,11 +172,12 @@ function cf_fetch_one(PDO $pdo, $tenantId, $source, $id)
             'area_default_width' => $areaWidth,
             'area_unit' => $areaUnit,
             'options' => cf_normalize_options($row['options_json']),
-            'sort_order' => (int)$row['sort_order']
+            'sort_order' => (int)$row['sort_order'],
+            'status' => isset($row['status']) ? (string)$row['status'] : 'active'
         );
     }
 
-    $stmt = $pdo->prepare("SELECT * FROM workflow_custom_field_definitions WHERE id=:id AND tenant_id=:t AND status='active' LIMIT 1");
+    $stmt = $pdo->prepare("SELECT * FROM workflow_custom_field_definitions WHERE id=:id AND tenant_id=:t LIMIT 1");
     $stmt->execute(array(':id' => $id, ':t' => $tenantId));
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$row) {
@@ -197,7 +198,8 @@ function cf_fetch_one(PDO $pdo, $tenantId, $source, $id)
         'area_default_width' => $row['area_default_width'],
         'area_unit' => (string)($row['area_unit'] === null ? '' : $row['area_unit']),
         'options' => cf_normalize_options($row['options_json']),
-        'sort_order' => (int)$row['sort_order']
+        'sort_order' => (int)$row['sort_order'],
+        'status' => isset($row['status']) ? (string)$row['status'] : 'active'
     );
 }
 
@@ -233,29 +235,38 @@ try {
             'invoice' => array(),
             'team' => array()
         );
+        $archivedGrouped = array(
+            'client' => array(),
+            'property' => array(),
+            'quote' => array(),
+            'job' => array(),
+            'invoice' => array(),
+            'team' => array()
+        );
 
-        $stmt = $pdo->prepare("SELECT id,applies_to,field_name,field_type,is_transferable,default_value,options_json,sort_order FROM client_custom_field_definitions WHERE tenant_id=:t AND status='active' ORDER BY applies_to,sort_order,field_name,id");
+        $stmt = $pdo->prepare("SELECT id,status FROM client_custom_field_definitions WHERE tenant_id=:t ORDER BY applies_to,status,sort_order,field_name,id");
         $stmt->execute(array(':t' => $tenantId));
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
             $one = cf_fetch_one($pdo, $tenantId, 'client', (int)$row['id']);
-            if ($one) {
-                $grouped[$one['entity_type']][] = $one;
-            }
+            if (!$one || !isset($grouped[$one['entity_type']])) continue;
+            if ((string)$row['status'] === 'inactive') $archivedGrouped[$one['entity_type']][] = $one;
+            else $grouped[$one['entity_type']][] = $one;
         }
 
         if ($workflowReady) {
-            $stmt = $pdo->prepare("SELECT id FROM workflow_custom_field_definitions WHERE tenant_id=:t AND status='active' ORDER BY entity_type,sort_order,field_name,id");
+            $stmt = $pdo->prepare("SELECT id,status FROM workflow_custom_field_definitions WHERE tenant_id=:t ORDER BY entity_type,status,sort_order,field_name,id");
             $stmt->execute(array(':t' => $tenantId));
             foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
                 $one = cf_fetch_one($pdo, $tenantId, 'workflow', (int)$row['id']);
-                if ($one && isset($grouped[$one['entity_type']])) {
-                    $grouped[$one['entity_type']][] = $one;
-                }
+                if (!$one || !isset($grouped[$one['entity_type']])) continue;
+                if ((string)$row['status'] === 'inactive') $archivedGrouped[$one['entity_type']][] = $one;
+                else $grouped[$one['entity_type']][] = $one;
             }
         }
 
         cf_out(200, true, 'Custom fields loaded.', array(
             'groups' => $grouped,
+            'archived_groups' => $archivedGrouped,
             'schema' => array('workflow_ready' => $workflowReady)
         ));
     }
@@ -397,21 +408,62 @@ try {
         cf_out(200, true, $id > 0 ? 'Custom field updated successfully.' : 'Custom field created successfully.', array('field'=>cf_fetch_one($pdo, $tenantId, $savedSource, $savedId)));
     }
 
-    if ($action === 'delete') {
+    if ($action === 'archive' || $action === 'delete') {
         $source = cf_post('source');
         $id = (int)cf_post('id', '0');
         if (!in_array($source, array('client','workflow'), true) || $id <= 0) {
             cf_out(422, false, 'Invalid custom field.');
         }
         $field = cf_fetch_one($pdo, $tenantId, $source, $id);
-        if (!$field) {
-            cf_out(404, false, 'Custom field not found.');
-        }
+        if (!$field) cf_out(404, false, 'Custom field not found.');
+        if ((string)$field['status'] === 'inactive') cf_out(200, true, 'Custom field is already archived.');
         $table = $source === 'client' ? 'client_custom_field_definitions' : 'workflow_custom_field_definitions';
         $stmt = $pdo->prepare("UPDATE `" . $table . "` SET status='inactive',updated_at=NOW() WHERE id=:id AND tenant_id=:t");
         $stmt->execute(array(':id'=>$id, ':t'=>$tenantId));
-        cf_audit($pdo, $tenantId, $branchId, $userId, 'CUSTOM_FIELD_DISABLED', $id, array('source'=>$source, 'entity_type'=>$field['entity_type'], 'field_name'=>$field['field_name']));
-        cf_out(200, true, 'Custom field removed successfully.');
+        cf_audit($pdo, $tenantId, $branchId, $userId, 'CUSTOM_FIELD_ARCHIVED', $id, array('source'=>$source, 'entity_type'=>$field['entity_type'], 'field_name'=>$field['field_name']));
+        cf_out(200, true, 'Custom field archived successfully.');
+    }
+
+    if ($action === 'restore') {
+        $source = cf_post('source');
+        $id = (int)cf_post('id', '0');
+        if (!in_array($source, array('client','workflow'), true) || $id <= 0) cf_out(422, false, 'Invalid custom field.');
+        $field = cf_fetch_one($pdo, $tenantId, $source, $id);
+        if (!$field) cf_out(404, false, 'Custom field not found.');
+        $table = $source === 'client' ? 'client_custom_field_definitions' : 'workflow_custom_field_definitions';
+        $stmt = $pdo->prepare("UPDATE `" . $table . "` SET status='active',updated_at=NOW() WHERE id=:id AND tenant_id=:t");
+        $stmt->execute(array(':id'=>$id, ':t'=>$tenantId));
+        cf_audit($pdo, $tenantId, $branchId, $userId, 'CUSTOM_FIELD_RESTORED', $id, array('source'=>$source, 'entity_type'=>$field['entity_type'], 'field_name'=>$field['field_name']));
+        cf_out(200, true, 'Custom field restored successfully.');
+    }
+
+    if ($action === 'permanent_delete') {
+        $source = cf_post('source');
+        $id = (int)cf_post('id', '0');
+        if (!in_array($source, array('client','workflow'), true) || $id <= 0) cf_out(422, false, 'Invalid custom field.');
+        $field = cf_fetch_one($pdo, $tenantId, $source, $id);
+        if (!$field) cf_out(404, false, 'Custom field not found.');
+        if ((string)$field['status'] !== 'inactive') cf_out(409, false, 'Archive this custom field before permanently deleting it.');
+
+        $pdo->beginTransaction();
+        if ($source === 'client') {
+            if ($field['entity_type'] === 'property' && cf_table($pdo, 'client_location_custom_field_values')) {
+                $d = $pdo->prepare("DELETE FROM client_location_custom_field_values WHERE tenant_id=:t AND field_id=:id");
+                $d->execute(array(':t'=>$tenantId, ':id'=>$id));
+            }
+            if ($field['entity_type'] === 'client' && cf_table($pdo, 'client_custom_field_values')) {
+                $d = $pdo->prepare("DELETE FROM client_custom_field_values WHERE tenant_id=:t AND field_id=:id");
+                $d->execute(array(':t'=>$tenantId, ':id'=>$id));
+            }
+            $d = $pdo->prepare("DELETE FROM client_custom_field_definitions WHERE id=:id AND tenant_id=:t AND status='inactive'");
+            $d->execute(array(':id'=>$id, ':t'=>$tenantId));
+        } else {
+            $d = $pdo->prepare("DELETE FROM workflow_custom_field_definitions WHERE id=:id AND tenant_id=:t AND status='inactive'");
+            $d->execute(array(':id'=>$id, ':t'=>$tenantId));
+        }
+        $pdo->commit();
+        cf_audit($pdo, $tenantId, $branchId, $userId, 'CUSTOM_FIELD_PERMANENTLY_DELETED', $id, array('source'=>$source, 'entity_type'=>$field['entity_type'], 'field_name'=>$field['field_name']));
+        cf_out(200, true, 'Custom field permanently deleted.');
     }
 
     if ($action === 'reorder') {

@@ -69,15 +69,22 @@ try{
         if((int)$_FILES['logo']['size']>5*1024*1024) bp_json(422,false,'Logo must be 5 MB or smaller.');
         $tmp=(string)$_FILES['logo']['tmp_name'];
         $finfo=new finfo(FILEINFO_MIME_TYPE); $mime=(string)$finfo->file($tmp);
-        $map=array('image/png'=>'png','image/jpeg'=>'jpg','image/webp'=>'webp');
-        if(!isset($map[$mime])) bp_json(422,false,'Logo must be PNG, JPG or WEBP.');
-        $root=dirname(__DIR__,2).'/uploads/tenant/'.$tenantId.'/branding';
+        $map=array('image/png'=>'png','image/jpeg'=>'jpg');
+        if(!isset($map[$mime])) bp_json(422,false,'Logo must be PNG, JPG or JPEG.');
+        $root=dirname(__DIR__).'/uploads/tenant/'.$tenantId.'/branding';
         if(!is_dir($root) && !@mkdir($root,0775,true)) bp_json(500,false,'Unable to create the branding upload folder.');
         $name='logo-'.date('YmdHis').'-'.bin2hex(random_bytes(4)).'.'.$map[$mime];
         if(!move_uploaded_file($tmp,$root.'/'.$name)) bp_json(500,false,'Unable to save the uploaded logo.');
         $publicPath='uploads/tenant/'.$tenantId.'/branding/'.$name;
+        $oldLogo='';
+        try{$oq=$pdo->prepare("SELECT logo_path FROM tenant_business_profiles WHERE tenant_id=:tenant_id LIMIT 1");$oq->execute(array(':tenant_id'=>$tenantId));$oldLogo=(string)$oq->fetchColumn();}catch(Throwable $ignore){}
         $q=$pdo->prepare("INSERT INTO tenant_business_profiles (tenant_id,logo_path) VALUES (:tenant_id,:logo_path) ON DUPLICATE KEY UPDATE logo_path=VALUES(logo_path),updated_at=NOW()");
         $q->execute(array(':tenant_id'=>$tenantId,':logo_path'=>$publicPath));
+        if($oldLogo!=='' && $oldLogo!==$publicPath){
+            $currentBase=realpath(dirname(__DIR__));
+            $oldCurrent=realpath(dirname(__DIR__).'/'.$oldLogo);
+            if($currentBase && $oldCurrent && strpos($oldCurrent,$currentBase.DIRECTORY_SEPARATOR)===0 && is_file($oldCurrent)) @unlink($oldCurrent);
+        }
         bp_audit($pdo,$tenantId,$branchId,$userId,'BUSINESS_PROFILE_LOGO_UPDATED',array('logo_path'=>$publicPath));
         bp_json(200,true,'Logo uploaded successfully.',array('logo_path'=>$publicPath));
     }
@@ -85,8 +92,14 @@ try{
         $q=$pdo->prepare("SELECT logo_path FROM tenant_business_profiles WHERE tenant_id=:tenant_id LIMIT 1"); $q->execute(array(':tenant_id'=>$tenantId)); $old=(string)$q->fetchColumn();
         $q=$pdo->prepare("UPDATE tenant_business_profiles SET logo_path=NULL,updated_at=NOW() WHERE tenant_id=:tenant_id"); $q->execute(array(':tenant_id'=>$tenantId));
         if($old!==''){
-            $base=realpath(dirname(__DIR__,2)); $file=realpath(dirname(__DIR__,2).'/'.$old);
-            if($base && $file && strpos($file,$base.DIRECTORY_SEPARATOR)===0 && is_file($file)) @unlink($file);
+            $currentBase=realpath(dirname(__DIR__));
+            $file=realpath(dirname(__DIR__).'/'.$old);
+            if($currentBase && $file && strpos($file,$currentBase.DIRECTORY_SEPARATOR)===0 && is_file($file)) @unlink($file);
+            else {
+                // Backward-compatible cleanup for logos saved by older builds in ../uploads.
+                $legacyBase=realpath(dirname(__DIR__,2)); $legacyFile=realpath(dirname(__DIR__,2).'/'.$old);
+                if($legacyBase && $legacyFile && strpos($legacyFile,$legacyBase.DIRECTORY_SEPARATOR)===0 && is_file($legacyFile)) @unlink($legacyFile);
+            }
         }
         bp_json(200,true,'Logo removed.');
     }
@@ -106,7 +119,11 @@ try{
             'header_layout'=>bp_post('header_layout','basic'),'header_style'=>bp_post('header_style','modern'),'logo_size'=>bp_post('logo_size','small'),'theme_color'=>bp_post('theme_color','default'),'footer_font_size'=>(int)bp_post('footer_font_size','9'),
             'show_company_name'=>bp_bool('show_company_name'),'show_company_phone'=>bp_bool('show_company_phone'),'show_company_email'=>bp_bool('show_company_email'),'show_company_website'=>bp_bool('show_company_website'),'show_client_phone'=>bp_bool('show_client_phone')
         );
-        if($allowedFields['footer_font_size']<7 || $allowedFields['footer_font_size']>18) $allowedFields['footer_font_size']=9;
+        if(!in_array($allowedFields['header_layout'],array('basic','compact','envelope_dual','envelope_single'),true)) $allowedFields['header_layout']='basic';
+        if(!in_array($allowedFields['header_style'],array('modern','clean'),true)) $allowedFields['header_style']='modern';
+        if(!in_array($allowedFields['logo_size'],array('small','medium','large'),true)) $allowedFields['logo_size']='medium';
+        if(!in_array($allowedFields['theme_color'],array('default','blue','red','green','orange','purple'),true)) $allowedFields['theme_color']='default';
+        if($allowedFields['footer_font_size']<6 || $allowedFields['footer_font_size']>10) $allowedFields['footer_font_size']=9;
         $selected=isset($_POST['selected_fields']) && is_array($_POST['selected_fields']) ? array_values(array_filter(array_map('trim',$_POST['selected_fields']))) : array();
         $allowedFields['selected_fields_json']=json_encode($selected,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES);
         $columns=array_keys($allowedFields); $insertCols=array('tenant_id','document_type'); $insertVals=array(':tenant_id',':document_type'); $updates=array(); $params=array(':tenant_id'=>$tenantId,':document_type'=>$type);

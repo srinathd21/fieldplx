@@ -27,6 +27,28 @@ if (empty($_SESSION['website_csrf'])) {
 }
 $websiteCsrf = $_SESSION['website_csrf'];
 
+/*
+|--------------------------------------------------------------------------
+| BUSINESS TYPE / INDUSTRY OPTIONS
+|--------------------------------------------------------------------------
+| Keep this list aligned with the FieldPlx industry-selection screen.
+*/
+$websiteBusinessTypes = array(
+    'Cleaning',
+    'Construction & Contracting',
+    'Electrical',
+    'HVAC',
+    'Handyman',
+    'Landscaping',
+    'Lawn Care',
+    'Painting',
+    'Plumbing',
+    'Pressure Washing',
+    'Roofing',
+    'Tree Care',
+    'Other'
+);
+
 function websiteJson($success, $message, $extra = array(), $status = 200)
 {
     http_response_code($status);
@@ -546,8 +568,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['website_action'])) {
             $phone = websitePost('phone');
             $countryId = (int) websitePost('country_id', '0');
 
-            if ($businessName === '' || $fullName === '' || !filter_var($email, FILTER_VALIDATE_EMAIL) || $countryId <= 0) {
+            if ($businessName === '' || $fullName === '' || $businessType === '' || !filter_var($email, FILTER_VALIDATE_EMAIL) || $countryId <= 0) {
                 websiteJson(false, 'Please complete all required fields with a valid email address.', array(), 422);
+            }
+
+            if (!in_array($businessType, $websiteBusinessTypes, true)) {
+                websiteJson(false, 'Please select a valid Business Type.', array(), 422);
             }
 
             $countryStmt = $conn->prepare("SELECT id, default_currency_code, default_timezone, date_format FROM countries WHERE id = ? AND is_active = 1 LIMIT 1");
@@ -1180,8 +1206,15 @@ include __DIR__ . '/topbar.php';
                             name="business_name" maxlength="190" required></div>
                     <div class="fp-web-field"><label>Your Full Name *</label><input class="form-control" type="text"
                             name="full_name" maxlength="190" required></div>
-                    <div class="fp-web-field"><label>Business Type</label><input class="form-control" type="text"
-                            name="business_type" maxlength="120" placeholder="HVAC, Plumbing, Electrical..."></div>
+                    <div class="fp-web-field">
+                        <label>Business Type *</label>
+                        <select class="form-select" name="business_type" required>
+                            <option value="">Select business type</option>
+                            <?php foreach ($websiteBusinessTypes as $businessTypeOption): ?>
+                                <option value="<?= e($businessTypeOption) ?>"><?= e($businessTypeOption) ?></option>
+                            <?php endforeach; ?>
+                        </select>
+                    </div>
                     <div class="fp-web-field"><label>Business Email *</label><input class="form-control" type="email"
                             name="email" maxlength="190" required></div>
                     <div class="fp-web-field"><label>Phone</label><input class="form-control" type="tel" name="phone"
