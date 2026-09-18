@@ -42,6 +42,17 @@ function bpp_field(FPDF $pdf,$x,$y,$label,$value,$w=80,$labelColor=array(45,56,6
     $pdf->SetX($x);$pdf->SetFont('Arial',$valueBold?'B':'',9.0);$pdf->SetTextColor(14,27,36);$pdf->MultiCell($w,4.7,(string)$value,0,'L');
     return $pdf->GetY();
 }
+function bpp_draw_selected_fields(FPDF $pdf,$x,$y,$w,$selectedNames,$ink,$muted){
+    if(!$selectedNames)return (float)$y;
+    foreach($selectedNames as $name){
+        $label=trim((string)$name);if($label==='')continue;
+        $pdf->SetXY($x,$y);$pdf->SetFont('Arial','B',6.9);$pdf->SetTextColor($muted[0],$muted[1],$muted[2]);
+        $prefix=$label.':';$pw=min($w*.48,max(14.0,$pdf->GetStringWidth($prefix)+2.2));$pdf->Cell($pw,4.2,$prefix,0,0,'L');
+        $pdf->SetFont('Arial','',6.9);$pdf->SetTextColor($ink[0],$ink[1],$ink[2]);$pdf->Cell(max(8,$w-$pw),4.2,'Sample value',0,1,'L');
+        $y+=4.5;
+    }
+    return (float)$y;
+}
 function bpp_logo_abs($logoPath){
     $logoPath=trim((string)$logoPath);if($logoPath==='')return '';
     if(preg_match('~^https?://~i',$logoPath)){$u=parse_url($logoPath,PHP_URL_PATH);if(is_string($u)&&$u!=='')$logoPath=$u;}
@@ -154,12 +165,41 @@ $pdf=new FPDF('P','mm','A4');$pdf->SetTitle($company.' '.$docLabel);$pdf->SetMar
 $ink=array(18,28,34);$muted=array(76,88,96);$light=array(214,219,223);$defaultTheme=((string)$style['theme_color']==='default');
 $clientAddress="Bob Guy\n#123 Main St.\nSpringfield, California 90210";$serviceAddress="#8142 2nd St.\nAnytown, California 123456";
 
-// Header/layout section. Each layout reserves a fixed logo box, text columns and document-meta box.
-// This prevents portrait/square logos from colliding with Recipient, Sender or Service Address text.
+// Header/layout section. Each layout reserves fixed columns and a bounded logo box.
+// Header Style "Clean" intentionally follows the Jobber clean reference regardless of layout choice.
 $logoBox=bpp_logo_box($logoSize);
 $contentTop=86;
-if($layout==='basic'){
-    // Basic: logo left, company block center, document summary right, recipient/sender beneath.
+$drawServiceRule=true;
+if($headerStyle==='clean'){
+    // CLEAN: logo left, document information right, rule lines, Recipient/Sender beneath.
+    $logoDrawn=bpp_draw_logo($pdf,$logoAbs,16,12,78,24,'L','M');
+    if(!$logoDrawn&&!empty($style['show_company_name']))bpp_text($pdf,16,16,78,$company,10.2,true,$ink,4.8);
+    bpp_draw_doc_meta($pdf,103,12,91,$type,$docLabel,$accent,$ink,$muted,false);
+    bpp_line($pdf,16,45,97,$accent,.30);bpp_line($pdf,103,45,194,$accent,.30);
+    $recipientEnd=bpp_field($pdf,16,49,'Recipient',$clientAddress,78,$muted,true);
+    $senderValue=!empty($style['show_company_name'])?$company:'Company';
+    bpp_field($pdf,103,49,'Sender',$senderValue,91,$muted,true);
+    $customY=$recipientEnd+1;
+    if(!empty($style['show_client_phone'])){bpp_text($pdf,16,$customY,78,'Phone: (780) 555-4827',6.7,false,$muted,3.7);$customY+=4.5;}
+    $customY=bpp_draw_selected_fields($pdf,16,$customY,78,$selectedNames,$ink,$muted);
+    $contentTop=max(84,$customY+3);
+}elseif($layout==='compact'){
+    // COMPACT: company top-left, logo top-right, Recipient left and filled document summary right.
+    // This mirrors the compact reference supplied by the user.
+    if(!empty($style['show_company_name'])){
+        bpp_text($pdf,16,13,78,$company,9.8,true,$ink,4.7);
+        bpp_draw_contact_meta($pdf,16,20,78,$style,$companyPhone,$companyEmail,$companyWebsite,$muted);
+    }
+    bpp_draw_logo($pdf,$logoAbs,104,10,90,21,'R','M');
+    $recipientEnd=bpp_field($pdf,16,35,'Recipient',$clientAddress,78,$muted,true);
+    bpp_draw_doc_meta($pdf,110,34,84,$type,$docLabel,$defaultTheme?array(90,90,90):$accent,$ink,$muted,true);
+    $customY=$recipientEnd+1;
+    if(!empty($style['show_client_phone'])){bpp_text($pdf,16,$customY,78,'Phone: (780) 555-4827',6.7,false,$muted,3.7);$customY+=4.5;}
+    $customY=bpp_draw_selected_fields($pdf,16,$customY,78,$selectedNames,$ink,$muted);
+    $contentTop=max(72,$customY+4);
+    $drawServiceRule=false;
+}elseif($layout==='basic'){
+    // BASIC: logo left, company block center, document summary right, recipient/sender beneath.
     $logoDrawn=bpp_draw_logo($pdf,$logoAbs,16,13,$logoBox['w'],$logoBox['h'],'L','M');
     if(!empty($style['show_company_name'])){
         bpp_text($pdf,70,14,38,$company,10.2,true,$ink,4.8);
@@ -169,54 +209,46 @@ if($layout==='basic'){
     }
     bpp_draw_doc_meta($pdf,116,13,78,$type,$docLabel,$defaultTheme?array(90,90,90):$accent,$ink,$muted,$defaultTheme);
     bpp_line($pdf,16,45,97,$accent,.30);bpp_line($pdf,103,45,194,$accent,.30);
-    bpp_field($pdf,16,49,'Recipient',$clientAddress,78,$muted,true);
+    $recipientEnd=bpp_field($pdf,16,49,'Recipient',$clientAddress,78,$muted,true);
     $senderValue=!empty($style['show_company_name'])?$company:'Company';
     bpp_field($pdf,103,49,'Sender',$senderValue,91,$muted,true);
-    if(!empty($style['show_client_phone']))bpp_text($pdf,16,67,78,'Phone: (780) 555-4827',6.7,false,$muted,3.7);
-    $contentTop=84;
-}elseif($layout==='compact'){
-    // Compact: company text upper-left, document meta upper-right, recipient left, logo in a bounded right-side box.
-    if(!empty($style['show_company_name'])){
-        bpp_text($pdf,16,14,74,$company,9.8,true,$ink,4.7);
-        bpp_draw_contact_meta($pdf,16,21,74,$style,$companyPhone,$companyEmail,$companyWebsite,$muted);
-    }
-    bpp_draw_doc_meta($pdf,116,13,78,$type,$docLabel,$accent,$ink,$muted,false);
-    bpp_line($pdf,16,45,97,$accent,.30);bpp_line($pdf,103,45,194,$accent,.30);
-    bpp_field($pdf,16,49,'Recipient',$clientAddress,78,$muted,true);
-    if(!empty($style['show_client_phone']))bpp_text($pdf,16,67,78,'Phone: (780) 555-4827',6.7,false,$muted,3.7);
-    bpp_draw_logo($pdf,$logoAbs,103,48,91,25,'C','M');
-    $contentTop=84;
+    $customY=$recipientEnd+1;
+    if(!empty($style['show_client_phone'])){bpp_text($pdf,16,$customY,78,'Phone: (780) 555-4827',6.7,false,$muted,3.7);$customY+=4.5;}
+    $customY=bpp_draw_selected_fields($pdf,16,$customY,78,$selectedNames,$ink,$muted);
+    $contentTop=max(84,$customY+3);
 }elseif($layout==='envelope_dual'){
-    // Dual window: company upper-left and logo centered in the right address window.
     if(!empty($style['show_company_name'])){
         bpp_text($pdf,16,14,74,$company,9.5,true,$ink,4.6);
         bpp_draw_contact_meta($pdf,16,21,74,$style,$companyPhone,$companyEmail,$companyWebsite,$muted);
     }
     bpp_draw_doc_meta($pdf,116,13,78,$type,$docLabel,$accent,$ink,$muted,false);
     bpp_line($pdf,16,45,97,$accent,.30);bpp_line($pdf,103,45,194,$accent,.30);
-    bpp_field($pdf,16,49,'Recipient',$clientAddress,78,$muted,true);
+    $recipientEnd=bpp_field($pdf,16,49,'Recipient',$clientAddress,78,$muted,true);
     if(!empty($style['show_client_phone']))bpp_text($pdf,16,67,78,'Phone: (780) 555-4827',6.7,false,$muted,3.7);
     bpp_draw_logo($pdf,$logoAbs,103,48,91,25,'C','M');
-    $contentTop=84;
+    $customY=max($recipientEnd+1,72);$customY=bpp_draw_selected_fields($pdf,16,$customY,78,$selectedNames,$ink,$muted);
+    $contentTop=max(84,$customY+3);
 }else{ // envelope_single
-    // Single window: logo in the upper-left header, document meta right, recipient/sender below.
     $logoDrawn=bpp_draw_logo($pdf,$logoAbs,16,13,78,25,'L','M');
     if(!$logoDrawn&&!empty($style['show_company_name']))bpp_text($pdf,16,16,78,$company,10.2,true,$ink,4.8);
     bpp_draw_doc_meta($pdf,116,13,78,$type,$docLabel,$accent,$ink,$muted,false);
     bpp_line($pdf,16,45,97,$accent,.30);bpp_line($pdf,103,45,194,$accent,.30);
-    bpp_field($pdf,16,49,'Recipient',$clientAddress,78,$muted,true);
+    $recipientEnd=bpp_field($pdf,16,49,'Recipient',$clientAddress,78,$muted,true);
     $senderValue=!empty($style['show_company_name'])?$company:'Company';
     bpp_field($pdf,103,49,'Sender',$senderValue,91,$muted,true);
-    if(!empty($style['show_client_phone']))bpp_text($pdf,16,67,78,'Phone: (780) 555-4827',6.7,false,$muted,3.7);
+    $customY=$recipientEnd+1;
+    if(!empty($style['show_client_phone'])){bpp_text($pdf,16,$customY,78,'Phone: (780) 555-4827',6.7,false,$muted,3.7);$customY+=4.5;}
+    $customY=bpp_draw_selected_fields($pdf,16,$customY,78,$selectedNames,$ink,$muted);
     bpp_draw_contact_meta($pdf,103,62,91,$style,$companyPhone,$companyEmail,$companyWebsite,$muted);
-    $contentTop=84;
+    $contentTop=max(84,$customY+3);
 }
 
 // Service address begins on its own aligned row under the header columns.
-bpp_line($pdf,16,$contentTop,194,$accent,.30);
-bpp_field($pdf,16,$contentTop+4,'Service Address',$serviceAddress,92,$muted,true);
-$tableTop=$contentTop+28;
-if($type==='invoice'){bpp_text($pdf,16,$contentTop+20,112,'For Services Rendered',9.3,true,$ink,4.5);$tableTop=$contentTop+31;}
+$serviceBase=$contentTop;
+if($drawServiceRule){bpp_line($pdf,16,$serviceBase,194,$accent,.30);$serviceFieldY=$serviceBase+4;}else{$serviceFieldY=$serviceBase;}
+bpp_field($pdf,16,$serviceFieldY,'Service Address',$serviceAddress,92,$muted,true);
+$tableTop=$serviceBase+28;
+if($type==='invoice'){bpp_text($pdf,16,$serviceBase+20,112,'For Services Rendered',9.3,true,$ink,4.5);$tableTop=$serviceBase+31;}
 
 // Fixed table geometry. Inner columns are exactly 176mm wide, preventing the Total column from being clipped.
 $tableX=16;$tableW=178;$innerX=18;$innerW=174;
@@ -237,8 +269,6 @@ foreach($rows as $r){
     if(!empty($doc['show_line_total']))$pdf->Cell($widths['total'],6,'Rs.'.$r[4],0,1,'R');
     $y+=7;bpp_line($pdf,$tableX,$y-1,$tableX+$tableW,$light,.15);
 }
-if($selectedNames){$y+=3;$pdf->SetFont('Arial','B',7.0);$pdf->SetTextColor($muted[0],$muted[1],$muted[2]);foreach($selectedNames as $name){$pdf->SetXY($innerX,$y);$pdf->Cell(110,4.8,$name.': Sample value',0,1);$y+=5;}}
-
 if($type==='quote'&&!empty($doc['deposit_language'])){$dep=str_replace('{{DEPOSIT_AMOUNT}}','Rs.75.00',(string)$doc['deposit_language']);$y+=5;bpp_text($pdf,16,$y,122,$dep,8.0,true,$muted,4.2);}
 if(!empty($doc['show_totals_tax_footer'])||$type==='invoice'){
     $totY=max($y+8,145);$pdf->SetFont('Arial','B',8.5);$pdf->SetTextColor($ink[0],$ink[1],$ink[2]);$pdf->SetXY(139,$totY);$pdf->Cell(28,6,'Total',0,0,'R');$pdf->Cell(27,6,'Rs.150.00',1,1,'R');
