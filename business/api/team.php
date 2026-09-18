@@ -374,6 +374,132 @@ try {
         tm_out(200,true,'Session signed out successfully.');
     }
 
+
+    if ($action === 'list_crews') {
+        tm_require_any($pdo, $tenantId, $actor, array('teams.view','employees.view','administration.view'));
+        if (!tm_table($pdo,'teams') || !tm_table($pdo,'team_members')) {
+            tm_out(200,true,'Crews loaded.',array('crews'=>array(),'sort_supported'=>false));
+        }
+        $sortSupported = tm_column($pdo,'team_members','sort_order');
+        $q=$pdo->prepare("SELECT id,name,code,leader_user_id,status,created_at,updated_at FROM teams WHERE tenant_id=:t AND status='active' ORDER BY name,id");
+        $q->execute(array(':t'=>$tenantId));
+        $crews=$q->fetchAll(PDO::FETCH_ASSOC);
+        $order=$sortSupported ? 'tm.sort_order ASC, tm.is_primary DESC, tm.joined_at ASC, tm.user_id ASC' : 'tm.is_primary DESC, tm.joined_at ASC, tm.user_id ASC';
+        $mq=$pdo->prepare("SELECT tm.team_id,u.id,u.first_name,u.last_name,u.email,u.avatar_path,u.status,tm.is_primary".($sortSupported?',tm.sort_order':'')." FROM team_members tm INNER JOIN teams t ON t.id=tm.team_id AND t.tenant_id=:tenant INNER JOIN users u ON u.id=tm.user_id AND u.tenant_id=t.tenant_id AND u.deleted_at IS NULL WHERE tm.team_id=:team ORDER BY $order");
+        foreach($crews as &$crew){
+            $mq->execute(array(':tenant'=>$tenantId,':team'=>$crew['id']));
+            $crew['members']=$mq->fetchAll(PDO::FETCH_ASSOC);
+        }
+        unset($crew);
+        tm_out(200,true,'Crews loaded.',array('crews'=>$crews,'sort_supported'=>$sortSupported));
+    }
+
+    if ($action === 'create_crew') {
+        tm_csrf();
+        tm_require_any($pdo,$tenantId,$actor,array('teams.create','administration.create'));
+        if (!tm_table($pdo,'teams')) tm_out(500,false,'Teams table is not available.');
+        $name=substr(trim(tm_post('name')),0,190);
+        if ($name==='') tm_out(422,false,'Crew name is required.');
+        $q=$pdo->prepare("SELECT id FROM teams WHERE tenant_id=:t AND LOWER(name)=LOWER(:n) AND status='active' LIMIT 1");
+        $q->execute(array(':t'=>$tenantId,':n'=>$name));
+        if ($q->fetchColumn()) tm_out(409,false,'A crew with this name already exists.');
+        $q=$pdo->prepare("INSERT INTO teams(tenant_id,branch_id,department_id,name,code,leader_user_id,description,status,created_at) VALUES(:t,:b,NULL,:n,NULL,NULL,NULL,'active',NOW())");
+        $q->execute(array(':t'=>$tenantId,':b'=>$branchId>0?$branchId:null,':n'=>$name));
+        $id=(int)$pdo->lastInsertId();
+        tm_audit($pdo,$tenantId,$branchId,$actorId,'CREW_CREATED',$id,array('name'=>$name));
+        tm_out(201,true,'Crew created successfully.',array('crew_id'=>$id));
+    }
+
+    if ($action === 'rename_crew') {
+        tm_csrf();
+        tm_require_any($pdo,$tenantId,$actor,array('teams.update','administration.update'));
+        $crewId=(int)tm_post('crew_id','0');
+        $name=substr(trim(tm_post('name')),0,190);
+        if ($crewId<=0 || $name==='') tm_out(422,false,'Crew and crew name are required.');
+        $q=$pdo->prepare("SELECT id,name FROM teams WHERE id=:id AND tenant_id=:t AND status='active' LIMIT 1");
+        $q->execute(array(':id'=>$crewId,':t'=>$tenantId));
+        $old=$q->fetch(PDO::FETCH_ASSOC);
+        if(!$old) tm_out(404,false,'Crew not found.');
+        $q=$pdo->prepare("SELECT id FROM teams WHERE tenant_id=:t AND LOWER(name)=LOWER(:n) AND id<>:id AND status='active' LIMIT 1");
+        $q->execute(array(':t'=>$tenantId,':n'=>$name,':id'=>$crewId));
+        if($q->fetchColumn()) tm_out(409,false,'A crew with this name already exists.');
+        $q=$pdo->prepare("UPDATE teams SET name=:n,updated_at=NOW() WHERE id=:id AND tenant_id=:t");
+        $q->execute(array(':n'=>$name,':id'=>$crewId,':t'=>$tenantId));
+        tm_audit($pdo,$tenantId,$branchId,$actorId,'CREW_RENAMED',$crewId,array('old_name'=>$old['name'],'name'=>$name));
+        tm_out(200,true,'Crew renamed successfully.');
+    }
+
+    if ($action === 'delete_crew') {
+        tm_csrf();
+        tm_require_any($pdo,$tenantId,$actor,array('teams.delete','administration.delete','teams.update'));
+        $crewId=(int)tm_post('crew_id','0');
+        if($crewId<=0) tm_out(422,false,'Crew is required.');
+        $q=$pdo->prepare("SELECT id,name FROM teams WHERE id=:id AND tenant_id=:t AND status='active' LIMIT 1");
+        $q->execute(array(':id'=>$crewId,':t'=>$tenantId));
+        $crew=$q->fetch(PDO::FETCH_ASSOC);
+        if(!$crew) tm_out(404,false,'Crew not found.');
+        $pdo->beginTransaction();
+        $q=$pdo->prepare("DELETE FROM team_members WHERE team_id=:id");$q->execute(array(':id'=>$crewId));
+        $q=$pdo->prepare("UPDATE teams SET status='inactive',updated_at=NOW() WHERE id=:id AND tenant_id=:t");$q->execute(array(':id'=>$crewId,':t'=>$tenantId));
+        $pdo->commit();
+        tm_audit($pdo,$tenantId,$branchId,$actorId,'CREW_DELETED',$crewId,array('name'=>$crew['name']));
+        tm_out(200,true,'Crew deleted successfully.');
+    }
+
+    if ($action === 'crew_candidates') {
+        tm_require_any($pdo,$tenantId,$actor,array('teams.view','teams.update','employees.view','administration.view'));
+        $crewId=(int)tm_post('crew_id','0');
+        $search=tm_post('search');
+        $q=$pdo->prepare("SELECT id FROM teams WHERE id=:id AND tenant_id=:t AND status='active' LIMIT 1");$q->execute(array(':id'=>$crewId,':t'=>$tenantId));
+        if(!$q->fetchColumn()) tm_out(404,false,'Crew not found.');
+        $where="u.tenant_id=:t AND u.deleted_at IS NULL AND u.status IN ('active','invited') AND NOT EXISTS(SELECT 1 FROM team_members tm WHERE tm.team_id=:team AND tm.user_id=u.id)";
+        $params=array(':t'=>$tenantId,':team'=>$crewId);
+        if($search!==''){$where.=" AND (u.first_name LIKE :s OR COALESCE(u.last_name,'') LIKE :s OR u.email LIKE :s)";$params[':s']='%'.$search.'%';}
+        $q=$pdo->prepare("SELECT u.id,u.first_name,u.last_name,u.email,u.avatar_path,u.status FROM users u WHERE $where ORDER BY u.first_name,u.last_name,u.id LIMIT 100");
+        $q->execute($params);
+        tm_out(200,true,'Available teammates loaded.',array('members'=>$q->fetchAll(PDO::FETCH_ASSOC)));
+    }
+
+    if ($action === 'add_crew_members') {
+        tm_csrf();
+        tm_require_any($pdo,$tenantId,$actor,array('teams.update','administration.update'));
+        $crewId=(int)tm_post('crew_id','0');
+        $ids=isset($_POST['user_ids'])?tm_normalize_ids($_POST['user_ids']):array();
+        if($crewId<=0 || !$ids) tm_out(422,false,'Select at least one teammate.');
+        $q=$pdo->prepare("SELECT id FROM teams WHERE id=:id AND tenant_id=:t AND status='active' LIMIT 1");$q->execute(array(':id'=>$crewId,':t'=>$tenantId));if(!$q->fetchColumn())tm_out(404,false,'Crew not found.');
+        $sortSupported=tm_column($pdo,'team_members','sort_order');
+        $maxSort=0;if($sortSupported){$q=$pdo->prepare("SELECT COALESCE(MAX(sort_order),0) FROM team_members WHERE team_id=:id");$q->execute(array(':id'=>$crewId));$maxSort=(int)$q->fetchColumn();}
+        $valid=$pdo->prepare("SELECT id FROM users WHERE id=:id AND tenant_id=:t AND deleted_at IS NULL AND status IN ('active','invited') LIMIT 1");
+        $added=0;
+        if($sortSupported)$ins=$pdo->prepare("INSERT IGNORE INTO team_members(team_id,user_id,member_role,is_primary,sort_order,joined_at) VALUES(:team,:user,NULL,0,:sort,NOW())");
+        else $ins=$pdo->prepare("INSERT IGNORE INTO team_members(team_id,user_id,member_role,is_primary,joined_at) VALUES(:team,:user,NULL,0,NOW())");
+        foreach($ids as $uid){$valid->execute(array(':id'=>$uid,':t'=>$tenantId));if(!$valid->fetchColumn())continue;$maxSort+=10;$params=array(':team'=>$crewId,':user'=>$uid);if($sortSupported)$params[':sort']=$maxSort;$ins->execute($params);$added+=$ins->rowCount();}
+        tm_audit($pdo,$tenantId,$branchId,$actorId,'CREW_MEMBERS_ADDED',$crewId,array('user_ids'=>$ids,'added'=>$added));
+        tm_out(200,true,$added.' teammate'.($added===1?'':'s').' added to crew.');
+    }
+
+    if ($action === 'remove_crew_member') {
+        tm_csrf();
+        tm_require_any($pdo,$tenantId,$actor,array('teams.update','administration.update'));
+        $crewId=(int)tm_post('crew_id','0');$userId=(int)tm_post('user_id','0');
+        $q=$pdo->prepare("SELECT id FROM teams WHERE id=:id AND tenant_id=:t AND status='active' LIMIT 1");$q->execute(array(':id'=>$crewId,':t'=>$tenantId));if(!$q->fetchColumn())tm_out(404,false,'Crew not found.');
+        $q=$pdo->prepare("DELETE FROM team_members WHERE team_id=:team AND user_id=:user");$q->execute(array(':team'=>$crewId,':user'=>$userId));
+        tm_audit($pdo,$tenantId,$branchId,$actorId,'CREW_MEMBER_REMOVED',$crewId,array('user_id'=>$userId));
+        tm_out(200,true,'Teammate removed from crew.');
+    }
+
+    if ($action === 'reorder_crew_members') {
+        tm_csrf();
+        tm_require_any($pdo,$tenantId,$actor,array('teams.update','administration.update'));
+        if(!tm_column($pdo,'team_members','sort_order')) tm_out(409,false,'Run the crew member sort-order migration before using drag and drop.');
+        $crewId=(int)tm_post('crew_id','0');$ids=isset($_POST['user_ids'])?tm_normalize_ids($_POST['user_ids']):array();
+        $q=$pdo->prepare("SELECT id FROM teams WHERE id=:id AND tenant_id=:t AND status='active' LIMIT 1");$q->execute(array(':id'=>$crewId,':t'=>$tenantId));if(!$q->fetchColumn())tm_out(404,false,'Crew not found.');
+        $q=$pdo->prepare("SELECT user_id FROM team_members WHERE team_id=:team");$q->execute(array(':team'=>$crewId));$existing=array_map('intval',$q->fetchAll(PDO::FETCH_COLUMN));sort($existing);$check=$ids;sort($check);if($existing!==$check)tm_out(409,false,'Crew members changed while reordering. Refresh and try again.');
+        $pdo->beginTransaction();$up=$pdo->prepare("UPDATE team_members SET sort_order=:sort WHERE team_id=:team AND user_id=:user");$sort=10;foreach($ids as $uid){$up->execute(array(':sort'=>$sort,':team'=>$crewId,':user'=>$uid));$sort+=10;}$pdo->commit();
+        tm_audit($pdo,$tenantId,$branchId,$actorId,'CREW_MEMBERS_REORDERED',$crewId,array('user_ids'=>$ids));
+        tm_out(200,true,'Crew order saved.');
+    }
+
     tm_out(400,false,'Invalid team action.');
 } catch (PDOException $e) {
     if ($pdo->inTransaction()) $pdo->rollBack();

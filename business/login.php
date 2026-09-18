@@ -37,9 +37,24 @@ $loginReason =
 if ($loginReason === 'logout') {
     $successMessage =
         'You have been signed out successfully.';
-} elseif ($loginReason === 'timeout') {
+} elseif (
+    $loginReason === 'timeout' ||
+    $loginReason === 'idle_timeout'
+) {
     $errorMessage =
         'Your session expired due to inactivity. Please sign in again.';
+} elseif ($loginReason === 'absolute_timeout') {
+    $errorMessage =
+        'Your login session has expired. Please sign in again.';
+} elseif ($loginReason === 'remote_logout') {
+    $errorMessage =
+        'This device was signed out from another active session. Please sign in again.';
+} elseif (
+    $loginReason === 'session_expired' ||
+    $loginReason === 'session_missing'
+) {
+    $errorMessage =
+        'Your session is no longer active. Please sign in again.';
 }
 
 function tl_h($value)
@@ -103,6 +118,184 @@ function tl_column_exists(PDO $pdo, $table, $column)
         ((int)$stmt->fetchColumn() > 0);
 
     return $cache[$key];
+}
+
+function tl_client_ip()
+{
+    $candidates = array(
+        isset($_SERVER['HTTP_CF_CONNECTING_IP']) ? $_SERVER['HTTP_CF_CONNECTING_IP'] : '',
+        isset($_SERVER['HTTP_X_FORWARDED_FOR']) ? $_SERVER['HTTP_X_FORWARDED_FOR'] : '',
+        isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : ''
+    );
+
+    foreach ($candidates as $candidate) {
+        if ($candidate === '') {
+            continue;
+        }
+
+        foreach (explode(',', (string)$candidate) as $rawIp) {
+            $ip = trim($rawIp);
+            if ($ip !== '' && filter_var($ip, FILTER_VALIDATE_IP)) {
+                return substr($ip, 0, 80);
+            }
+        }
+    }
+
+    return null;
+}
+
+function tl_user_agent()
+{
+    return substr(
+        isset($_SERVER['HTTP_USER_AGENT'])
+            ? (string)$_SERVER['HTTP_USER_AGENT']
+            : '',
+        0,
+        1000
+    );
+}
+
+function tl_detect_os($userAgent)
+{
+    $ua = strtolower((string)$userAgent);
+
+    if (strpos($ua, 'windows nt 10.0') !== false) return 'Windows';
+    if (strpos($ua, 'windows') !== false) return 'Windows';
+    if (strpos($ua, 'android') !== false) return 'Android';
+    if (strpos($ua, 'iphone') !== false || strpos($ua, 'ipad') !== false) return 'iOS';
+    if (strpos($ua, 'macintosh') !== false || strpos($ua, 'mac os x') !== false) return 'macOS';
+    if (strpos($ua, 'cros') !== false) return 'ChromeOS';
+    if (strpos($ua, 'linux') !== false) return 'Linux';
+
+    return 'Other';
+}
+
+function tl_detect_browser($userAgent)
+{
+    $ua = strtolower((string)$userAgent);
+
+    if (strpos($ua, 'edg/') !== false) return 'Microsoft Edge';
+    if (strpos($ua, 'opr/') !== false || strpos($ua, 'opera') !== false) return 'Opera';
+    if (strpos($ua, 'firefox/') !== false) return 'Firefox';
+    if (strpos($ua, 'chrome/') !== false || strpos($ua, 'crios/') !== false) return 'Google Chrome';
+    if (strpos($ua, 'safari/') !== false) return 'Safari';
+
+    return 'Web Browser';
+}
+
+function tl_detect_device_name($userAgent, $osName)
+{
+    $ua = (string)$userAgent;
+
+    if (preg_match('/Android[^;]*;\\s*([^;\\)]+)(?:\\s+Build\\/[^;\\)]*)?/i', $ua, $m)) {
+        $model = trim((string)$m[1]);
+        if ($model !== '' && stripos($model, 'wv') === false) {
+            return substr($model, 0, 190);
+        }
+    }
+
+    if (stripos($ua, 'iPhone') !== false) return 'iPhone';
+    if (stripos($ua, 'iPad') !== false) return 'iPad';
+
+    return substr((string)$osName, 0, 190);
+}
+
+function tl_store_login_session(PDO $pdo, array $user)
+{
+    if (!tl_table_exists($pdo, 'user_devices')) {
+        return 0;
+    }
+
+    try {
+        $sessionHash = hash('sha256', session_id());
+        $userAgent = tl_user_agent();
+        $postedBrowser = trim((string)($_POST['client_browser'] ?? ''));
+        $postedOs = trim((string)($_POST['client_os'] ?? ''));
+        $postedDevice = trim((string)($_POST['client_device'] ?? ''));
+
+        $browser = $postedBrowser !== ''
+            ? substr($postedBrowser, 0, 120)
+            : tl_detect_browser($userAgent);
+
+        $os = $postedOs !== ''
+            ? substr($postedOs, 0, 120)
+            : tl_detect_os($userAgent);
+
+        $deviceName = $postedDevice !== ''
+            ? substr($postedDevice, 0, 190)
+            : tl_detect_device_name($userAgent, $os);
+
+        $ip = tl_client_ip();
+
+        $columns = array(
+            'tenant_id',
+            'user_id',
+            'platform',
+            'device_name',
+            'device_identifier_hash',
+            'last_ip_address',
+            'last_seen_at',
+            'status',
+            'created_at'
+        );
+
+        $values = array(
+            ':tenant_id',
+            ':user_id',
+            "'web'",
+            ':device_name',
+            ':device_hash',
+            ':ip_address',
+            'NOW()',
+            "'active'",
+            'NOW()'
+        );
+
+        $params = array(
+            ':tenant_id' => (int)$user['tenant_id'],
+            ':user_id' => (int)$user['user_id'],
+            ':device_name' => $deviceName !== '' ? $deviceName : 'Web',
+            ':device_hash' => $sessionHash,
+            ':ip_address' => $ip
+        );
+
+        $optional = array(
+            'session_hash' => array(':session_hash', $sessionHash),
+            'browser_name' => array(':browser_name', $browser),
+            'os_name' => array(':os_name', $os),
+            'user_agent' => array(':user_agent', $userAgent),
+            'login_at' => array('NOW()', null),
+            'last_activity_at' => array('NOW()', null),
+            'revoked_at' => array('NULL', null)
+        );
+
+        foreach ($optional as $column => $config) {
+            if (!tl_column_exists($pdo, 'user_devices', $column)) {
+                continue;
+            }
+
+            $columns[] = $column;
+            $values[] = $config[0];
+
+            if ($config[1] !== null && substr($config[0], 0, 1) === ':') {
+                $params[$config[0]] = $config[1];
+            }
+        }
+
+        $sql = 'INSERT INTO user_devices (' .
+            implode(', ', $columns) .
+            ') VALUES (' .
+            implode(', ', $values) .
+            ')';
+
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+
+        return (int)$pdo->lastInsertId();
+    } catch (Throwable $e) {
+        error_log('FieldPlx login session store error: ' . $e->getMessage());
+        return 0;
+    }
 }
 
 function tl_safe_return_path($value)
@@ -797,8 +990,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     |--------------------------------------------------------------------------
                     */
                     $_SESSION['tenant_authenticated'] = true;
-                    $_SESSION['tenant_login_at'] = time();
-                    $_SESSION['tenant_last_activity'] = time();
+
+                    $loginNow = time();
+
+                    $_SESSION['tenant_login_at'] = $loginNow;
+                    $_SESSION['tenant_last_activity_at'] = $loginNow;
+                    $_SESSION['tenant_last_activity'] = $loginNow; // compatibility alias
+                    $_SESSION['tenant_session_regenerated_at'] = $loginNow;
+                    $_SESSION['tenant_device_last_touch'] = $loginNow;
                     $_SESSION['tenant_session_id'] = session_id();
 
                     /*
@@ -1115,6 +1314,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                             random_bytes(32)
                         );
 
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | Store this web login as an active device session
+                    |--------------------------------------------------------------------------
+                    */
+                    $loginDeviceSessionId =
+                        tl_store_login_session($pdo, $user);
+
+                    $_SESSION['tenant_device_session_id'] =
+                        (int)$loginDeviceSessionId;
+
+                    $_SESSION['tenant_device_session_hash'] =
+                        hash('sha256', session_id());
+
+                    if ($loginDeviceSessionId <= 0) {
+                        error_log(
+                            'FieldPlx warning: login succeeded but user_devices session was not stored. ' .
+                            'Tenant=' . (int)$user['tenant_id'] .
+                            ' User=' . (int)$user['user_id']
+                        );
+                    }
+
                     /*
                     |--------------------------------------------------------------------------
                     | Update last login
@@ -1320,8 +1542,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                 $subscription
                                     ? (int)$subscription['plan_id']
                                     : null,
-                            'session_id' =>
-                                session_id(),
+                            'session_hash' =>
+                                hash('sha256', session_id()),
+                            'device_session_id' =>
+                                $loginDeviceSessionId > 0
+                                    ? (int)$loginDeviceSessionId
+                                    : null,
                             'login_at' =>
                                 date('Y-m-d H:i:s'),
                             'return_to' =>
@@ -1380,7 +1606,7 @@ $returnTo =
 >
 
 <title>Tenant Login - FieldPlx</title>
-
+<script src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
 
 
 <style>
@@ -1548,6 +1774,13 @@ input{
     color:rgba(255,255,255,.88);
     font-size:11px
 }
+
+.tl-feature-icon svg{width:15px;height:15px;stroke-width:2}
+.tl-alert svg{width:16px;height:16px;flex:0 0 16px;margin-top:1px}
+.tl-input-icon{width:17px;height:17px;stroke-width:2}
+.tl-password-toggle svg{width:17px;height:17px}
+.tl-submit svg{width:16px;height:16px}
+.tl-security svg{width:14px;height:14px;color:var(--fd-green-dark)}
 
 .tl-feature-icon{
     width:28px;
@@ -1885,21 +2118,21 @@ input{
 
                 <div class="tl-feature">
                     <span class="tl-feature-icon">
-                        <i class="bi bi-briefcase"></i>
+                        <i data-lucide="briefcase-business"></i>
                     </span>
                     Jobs, visits and workforce operations
                 </div>
 
                 <div class="tl-feature">
                     <span class="tl-feature-icon">
-                        <i class="bi bi-shield-check"></i>
+                        <i data-lucide="shield-check"></i>
                     </span>
                     Tenant, role and branch scoped access
                 </div>
 
                 <div class="tl-feature">
                     <span class="tl-feature-icon">
-                        <i class="bi bi-graph-up-arrow"></i>
+                        <i data-lucide="chart-no-axes-combined"></i>
                     </span>
                     Billing, reports and business visibility
                 </div>
@@ -1932,7 +2165,7 @@ input{
         <?php if ($successMessage !== ''): ?>
 
         <div class="tl-alert success">
-            <i class="bi bi-check-circle"></i>
+            <i data-lucide="circle-check"></i>
             <span>
                 <?= tl_h($successMessage) ?>
             </span>
@@ -1943,7 +2176,7 @@ input{
         <?php if ($errorMessage !== ''): ?>
 
         <div class="tl-alert">
-            <i class="bi bi-exclamation-circle"></i>
+            <i data-lucide="circle-alert"></i>
             <span>
                 <?= tl_h($errorMessage) ?>
             </span>
@@ -1969,6 +2202,10 @@ input{
                 value="<?= tl_h($returnTo) ?>"
             >
 
+            <input type="hidden" name="client_browser" id="clientBrowser" value="">
+            <input type="hidden" name="client_os" id="clientOs" value="">
+            <input type="hidden" name="client_device" id="clientDevice" value="">
+
             <div class="tl-field">
 
                 <label for="loginIdentifier">
@@ -1977,9 +2214,7 @@ input{
 
                 <div class="tl-input-wrap">
 
-                    <i
-                        class="bi bi-person-badge tl-input-icon"
-                    ></i>
+                    <i data-lucide="badge-user-round" class="tl-input-icon"></i>
 
                     <input
                         type="text"
@@ -2005,9 +2240,7 @@ input{
 
                 <div class="tl-input-wrap">
 
-                    <i
-                        class="bi bi-lock tl-input-icon"
-                    ></i>
+                    <i data-lucide="lock-keyhole" class="tl-input-icon"></i>
 
                     <input
                         type="password"
@@ -2025,7 +2258,7 @@ input{
                         id="passwordToggle"
                         aria-label="Show password"
                     >
-                        <i class="bi bi-eye"></i>
+                        <i data-lucide="eye"></i>
                     </button>
 
                 </div>
@@ -2057,7 +2290,7 @@ input{
                 id="loginButton"
             >
                 <span class="tl-loader"></span>
-                <i class="bi bi-box-arrow-in-right"></i>
+                <i data-lucide="log-in"></i>
                 <span id="loginButtonText">
                     Sign in to FieldPlx
                 </span>
@@ -2066,7 +2299,7 @@ input{
         </form>
 
         <div class="tl-security">
-            <i class="bi bi-shield-lock"></i>
+            <i data-lucide="shield-check"></i>
             Secure tenant-scoped authentication
         </div>
 
@@ -2116,6 +2349,52 @@ var remember=
 var storageKey=
     'fieldplx_tenant_login';
 
+
+function tlClientMeta(){
+    var ua=navigator.userAgent||'';
+    var browser='Web Browser';
+    var os='Other';
+    var device='';
+
+    if(/Edg\//i.test(ua)) browser='Microsoft Edge';
+    else if(/OPR\//i.test(ua)) browser='Opera';
+    else if(/Firefox\//i.test(ua)) browser='Firefox';
+    else if(/Chrome\//i.test(ua)||/CriOS\//i.test(ua)) browser='Google Chrome';
+    else if(/Safari\//i.test(ua)) browser='Safari';
+
+    if(/Windows/i.test(ua)) os='Windows';
+    else if(/Android/i.test(ua)) os='Android';
+    else if(/iPhone|iPad|iPod/i.test(ua)) os='iOS';
+    else if(/Macintosh|Mac OS X/i.test(ua)) os='macOS';
+    else if(/CrOS/i.test(ua)) os='ChromeOS';
+    else if(/Linux/i.test(ua)) os='Linux';
+
+    var android=ua.match(/Android[^;]*;\s*([^;\)]+?)(?:\s+Build\/[^;\)]*)?\)/i);
+    if(android&&android[1]) device=android[1].trim();
+    else if(/iPhone/i.test(ua)) device='iPhone';
+    else if(/iPad/i.test(ua)) device='iPad';
+    else device=os;
+
+    var b=document.getElementById('clientBrowser');
+    var o=document.getElementById('clientOs');
+    var d=document.getElementById('clientDevice');
+    if(b)b.value=browser;
+    if(o)o.value=os;
+    if(d)d.value=device;
+
+    if(navigator.brave&&typeof navigator.brave.isBrave==='function'){
+        navigator.brave.isBrave().then(function(isBrave){
+            if(isBrave&&b)b.value='Brave';
+        }).catch(function(){});
+    }
+}
+
+tlClientMeta();
+
+if(window.lucide){
+    window.lucide.createIcons();
+}
+
 try{
 
     var savedTenant=
@@ -2149,8 +2428,8 @@ toggle.addEventListener(
 
         toggle.innerHTML=
             show
-                ? '<i class="bi bi-eye-slash"></i>'
-                : '<i class="bi bi-eye"></i>';
+                ? '<i data-lucide="eye-off"></i>'
+                : '<i data-lucide="eye"></i>';
 
         toggle.setAttribute(
             'aria-label',
@@ -2158,6 +2437,10 @@ toggle.addEventListener(
                 ? 'Hide password'
                 : 'Show password'
         );
+
+        if(window.lucide){
+            window.lucide.createIcons();
+        }
     }
 );
 

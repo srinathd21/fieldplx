@@ -47,13 +47,7 @@ $activeMenu = $activeMenu ?? '';
 <body>
 <div id="appShell" class="app-shell">
   <header class="brand-bar">
-    <svg class="brand-mark" viewBox="0 0 64 78" aria-hidden="true">
-      <polygon points="7,17 29,5 29,34 7,46" fill="#078ebd"/>
-      <polygon points="33,5 57,17 33,31" fill="#005e8f"/>
-      <polygon points="33,35 57,22 57,49 33,62" fill="#1bc8cb"/>
-      <polygon points="7,51 29,39 29,73" fill="#0872a5"/>
-    </svg>
-    <span class="brand-name">FieldPlx</span>
+   <img src="../assets/logo.png" alt="fieldplx logo" width="100">
   </header>
 
   <?php require __DIR__ . '/nav.php'; ?>
