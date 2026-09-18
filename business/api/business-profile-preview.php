@@ -60,13 +60,25 @@ function bpp_logo_abs($logoPath){
     foreach($candidates as $candidate){$real=@realpath($candidate);if($real&&is_file($real))return $real;if(is_file($candidate))return $candidate;}
     return '';
 }
-function bpp_draw_logo(FPDF $pdf,$logoAbs,$x,$y,$w,$company,$showCompanyName){
-    if($logoAbs!==''){
-        $ext=strtolower(pathinfo($logoAbs,PATHINFO_EXTENSION));
-        if(in_array($ext,array('png','jpg','jpeg'),true)){try{$pdf->Image($logoAbs,$x,$y,$w,0);return true;}catch(Throwable $e){error_log('Business profile preview logo: '.$e->getMessage());}}
-    }
-    if($showCompanyName)bpp_text($pdf,$x,$y+2,max(46,$w+28),$company,12,true,array(26,46,60),5.5);
-    return false;
+function bpp_logo_box($logoSize){
+    if($logoSize==='large') return array('w'=>50.0,'h'=>25.0);
+    if($logoSize==='small') return array('w'=>32.0,'h'=>15.0);
+    return array('w'=>41.0,'h'=>20.0);
+}
+function bpp_draw_logo(FPDF $pdf,$logoAbs,$x,$y,$boxW,$boxH,$align='L',$valign='M'){
+    if($logoAbs==='')return false;
+    $ext=strtolower(pathinfo($logoAbs,PATHINFO_EXTENSION));
+    if(!in_array($ext,array('png','jpg','jpeg'),true))return false;
+    $info=@getimagesize($logoAbs);
+    if(!$info||empty($info[0])||empty($info[1]))return false;
+    $iw=(float)$info[0];$ih=(float)$info[1];
+    $scale=min((float)$boxW/$iw,(float)$boxH/$ih);
+    if($scale<=0)return false;
+    $drawW=max(.5,$iw*$scale);$drawH=max(.5,$ih*$scale);
+    $drawX=(float)$x;$drawY=(float)$y;
+    if($align==='C')$drawX+=(($boxW-$drawW)/2);elseif($align==='R')$drawX+=($boxW-$drawW);
+    if($valign==='M')$drawY+=(($boxH-$drawH)/2);elseif($valign==='B')$drawY+=($boxH-$drawH);
+    try{$pdf->Image($logoAbs,$drawX,$drawY,$drawW,$drawH);return true;}catch(Throwable $e){error_log('Business profile preview logo: '.$e->getMessage());return false;}
 }
 function bpp_theme_hex($choice,$profile){
     switch((string)$choice){
@@ -136,43 +148,68 @@ $company=bpp_clean($tenant['display_name']??($tenant['legal_name']??'FieldPlx Bu
 $companyPhone=bpp_clean($tenant['phone']??($profile['phone']??''));$companyEmail=bpp_clean($tenant['email']??'');$companyWebsite=bpp_clean($tenant['website']??'');
 $docLabel=$type==='quote'?(strtolower((string)$doc['quote_label'])==='estimate'?'ESTIMATE #4':'QUOTE #4'):($type==='job'?'JOB #2':'INVOICE #2');
 $selected=json_decode((string)$doc['selected_fields_json'],true);if(!is_array($selected))$selected=array();$selectedNames=bpp_selected_field_names($pdo,$tenantId,$selected);
-$logoAbs=bpp_logo_abs(bpp_clean($profile['logo_path']??''));$logoW=$logoSize==='large'?50:($logoSize==='small'?30:40);
+$logoAbs=bpp_logo_abs(bpp_clean($profile['logo_path']??''));
 
 $pdf=new FPDF('P','mm','A4');$pdf->SetTitle($company.' '.$docLabel);$pdf->SetMargins(12,10,12);$pdf->SetAutoPageBreak(false,12);$pdf->AddPage();$pdf->SetFillColor(255,255,255);$pdf->Rect(0,0,210,297,'F');
 $ink=array(18,28,34);$muted=array(76,88,96);$light=array(214,219,223);$defaultTheme=((string)$style['theme_color']==='default');
 $clientAddress="Bob Guy\n#123 Main St.\nSpringfield, California 90210";$serviceAddress="#8142 2nd St.\nAnytown, California 123456";
 
-// Header/layout section. Every layout uses fixed left/right columns so Recipient/Sender and Service Address remain aligned.
-$contentTop=84;
+// Header/layout section. Each layout reserves a fixed logo box, text columns and document-meta box.
+// This prevents portrait/square logos from colliding with Recipient, Sender or Service Address text.
+$logoBox=bpp_logo_box($logoSize);
+$contentTop=86;
 if($layout==='basic'){
-    $hasLogo=bpp_draw_logo($pdf,$logoAbs,16,13,$logoW,$company,!empty($style['show_company_name']));
-    if(!empty($style['show_company_name'])&&$hasLogo){bpp_text($pdf,81,15,55,$company,11.0,true,$ink,5.2);bpp_draw_contact_meta($pdf,81,22,55,$style,$companyPhone,$companyEmail,$companyWebsite,$muted);}
-    bpp_draw_doc_meta($pdf,112,13,82,$type,$docLabel,$defaultTheme?array(90,90,90):$accent,$ink,$muted,$defaultTheme);
-    bpp_field($pdf,16,48,'Recipient',$clientAddress,80,$muted,true);
-    if(!empty($style['show_client_phone']))bpp_text($pdf,16,66,80,'Phone: (780) 555-4827',6.8,false,$muted,3.8);
-    $contentTop=82;
-}elseif($layout==='compact'){
-    if(!empty($style['show_company_name'])){bpp_text($pdf,16,14,72,$company,10.0,true,$ink,4.8);bpp_draw_contact_meta($pdf,16,21,72,$style,$companyPhone,$companyEmail,$companyWebsite,$muted);}
-    bpp_draw_doc_meta($pdf,116,13,78,$type,$docLabel,$accent,$ink,$muted,false);
-    bpp_field($pdf,16,46,'Recipient',$clientAddress,80,$muted,true);if(!empty($style['show_client_phone']))bpp_text($pdf,16,64,80,'Phone: (780) 555-4827',6.8,false,$muted,3.8);
-    bpp_draw_logo($pdf,$logoAbs,124,48,$logoW,$company,false);
-    $contentTop=82;
-}elseif($layout==='envelope_dual'){
-    if(!empty($style['show_company_name'])){bpp_text($pdf,16,14,74,$company,9.5,true,$ink,4.8);bpp_draw_contact_meta($pdf,16,21,74,$style,$companyPhone,$companyEmail,$companyWebsite,$muted);}
-    bpp_draw_doc_meta($pdf,116,13,78,$type,$docLabel,$accent,$ink,$muted,false);
+    // Basic: logo left, company block center, document summary right, recipient/sender beneath.
+    $logoDrawn=bpp_draw_logo($pdf,$logoAbs,16,13,$logoBox['w'],$logoBox['h'],'L','M');
+    if(!empty($style['show_company_name'])){
+        bpp_text($pdf,70,14,38,$company,10.2,true,$ink,4.8);
+        bpp_draw_contact_meta($pdf,70,21,38,$style,$companyPhone,$companyEmail,$companyWebsite,$muted);
+    }elseif(!$logoDrawn){
+        bpp_text($pdf,16,16,72,$company,10.2,true,$ink,4.8);
+    }
+    bpp_draw_doc_meta($pdf,116,13,78,$type,$docLabel,$defaultTheme?array(90,90,90):$accent,$ink,$muted,$defaultTheme);
     bpp_line($pdf,16,45,97,$accent,.30);bpp_line($pdf,103,45,194,$accent,.30);
-    bpp_field($pdf,16,49,'Recipient',$clientAddress,78,$muted,true);if(!empty($style['show_client_phone']))bpp_text($pdf,16,67,78,'Phone: (780) 555-4827',6.7,false,$muted,3.7);
-    bpp_draw_logo($pdf,$logoAbs,124,48,$logoW,$company,false);
-    $contentTop=82;
-}else{
-    bpp_draw_logo($pdf,$logoAbs,16,13,$logoW,$company,!empty($style['show_company_name']));
+    bpp_field($pdf,16,49,'Recipient',$clientAddress,78,$muted,true);
+    $senderValue=!empty($style['show_company_name'])?$company:'Company';
+    bpp_field($pdf,103,49,'Sender',$senderValue,91,$muted,true);
+    if(!empty($style['show_client_phone']))bpp_text($pdf,16,67,78,'Phone: (780) 555-4827',6.7,false,$muted,3.7);
+    $contentTop=84;
+}elseif($layout==='compact'){
+    // Compact: company text upper-left, document meta upper-right, recipient left, logo in a bounded right-side box.
+    if(!empty($style['show_company_name'])){
+        bpp_text($pdf,16,14,74,$company,9.8,true,$ink,4.7);
+        bpp_draw_contact_meta($pdf,16,21,74,$style,$companyPhone,$companyEmail,$companyWebsite,$muted);
+    }
     bpp_draw_doc_meta($pdf,116,13,78,$type,$docLabel,$accent,$ink,$muted,false);
     bpp_line($pdf,16,45,97,$accent,.30);bpp_line($pdf,103,45,194,$accent,.30);
     bpp_field($pdf,16,49,'Recipient',$clientAddress,78,$muted,true);
-    bpp_field($pdf,103,49,'Sender',$company,91,$muted,true);
+    if(!empty($style['show_client_phone']))bpp_text($pdf,16,67,78,'Phone: (780) 555-4827',6.7,false,$muted,3.7);
+    bpp_draw_logo($pdf,$logoAbs,103,48,91,25,'C','M');
+    $contentTop=84;
+}elseif($layout==='envelope_dual'){
+    // Dual window: company upper-left and logo centered in the right address window.
+    if(!empty($style['show_company_name'])){
+        bpp_text($pdf,16,14,74,$company,9.5,true,$ink,4.6);
+        bpp_draw_contact_meta($pdf,16,21,74,$style,$companyPhone,$companyEmail,$companyWebsite,$muted);
+    }
+    bpp_draw_doc_meta($pdf,116,13,78,$type,$docLabel,$accent,$ink,$muted,false);
+    bpp_line($pdf,16,45,97,$accent,.30);bpp_line($pdf,103,45,194,$accent,.30);
+    bpp_field($pdf,16,49,'Recipient',$clientAddress,78,$muted,true);
+    if(!empty($style['show_client_phone']))bpp_text($pdf,16,67,78,'Phone: (780) 555-4827',6.7,false,$muted,3.7);
+    bpp_draw_logo($pdf,$logoAbs,103,48,91,25,'C','M');
+    $contentTop=84;
+}else{ // envelope_single
+    // Single window: logo in the upper-left header, document meta right, recipient/sender below.
+    $logoDrawn=bpp_draw_logo($pdf,$logoAbs,16,13,78,25,'L','M');
+    if(!$logoDrawn&&!empty($style['show_company_name']))bpp_text($pdf,16,16,78,$company,10.2,true,$ink,4.8);
+    bpp_draw_doc_meta($pdf,116,13,78,$type,$docLabel,$accent,$ink,$muted,false);
+    bpp_line($pdf,16,45,97,$accent,.30);bpp_line($pdf,103,45,194,$accent,.30);
+    bpp_field($pdf,16,49,'Recipient',$clientAddress,78,$muted,true);
+    $senderValue=!empty($style['show_company_name'])?$company:'Company';
+    bpp_field($pdf,103,49,'Sender',$senderValue,91,$muted,true);
     if(!empty($style['show_client_phone']))bpp_text($pdf,16,67,78,'Phone: (780) 555-4827',6.7,false,$muted,3.7);
     bpp_draw_contact_meta($pdf,103,62,91,$style,$companyPhone,$companyEmail,$companyWebsite,$muted);
-    $contentTop=82;
+    $contentTop=84;
 }
 
 // Service address begins on its own aligned row under the header columns.

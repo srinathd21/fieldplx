@@ -75,7 +75,19 @@ class FPDF
     public function MultiCell($w,$h,$txt,$border=0,$align='J',$fill=false)
     {
         $w=(float)$w; $h=(float)$h; $usable=max(4,$w-2); $avg=max(.7,($this->fontSizePt*.48)/$this->k); $chars=max(1,(int)floor($usable/$avg));
-        $paragraphs=preg_split('/\r?\n/',(string)$txt); foreach($paragraphs as $p){ $wrapped=wordwrap($p,$chars,"\n",true); foreach(explode("\n",$wrapped) as $line){ $this->Cell($w,$h,$line,$border,1,$align,$fill); } }
+        // Preserve the caller's starting X for every wrapped/newline row. The previous
+        // fallback used Cell(..., ln=1) without restoring X, which shifted line 2+ back
+        // to the document's left margin and caused address/contact text misalignment.
+        $startX=$this->x;
+        $paragraphs=preg_split('/\r?\n/',(string)$txt);
+        foreach($paragraphs as $p){
+            $wrapped=wordwrap($p,$chars,"\n",true);
+            foreach(explode("\n",$wrapped) as $line){
+                $this->x=$startX;
+                $this->Cell($w,$h,$line,$border,1,$align,$fill);
+            }
+        }
+        $this->x=$this->lMargin;
     }
     protected function paeth($a,$b,$c)
     {
