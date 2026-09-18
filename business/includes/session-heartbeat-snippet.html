@@ -1,0 +1,76 @@
+<script>
+(function () {
+    'use strict';
+
+    var checking = false;
+    var stopped = false;
+
+    function redirectToLogout(reason) {
+        if (stopped) {
+            return;
+        }
+
+        stopped = true;
+
+        window.location.replace(
+            'logout.php?reason=' +
+            encodeURIComponent(reason || 'remote_logout')
+        );
+    }
+
+    function checkFieldPlxSession() {
+        if (checking || stopped) {
+            return;
+        }
+
+        checking = true;
+
+        fetch('api/session-status.php', {
+            method: 'GET',
+            credentials: 'same-origin',
+            cache: 'no-store',
+            headers: {
+                'Accept': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest'
+            }
+        })
+        .then(function (response) {
+            return response.text().then(function (raw) {
+                var data = null;
+
+                try {
+                    data = JSON.parse(raw);
+                } catch (e) {
+                    return;
+                }
+
+                if (
+                    response.status === 401 ||
+                    data.authenticated === false
+                ) {
+                    redirectToLogout(
+                        data.reason || 'session_expired'
+                    );
+                }
+            });
+        })
+        .catch(function () {
+            /* Temporary network failure: keep the current page open. */
+        })
+        .finally(function () {
+            checking = false;
+        });
+    }
+
+    setInterval(checkFieldPlxSession, 10000);
+    setTimeout(checkFieldPlxSession, 1000);
+
+    document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) {
+            checkFieldPlxSession();
+        }
+    });
+
+    window.addEventListener('focus', checkFieldPlxSession);
+})();
+</script>

@@ -8,6 +8,33 @@ if (session_status() === PHP_SESSION_NONE) {
 
 /*
 |--------------------------------------------------------------------------
+| Logout reason
+|--------------------------------------------------------------------------
+*/
+$logoutReason = isset($_GET['reason'])
+    ? trim((string)$_GET['reason'])
+    : 'manual_logout';
+
+$allowedLogoutReasons = array(
+    'manual_logout',
+    'remote_logout',
+    'session_expired',
+    'session_missing',
+    'idle_timeout',
+    'absolute_timeout',
+    'logout'
+);
+
+if (!in_array($logoutReason, $allowedLogoutReasons, true)) {
+    $logoutReason = 'manual_logout';
+}
+
+if ($logoutReason === 'logout') {
+    $logoutReason = 'manual_logout';
+}
+
+/*
+|--------------------------------------------------------------------------
 | Capture current session context
 |--------------------------------------------------------------------------
 */
@@ -57,10 +84,6 @@ $deviceRevokeMethod = null;
 |--------------------------------------------------------------------------
 | Revoke current login session in user_devices
 |--------------------------------------------------------------------------
-|
-| Login page creates a user_devices row for each successful login.
-| When manually logging out, revoke only THIS browser/device session.
-|
 */
 if (
     isset($pdo) &&
@@ -70,11 +93,7 @@ if (
 ) {
     try {
 
-        /*
-        |--------------------------------------------------------------------------
-        | Preferred method: stored user_devices.id
-        |--------------------------------------------------------------------------
-        */
+        /* Preferred method: exact user_devices.id */
         if ($deviceSessionId > 0) {
 
             $stmt = $pdo->prepare("
@@ -102,15 +121,7 @@ if (
             }
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | Fallback: session hash
-        |--------------------------------------------------------------------------
-        |
-        | Useful for sessions created before tenant_device_session_id started
-        | being stored in $_SESSION.
-        |
-        */
+        /* Fallback: session hash */
         if (!$deviceRevoked) {
 
             $sessionHash = $storedSessionHash !== ''
@@ -145,9 +156,6 @@ if (
         }
 
     } catch (Throwable $e) {
-        /*
-         * Logout must continue even if device-session cleanup fails.
-         */
         error_log(
             'FieldPlx logout device revoke error: ' .
             $e->getMessage()
@@ -157,7 +165,7 @@ if (
 
 /*
 |--------------------------------------------------------------------------
-| Audit manual logout
+| Audit logout
 |--------------------------------------------------------------------------
 */
 try {
@@ -173,41 +181,27 @@ try {
         null,
         array(
             'result' => 'logged_out',
-            'reason' => 'manual_logout',
-
+            'reason' => $logoutReason,
             'tenant_code' => $tenantCode,
-
             'user_name' => $userName,
             'user_email' => $userEmail,
-
-            /*
-             * Avoid putting the raw PHP session id in audit records.
-             * Store only a hash.
-             */
             'session_hash' => $currentSessionHash,
-
             'device_session_id' => $deviceSessionId > 0
                 ? $deviceSessionId
                 : null,
-
             'device_session_revoked' => $deviceRevoked
                 ? 1
                 : 0,
-
             'device_revoke_method' => $deviceRevokeMethod,
-
             'login_at_unix' => $loginAt,
-
             'session_duration_seconds' => $loginAt
                 ? max(0, time() - $loginAt)
                 : null,
-
             'logout_at' => date('Y-m-d H:i:s')
         )
     );
 
 } catch (Throwable $e) {
-
     error_log(
         'FieldPlx logout audit error: ' .
         $e->getMessage()
@@ -221,11 +215,6 @@ try {
 */
 $_SESSION = array();
 
-/*
-|--------------------------------------------------------------------------
-| Remove PHP session cookie
-|--------------------------------------------------------------------------
-*/
 if (ini_get('session.use_cookies')) {
 
     $params = session_get_cookie_params();
@@ -241,17 +230,28 @@ if (ini_get('session.use_cookies')) {
     );
 }
 
-/*
-|--------------------------------------------------------------------------
-| Destroy server-side session
-|--------------------------------------------------------------------------
-*/
-session_destroy();
+if (session_status() === PHP_SESSION_ACTIVE) {
+    session_destroy();
+}
 
 /*
 |--------------------------------------------------------------------------
-| Redirect to login
+| Redirect to login with reason
 |--------------------------------------------------------------------------
 */
-header('Location: login.php?reason=logout');
+if ($logoutReason === 'remote_logout') {
+    header('Location: login.php?reason=remote_logout');
+} elseif ($logoutReason === 'idle_timeout') {
+    header('Location: login.php?reason=idle_timeout');
+} elseif ($logoutReason === 'absolute_timeout') {
+    header('Location: login.php?reason=absolute_timeout');
+} elseif (
+    $logoutReason === 'session_expired' ||
+    $logoutReason === 'session_missing'
+) {
+    header('Location: login.php?reason=session_expired');
+} else {
+    header('Location: login.php?reason=logout');
+}
+
 exit;
