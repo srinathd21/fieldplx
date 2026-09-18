@@ -2145,9 +2145,9 @@ require __DIR__ . '/includes/header.php';
             });
         }
 
-        function request(payload) {
+        function request(payload, endpoint) {
             payload.append('csrf_token', csrfToken);
-            return fetch(API_URL, {
+            return fetch(endpoint || API_URL, {
                 method: 'POST',
                 body: payload,
                 credentials: 'same-origin',
@@ -2644,7 +2644,10 @@ require __DIR__ . '/includes/header.php';
             fd.append('message', document.getElementById('cmEmailMessage').value);
             fd.append('send_copy', document.getElementById('cmEmailCopy').checked ? '1' : '0');
             state.emailFiles.forEach(function (file) { fd.append('attachments[]', file, file.name); });
-            request(fd).then(function (data) {
+            /* Use the same tested SMTP sender as Client View.
+               api/client-view.php uses the shared Platform SMTP configuration,
+               the permanent SMTP encryption key and PHPMailer. */
+            request(fd, 'api/client-view.php').then(function (data) {
                 closeEmail();
                 showToast('success', data.message || 'Email sent successfully.');
             }).catch(function (err) {

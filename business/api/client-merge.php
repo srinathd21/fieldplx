@@ -532,6 +532,18 @@ function cmgMergePhoneNumbers(PDO $pdo, $tenantId, $primaryId, $sourceIds)
 
     $ph = implode(',', array_fill(0, count($sourceIds), '?'));
 
+    $preferredPrimaryPhoneId = 0;
+    if (cmgColumnExists($pdo, $table, 'is_primary')) {
+        $orderBits = array();
+        if (cmgColumnExists($pdo, $table, 'sort_order')) {
+            $orderBits[] = 'sort_order ASC';
+        }
+        $orderBits[] = 'id ASC';
+        $q = $pdo->prepare("SELECT id FROM `$table` WHERE tenant_id = ? AND client_id = ? AND is_primary = 1 ORDER BY " . implode(', ', $orderBits) . " LIMIT 1");
+        $q->execute(array($tenantId, $primaryId));
+        $preferredPrimaryPhoneId = (int)$q->fetchColumn();
+    }
+
     /*
      * Build a map of phone numbers already owned by the client we keep.
      * The table has a unique key on (tenant_id, client_id, phone_number),
@@ -623,12 +635,21 @@ function cmgMergePhoneNumbers(PDO $pdo, $tenantId, $primaryId, $sourceIds)
         }
         $order[] = 'id ASC';
 
-        $q = $pdo->prepare("SELECT id FROM `$table`
-                            WHERE tenant_id = ? AND client_id = ?
-                            ORDER BY " . implode(', ', $order) . "
-                            LIMIT 1");
-        $q->execute(array($tenantId, $primaryId));
-        $keepPhoneId = (int)$q->fetchColumn();
+        $keepPhoneId = 0;
+        if ($preferredPrimaryPhoneId > 0) {
+            $q = $pdo->prepare("SELECT id FROM `$table` WHERE id = ? AND tenant_id = ? AND client_id = ? LIMIT 1");
+            $q->execute(array($preferredPrimaryPhoneId, $tenantId, $primaryId));
+            $keepPhoneId = (int)$q->fetchColumn();
+        }
+
+        if ($keepPhoneId <= 0) {
+            $q = $pdo->prepare("SELECT id FROM `$table`
+                                WHERE tenant_id = ? AND client_id = ?
+                                ORDER BY " . implode(', ', $order) . "
+                                LIMIT 1");
+            $q->execute(array($tenantId, $primaryId));
+            $keepPhoneId = (int)$q->fetchColumn();
+        }
 
         if ($keepPhoneId > 0) {
             $q = $pdo->prepare("UPDATE `$table` SET is_primary = 0 WHERE tenant_id = ? AND client_id = ?");
@@ -664,22 +685,111 @@ function cmgMergePhoneNumbers(PDO $pdo, $tenantId, $primaryId, $sourceIds)
     return array('moved' => $moved, 'duplicates_removed' => $duplicatesRemoved);
 }
 
-function cmgNormalizePrimaryFlag(PDO $pdo, $table, $tenantId, $primaryId)
+function cmgCurrentPrimaryId(PDO $pdo, $table, $tenantId, $clientId)
+{
+    if (!cmgTableExists($pdo, $table) || !cmgColumnExists($pdo, $table, 'client_id') || !cmgColumnExists($pdo, $table, 'is_primary')) {
+        return 0;
+    }
+
+    $deletedClause = cmgColumnExists($pdo, $table, 'deleted_at') ? ' AND deleted_at IS NULL' : '';
+    $q = $pdo->prepare("SELECT id FROM `$table` WHERE tenant_id = ? AND client_id = ? AND is_primary = 1$deletedClause ORDER BY id ASC LIMIT 1");
+    $q->execute(array($tenantId, $clientId));
+    return (int)$q->fetchColumn();
+}
+
+function cmgNormalizePrimaryFlag(PDO $pdo, $table, $tenantId, $primaryId, $preferredId = 0)
 {
     if (!cmgTableExists($pdo, $table) || !cmgColumnExists($pdo, $table, 'is_primary')) {
         return;
     }
+
     $deletedClause = cmgColumnExists($pdo, $table, 'deleted_at') ? ' AND deleted_at IS NULL' : '';
-    $q = $pdo->prepare("SELECT id FROM `$table` WHERE tenant_id = ? AND client_id = ?$deletedClause ORDER BY is_primary DESC, id ASC LIMIT 1");
-    $q->execute(array($tenantId, $primaryId));
-    $keepId = (int)$q->fetchColumn();
+    $keepId = 0;
+
+    if ((int)$preferredId > 0) {
+        $q = $pdo->prepare("SELECT id FROM `$table` WHERE tenant_id = ? AND client_id = ? AND id = ?$deletedClause LIMIT 1");
+        $q->execute(array($tenantId, $primaryId, (int)$preferredId));
+        $keepId = (int)$q->fetchColumn();
+    }
+
+    if ($keepId <= 0) {
+        $q = $pdo->prepare("SELECT id FROM `$table` WHERE tenant_id = ? AND client_id = ?$deletedClause ORDER BY is_primary DESC, id ASC LIMIT 1");
+        $q->execute(array($tenantId, $primaryId));
+        $keepId = (int)$q->fetchColumn();
+    }
+
     if ($keepId <= 0) {
         return;
     }
+
     $q = $pdo->prepare("UPDATE `$table` SET is_primary = 0 WHERE tenant_id = ? AND client_id = ?");
     $q->execute(array($tenantId, $primaryId));
     $q = $pdo->prepare("UPDATE `$table` SET is_primary = 1 WHERE tenant_id = ? AND client_id = ? AND id = ?");
     $q->execute(array($tenantId, $primaryId, $keepId));
+}
+
+function cmgSyncLegacyPhoneSummary(PDO $pdo, $tenantId, $clientId)
+{
+    $table = 'client_phone_numbers';
+    if (!cmgTableExists($pdo, $table) || !cmgColumnExists($pdo, $table, 'phone_number')) {
+        return;
+    }
+
+    $select = array('phone_number');
+    if (cmgColumnExists($pdo, $table, 'receives_messages')) {
+        $select[] = 'receives_messages';
+    }
+    $order = array();
+    if (cmgColumnExists($pdo, $table, 'is_primary')) {
+        $order[] = 'is_primary DESC';
+    }
+    if (cmgColumnExists($pdo, $table, 'sort_order')) {
+        $order[] = 'sort_order ASC';
+    }
+    $order[] = 'id ASC';
+
+    $q = $pdo->prepare("SELECT " . implode(', ', $select) . " FROM `$table` WHERE tenant_id = ? AND client_id = ? ORDER BY " . implode(', ', $order));
+    $q->execute(array($tenantId, $clientId));
+    $rows = $q->fetchAll(PDO::FETCH_ASSOC);
+    if (!$rows) {
+        return;
+    }
+
+    $primaryPhone = trim((string)$rows[0]['phone_number']);
+    $alternatePhone = '';
+    $allowSms = 0;
+    foreach ($rows as $row) {
+        $phone = trim((string)$row['phone_number']);
+        if ($phone !== '' && $phone !== $primaryPhone && $alternatePhone === '') {
+            $alternatePhone = $phone;
+        }
+        if (isset($row['receives_messages']) && (int)$row['receives_messages'] === 1) {
+            $allowSms = 1;
+        }
+    }
+
+    $sets = array();
+    $params = array(':id' => $clientId, ':t' => $tenantId);
+    if (cmgColumnExists($pdo, 'clients', 'phone')) {
+        $sets[] = 'phone = :phone';
+        $params[':phone'] = $primaryPhone !== '' ? $primaryPhone : null;
+    }
+    if (cmgColumnExists($pdo, 'clients', 'alternate_phone')) {
+        $sets[] = 'alternate_phone = :alternate';
+        $params[':alternate'] = $alternatePhone !== '' ? $alternatePhone : null;
+    }
+    if (cmgColumnExists($pdo, 'clients', 'allow_sms') && cmgColumnExists($pdo, $table, 'receives_messages')) {
+        $sets[] = 'allow_sms = :allow_sms';
+        $params[':allow_sms'] = $allowSms;
+    }
+    if (cmgColumnExists($pdo, 'clients', 'updated_at')) {
+        $sets[] = 'updated_at = NOW()';
+    }
+
+    if ($sets) {
+        $q = $pdo->prepare('UPDATE clients SET ' . implode(', ', $sets) . ' WHERE id = :id AND tenant_id = :t');
+        $q->execute($params);
+    }
 }
 
 function cmgReassignDynamic(PDO $pdo, $tenantId, $primaryId, $sourceIds)
@@ -931,6 +1041,8 @@ try {
 
             $mergeStep = 'reading linked client records';
             $linkedCounts = cmgPreviewCounts($pdo, $tenantId, $sourceIds);
+            $preferredLocationId = cmgCurrentPrimaryId($pdo, 'client_locations', $tenantId, $primaryId);
+            $preferredContactId = cmgCurrentPrimaryId($pdo, 'client_contacts', $tenantId, $primaryId);
             $mergeStep = 'merging client profile fields';
             $profileUpdates = cmgMergeProfile($pdo, $tenantId, $primary, $sourceRows);
 
@@ -950,8 +1062,9 @@ try {
             }
 
             $mergeStep = 'normalizing primary locations and contacts';
-            cmgNormalizePrimaryFlag($pdo, 'client_locations', $tenantId, $primaryId);
-            cmgNormalizePrimaryFlag($pdo, 'client_contacts', $tenantId, $primaryId);
+            cmgNormalizePrimaryFlag($pdo, 'client_locations', $tenantId, $primaryId, $preferredLocationId);
+            cmgNormalizePrimaryFlag($pdo, 'client_contacts', $tenantId, $primaryId, $preferredContactId);
+            cmgSyncLegacyPhoneSummary($pdo, $tenantId, $primaryId);
 
             $mergeStep = 'archiving duplicate client profiles';
             $ph = implode(',', array_fill(0, count($sourceIds), '?'));
