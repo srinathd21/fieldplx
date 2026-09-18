@@ -314,15 +314,81 @@ function req(fd){
 function ago(v){
     if (!v) return 'Unknown';
 
-    var d = new Date(String(v).replace(' ','T'));
-    var n = (Date.now() - d.getTime()) / 1000;
+    var raw = String(v).trim();
 
-    if (isNaN(n)) return String(v);
-    if (n < 0) return 'just now';
-    if (n < 60) return 'just now';
-    if (n < 3600) return Math.floor(n / 60) + ' min. ago';
-    if (n < 86400) return Math.floor(n / 3600) + ' hr. ago';
-    if (n < 604800) return Math.floor(n / 86400) + ' day(s) ago';
+    /*
+     * MariaDB stores timestamps in UTC.
+     *
+     * Example:
+     * 2026-09-18 13:15:00
+     *
+     * Convert it to ISO UTC:
+     * 2026-09-18T13:15:00Z
+     *
+     * Browser then converts UTC to the user's
+     * local timezone automatically.
+     */
+    if (
+        /^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}$/.test(raw)
+    ) {
+        raw = raw.replace(' ', 'T') + 'Z';
+    } else if (
+        /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(raw)
+    ) {
+        raw = raw + 'Z';
+    }
+
+    var d = new Date(raw);
+
+    if (isNaN(d.getTime())) {
+        return String(v);
+    }
+
+    var seconds =
+        Math.floor(
+            (Date.now() - d.getTime()) / 1000
+        );
+
+    /*
+     * Small server/browser clock differences.
+     */
+    if (seconds < 0) {
+        seconds = 0;
+    }
+
+    if (seconds < 60) {
+        return 'just now';
+    }
+
+    if (seconds < 3600) {
+        var minutes =
+            Math.floor(seconds / 60);
+
+        return minutes +
+            (minutes === 1
+                ? ' min. ago'
+                : ' mins. ago');
+    }
+
+    if (seconds < 86400) {
+        var hours =
+            Math.floor(seconds / 3600);
+
+        return hours +
+            (hours === 1
+                ? ' hr. ago'
+                : ' hrs. ago');
+    }
+
+    if (seconds < 604800) {
+        var days =
+            Math.floor(seconds / 86400);
+
+        return days +
+            (days === 1
+                ? ' day ago'
+                : ' days ago');
+    }
 
     return d.toLocaleString();
 }
