@@ -52,7 +52,7 @@ document.addEventListener('DOMContentLoaded', function () {
         stopped = true;
 
         window.location.replace(
-            'login.php?reason=' +
+            'logout.php?reason=' +
             encodeURIComponent(reason || 'remote_logout')
         );
     }
