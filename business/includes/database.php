@@ -21,7 +21,7 @@
 | Database Configuration
 |--------------------------------------------------------------------------
 |
-| Change these values to match your WAMP / hosting database.
+| Change these values to match your WAMP / hosting database. srv483.hstgr.io
 |
 */
 
