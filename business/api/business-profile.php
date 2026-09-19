@@ -40,11 +40,17 @@ if(!bp_table_exists($pdo,'tenant_business_profiles') || !bp_table_exists($pdo,'t
 $action=bp_post('action');
 try{
     if($action==='save_essential'){
-        $about=bp_post('about_text'); $policies=bp_post('policies_text'); $services=bp_post('services_text');
-        if(mb_strlen($about)>1000 || mb_strlen($policies)>1000 || mb_strlen($services)>1000) bp_json(422,false,'Each Essential information field can contain up to 1000 characters.');
-        $q=$pdo->prepare("INSERT INTO tenant_business_profiles (tenant_id,about_text,policies_text,services_text) VALUES (:tenant_id,:about,:policies,:services) ON DUPLICATE KEY UPDATE about_text=VALUES(about_text),policies_text=VALUES(policies_text),services_text=VALUES(services_text),updated_at=NOW()");
-        $q->execute(array(':tenant_id'=>$tenantId,':about'=>$about!==''?$about:null,':policies'=>$policies!==''?$policies:null,':services'=>$services!==''?$services:null));
-        bp_audit($pdo,$tenantId,$branchId,$userId,'BUSINESS_PROFILE_ESSENTIAL_UPDATED',array('about_length'=>mb_strlen($about),'policies_length'=>mb_strlen($policies),'services_length'=>mb_strlen($services)));
+        $about=bp_post('about_text'); $policies=bp_post('policies_text'); $services=bp_post('services_text'); $tone=bp_post('tone_guide_text');
+        if(mb_strlen($about)>1000 || mb_strlen($policies)>1000 || mb_strlen($services)>1000 || mb_strlen($tone)>1000) bp_json(422,false,'Each Essential information field can contain up to 1000 characters.');
+        $hasTone=bp_table_exists($pdo,'tenant_business_profiles') && (int)$pdo->query("SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tenant_business_profiles' AND COLUMN_NAME='tone_guide_text'")->fetchColumn()>0;
+        if($hasTone){
+            $q=$pdo->prepare("INSERT INTO tenant_business_profiles (tenant_id,about_text,policies_text,services_text,tone_guide_text) VALUES (:tenant_id,:about,:policies,:services,:tone) ON DUPLICATE KEY UPDATE about_text=VALUES(about_text),policies_text=VALUES(policies_text),services_text=VALUES(services_text),tone_guide_text=VALUES(tone_guide_text),updated_at=NOW()");
+            $q->execute(array(':tenant_id'=>$tenantId,':about'=>$about!==''?$about:null,':policies'=>$policies!==''?$policies:null,':services'=>$services!==''?$services:null,':tone'=>$tone!==''?$tone:null));
+        }else{
+            $q=$pdo->prepare("INSERT INTO tenant_business_profiles (tenant_id,about_text,policies_text,services_text) VALUES (:tenant_id,:about,:policies,:services) ON DUPLICATE KEY UPDATE about_text=VALUES(about_text),policies_text=VALUES(policies_text),services_text=VALUES(services_text),updated_at=NOW()");
+            $q->execute(array(':tenant_id'=>$tenantId,':about'=>$about!==''?$about:null,':policies'=>$policies!==''?$policies:null,':services'=>$services!==''?$services:null));
+        }
+        bp_audit($pdo,$tenantId,$branchId,$userId,'BUSINESS_PROFILE_ESSENTIAL_UPDATED',array('about_length'=>mb_strlen($about),'policies_length'=>mb_strlen($policies),'services_length'=>mb_strlen($services),'tone_length'=>mb_strlen($tone)));
         bp_json(200,true,'Business profile information saved.');
     }
     if($action==='save_legal'){

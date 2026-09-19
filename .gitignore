@@ -1,2 +1,4 @@
 /business/includes/database.php
 /platform/includes/db.php
+# Gemini private server configuration
+business/private-api/fieldplx-gemini.php

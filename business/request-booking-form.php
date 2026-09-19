@@ -1,35 +1,356 @@
 <?php
-if (session_status() === PHP_SESSION_NONE) session_start();
-$token = isset($_GET['token']) ? trim((string)$_GET['token']) : '';
-$source = isset($_GET['source']) ? trim((string)$_GET['source']) : '';
+if (session_status() === PHP_SESSION_NONE)
+    session_start();
+$token = isset($_GET['token']) ? trim((string) $_GET['token']) : '';
+$source = isset($_GET['source']) ? trim((string) $_GET['source']) : '';
 $embed = isset($_GET['embed']) && $_GET['embed'] === '1';
 $mapsKey = '';
-if (defined('GOOGLE_MAPS_API_KEY') && trim((string)GOOGLE_MAPS_API_KEY) !== '') {
-    $mapsKey = trim((string)GOOGLE_MAPS_API_KEY);
+if (defined('GOOGLE_MAPS_API_KEY') && trim((string) GOOGLE_MAPS_API_KEY) !== '') {
+    $mapsKey = trim((string) GOOGLE_MAPS_API_KEY);
 } else {
     $envMapsKey = getenv('GOOGLE_MAPS_API_KEY');
-    if ($envMapsKey !== false) $mapsKey = trim((string)$envMapsKey);
+    if ($envMapsKey !== false)
+        $mapsKey = trim((string) $envMapsKey);
 }
 ?><!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Request Form · FieldPlx</title>
-<style>
-:root{--fp-green:#2f8c25;--fp-text:#0b2f40;--fp-muted:#637986;--fp-border:#d8e1e7;--fp-bg:#f4f4f1}*{box-sizing:border-box}body{margin:0;background:var(--fp-bg);color:var(--fp-text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.pf-wrap{max-width:850px;margin:32px auto;padding:0 16px 40px}.pf-brand{display:flex;align-items:center;gap:10px;margin-bottom:16px}.pf-logo{width:42px;height:42px;border-radius:9px;object-fit:contain;background:#fff}.pf-brand strong{font-size:17px}.pf-card{background:#fff;border:1px solid var(--fp-border);border-radius:11px;padding:22px;margin-bottom:14px}.pf-card h1{margin:0 0 6px;font-size:26px}.pf-card h2{margin:0 0 16px;font-size:16px}.pf-desc{margin:0;color:var(--fp-muted);font-size:12px;line-height:1.5}.pf-grid{display:grid;grid-template-columns:1fr 1fr;gap:13px}.pf-field{margin-bottom:13px}.pf-field.full{grid-column:1/-1}.pf-label{display:block;margin:0 0 6px;font-size:11px;color:#385867}.pf-label .req{color:#d94242}.pf-input,.pf-select,.pf-textarea{width:100%;border:1px solid var(--fp-border);border-radius:8px;background:#fff;color:#173644;font:inherit;font-size:13px;outline:0}.pf-input,.pf-select{height:45px;padding:0 13px}.pf-textarea{min-height:105px;padding:11px 13px;resize:vertical}.pf-input:focus,.pf-select:focus,.pf-textarea:focus{border-color:#74b824;box-shadow:0 0 0 2px rgba(116,184,36,.12)}.pf-check{display:flex;align-items:flex-start;gap:8px;color:#607682;font-size:10px;line-height:1.45}.pf-check input{width:17px;height:17px;accent-color:var(--fp-green)}.pf-help{margin:5px 0 0;color:#70838d;font-size:9px;line-height:1.4}.pf-upload{padding:20px;border:1px dashed #cbd7dd;border-radius:8px;text-align:center}.pf-upload input{max-width:100%}.pf-radio{display:flex;gap:8px;margin:7px 0;font-size:11px}.pf-radio input{accent-color:var(--fp-green)}.pf-area{display:grid;grid-template-columns:1fr 1fr;gap:8px}.pf-actions{display:flex;justify-content:space-between;gap:10px;margin-top:16px}.pf-btn{min-height:38px;display:inline-flex;align-items:center;justify-content:center;padding:0 15px;border:1px solid var(--fp-border);border-radius:8px;background:#fff;color:#2f7f24;font:inherit;font-size:12px;font-weight:700;cursor:pointer}.pf-btn.primary{background:var(--fp-green);border-color:var(--fp-green);color:#fff}.pf-btn:disabled{opacity:.55}.pf-status{padding:16px;border-radius:9px;background:#eef6eb;color:#245f1e;font-size:12px}.pf-error{background:#fff0f0;color:#9e2929}.pf-hidden{display:none!important}.pf-progress{display:flex;gap:6px;margin-bottom:12px}.pf-dot{height:4px;flex:1;border-radius:999px;background:#dce3e7}.pf-dot.active,.pf-dot.done{background:var(--fp-green)}body.embed{background:#fff}.embed .pf-wrap{margin:0 auto;padding-top:12px}.embed .pf-brand{display:none}@media(max-width:650px){.pf-wrap{margin:14px auto}.pf-card{padding:16px}.pf-grid,.pf-area{grid-template-columns:1fr}.pf-field.full{grid-column:auto}}
-</style></head><body class="<?= $embed ? 'embed' : '' ?>">
-<div class="pf-wrap"><div class="pf-brand" id="brand"></div><div id="loading" class="pf-card">Loading form...</div><form id="publicForm" class="pf-hidden" enctype="multipart/form-data"><div class="pf-card"><h1 id="formName"></h1><p class="pf-desc" id="formDescription"></p></div><div id="progress" class="pf-progress pf-hidden"></div><div id="sections"></div><div id="booking"></div><div class="pf-card"><div class="pf-actions"><button type="button" class="pf-btn pf-hidden" id="backBtn">Back</button><button type="button" class="pf-btn primary" id="nextBtn">Next</button><button type="submit" class="pf-btn primary pf-hidden" id="submitBtn">Submit</button></div></div></form><div id="result" class="pf-card pf-hidden"></div></div>
-<script>
-(function(){'use strict';var token=<?= json_encode($token) ?>,source=<?= json_encode($source) ?>,embed=<?= $embed?'true':'false' ?>,API='api/request-booking-public.php';var state={form:null,tenant:null,services:[],catalogItems:[],hours:[],csrf:'',page:0,files:{},geocoder:null};function E(id){return document.getElementById(id)}function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]})}function apiJson(r){return r.text().then(function(raw){if(!raw||!raw.trim()){throw new Error('The public form API returned an empty response. Check business/api/request-booking-public.php and the database connection.')}var d;try{d=JSON.parse(raw)}catch(e){throw new Error('The public form API did not return valid JSON (HTTP '+r.status+').')}if(!r.ok||!d.success){var msg=d.message||'Unable to process the request.';if(d.debug)msg+=' '+d.debug;throw new Error(msg)}return d})}function fieldKey(i){return i.standard_key||i.key}function label(i){return esc(i.label||'Question')+(i.required?' <span class="req">*</span>':'')}function renderItem(i){var k=esc(fieldKey(i)),t=i.type||'short_answer',h=i.help?'<div class="pf-help">'+esc(i.help)+'</div>':'';
-if(i.kind==='action'&&t==='products_services_action'){var keys=(i.catalog_keys||[]).map(String),items=state.catalogItems.filter(function(x){return !keys.length||keys.indexOf(String(x.key))>=0});return '<div class="pf-field full"><label class="pf-label">'+label(i)+'</label><select class="pf-select" id="catalogItemKey" '+(i.required?'required':'')+'><option value="">Choose a product or service</option>'+items.map(function(x){return '<option value="'+esc(x.key)+'" data-bookable="'+Number(x.bookable_service_id||0)+'">'+esc(x.name)+(i.show_prices&&x.unit_price!=null?' · '+esc(x.unit_price):'')+'</option>'}).join('')+'</select><input type="hidden" id="serviceId" value="">'+(!items.length?'<div class="pf-help">No products or services are currently available.</div>':'')+'</div>'}
-if(i.kind==='action'&&(t==='job_booking_action'||t==='assessment_booking_action')){return '<div class="pf-field"><label class="pf-label">Preferred date'+(i.required?' <span class="req">*</span>':'')+'</label><input class="pf-input" type="date" id="bookingDate" '+(i.required?'required':'')+'></div><div class="pf-field"><label class="pf-label">Preferred time'+(i.required?' <span class="req">*</span>':'')+'</label><select class="pf-select" id="bookingTime" '+(i.required?'required':'')+'><option value="">Choose a date first</option></select><input type="hidden" id="assignedUserId"></div>'}
-if(t==='long_answer')return '<div class="pf-field full"><label class="pf-label">'+label(i)+'</label><textarea class="pf-textarea" data-field="'+k+'"></textarea>'+h+'</div>';if(t==='dropdown_single'||t==='dropdown_multiple')return '<div class="pf-field full"><label class="pf-label">'+label(i)+'</label><select class="pf-select" data-field="'+k+'" '+(t==='dropdown_multiple'?'multiple':'')+'><option value="">Choose an option</option>'+((i.options||[]).map(function(o){return '<option value="'+esc(o)+'">'+esc(o)+'</option>'}).join(''))+'</select>'+h+'</div>';if(t==='checkbox')return '<div class="pf-field full"><label class="pf-check"><input type="checkbox" data-field="'+k+'" value="1"><span>'+label(i)+'</span></label>'+h+'</div>';if(t==='radio')return '<div class="pf-field full"><label class="pf-label">'+label(i)+'</label>'+((i.options||[]).map(function(o){return '<label class="pf-radio"><input type="radio" name="'+k+'" data-field="'+k+'" value="'+esc(o)+'"><span>'+esc(o)+'</span></label>'}).join(''))+h+'</div>';if(t==='yes_no')return '<div class="pf-field full"><label class="pf-label">'+label(i)+'</label><select class="pf-select" data-field="'+k+'"><option value="">Choose</option><option value="1">Yes</option><option value="0">No</option></select>'+h+'</div>';if(t==='number'||t==='date'||t==='email'||t==='phone')return '<div class="pf-field full"><label class="pf-label">'+label(i)+'</label><input class="pf-input" type="'+(t==='number'?'number':t==='date'?'date':t==='email'?'email':'tel')+'" data-field="'+k+'">'+h+'</div>';if(t==='upload_images')return '<div class="pf-field full"><label class="pf-label">'+label(i)+'</label><div class="pf-upload"><input type="file" accept="image/*" multiple data-file-field="'+k+'"><div class="pf-help">Select or drag images to upload. Up to 50MB each.</div></div></div>';if(t==='address')return '<div class="pf-field full"><label class="pf-label">Street address'+(i.required?' <span class="req">*</span>':'')+'</label><input class="pf-input" data-address="line1"><label class="pf-label" style="margin-top:8px">Unit, apartment, suite, etc. (optional)</label><input class="pf-input" data-address="line2"><div class="pf-area" style="margin-top:8px"><div><label class="pf-label">City</label><input class="pf-input" data-address="city"></div><div><label class="pf-label">Province / State</label><input class="pf-input" data-address="state"></div><div><label class="pf-label">Postal Code</label><input class="pf-input" data-address="postal_code"></div></div></div>';if(t==='area')return '<div class="pf-field full"><label class="pf-label">'+label(i)+'</label><div class="pf-area"><input class="pf-input" data-area="'+k+':length" placeholder="Length"><input class="pf-input" data-area="'+k+':width" placeholder="Width"></div></div>';var cls=i.width==='half'?'pf-field':'pf-field full';return '<div class="'+cls+'"><label class="pf-label">'+label(i)+'</label><input class="pf-input" data-field="'+k+'">'+h+'</div>'}
-function render(){var f=state.form,t=state.tenant||{};document.title=(f.name||'Request Form')+' · '+(t.display_name||'FieldPlx');E('brand').innerHTML=(t.logo_path?'<img class="pf-logo" src="'+esc(t.logo_path)+'" alt="">':'')+'<strong>'+esc(t.display_name||'FieldPlx')+'</strong>';E('formName').textContent=f.name;E('formDescription').textContent=f.description||'';var sections=f.builder.sections||[],embeddedAction=false;sections.forEach(function(s){(s.items||[]).forEach(function(i){if(i.kind==='action')embeddedAction=true})});E('sections').innerHTML=sections.map(function(s,si){return '<section class="pf-card" data-section-page="'+si+'"><h2>'+esc(s.title||'Section')+'</h2><div class="pf-grid">'+(s.items||[]).map(renderItem).join('')+'</div></section>'}).join('');var acts=f.builder.actions||[],needsBooking=f.form_type==='job_booking'||f.form_type==='assessment_booking'||acts.some(function(a){return a.type==='add_job_booking'||a.type==='add_assessment'}),needsService=acts.some(function(a){return a.type==='add_products_services'})||needsBooking;if(!embeddedAction&&(needsBooking||needsService)){var html='<section class="pf-card"><h2>Booking details</h2><div class="pf-grid">';if(needsService)html+='<div class="pf-field full"><label class="pf-label">Products and services</label><select class="pf-select" id="serviceId"><option value="">Choose a service</option>'+state.services.map(function(s){return '<option value="'+Number(s.id)+'">'+esc(s.name)+(s.estimated_price!=null?' · '+esc(s.estimated_price):'')+'</option>'}).join('')+'</select></div>';if(needsBooking)html+='<div class="pf-field"><label class="pf-label">Preferred date</label><input class="pf-input" type="date" id="bookingDate"></div><div class="pf-field"><label class="pf-label">Preferred time</label><select class="pf-select" id="bookingTime"><option value="">Choose a date first</option></select><input type="hidden" id="assignedUserId"></div>';html+='</div></section>';E('booking').innerHTML=html}else E('booking').innerHTML='';wireAvailability();wireFiles();wireAddress();if(f.form_pages&&sections.length>1){E('progress').classList.remove('pf-hidden');E('progress').innerHTML=sections.map(function(_,i){return '<div class="pf-dot" data-dot="'+i+'"></div>'}).join('');showPage(0)}else{E('nextBtn').classList.add('pf-hidden');E('submitBtn').classList.remove('pf-hidden')}setMinDate();loadAnalytics();}
-function wireAvailability(){var date=E('bookingDate'),time=E('bookingTime'),service=E('serviceId'),catalog=E('catalogItemKey');function syncCatalogService(){if(!catalog||!service)return;var o=catalog.options[catalog.selectedIndex];service.value=o?String(o.getAttribute('data-bookable')||''):''}if(catalog)catalog.addEventListener('change',function(){syncCatalogService();if(date&&date.value)fetchSlots()});syncCatalogService();if(!date||!time)return;function fetchSlots(){if(!date.value){time.innerHTML='<option value="">Choose a date first</option>';return}time.disabled=true;time.innerHTML='<option value="">Loading times...</option>';var sid=service?service.value:'';fetch(API+'?token='+encodeURIComponent(token)+'&availability_date='+encodeURIComponent(date.value)+(sid?'&service_id='+encodeURIComponent(sid):''),{credentials:'same-origin',headers:{'Accept':'application/json'}}).then(apiJson).then(function(d){time.disabled=false;var slots=d.slots||[];time.innerHTML='<option value="">'+(slots.length?'Choose a time':'No times available')+'</option>'+slots.map(function(s){return '<option value="'+esc(s.time)+'" data-user="'+Number(s.user_id||0)+'">'+esc(s.label)+'</option>'}).join('')}).catch(function(){time.disabled=false;time.innerHTML='<option value="">Unable to load times</option>'})}date.addEventListener('change',fetchSlots);if(service&&service.tagName==='SELECT')service.addEventListener('change',function(){if(date.value)fetchSlots()});time.addEventListener('change',function(){var o=time.options[time.selectedIndex];E('assignedUserId').value=o?o.getAttribute('data-user')||'':''})}function wireFiles(){document.querySelectorAll('[data-file-field]').forEach(function(x){x.onchange=function(){state.files[x.getAttribute('data-file-field')]=Array.prototype.slice.call(x.files||[])}})}function wireAddress(){var line=E('sections').querySelector('[data-address="line1"]');if(line&&window.google&&google.maps){state.geocoder=new google.maps.Geocoder();line.addEventListener('blur',function(){if(!line.value.trim())return;var parts=[line.value,(E('sections').querySelector('[data-address="city"]')||{}).value,(E('sections').querySelector('[data-address="state"]')||{}).value,(E('sections').querySelector('[data-address="postal_code"]')||{}).value].filter(Boolean).join(', ');state.geocoder.geocode({address:parts},function(r,st){if(st==='OK'&&r[0]){line.dataset.lat=r[0].geometry.location.lat();line.dataset.lng=r[0].geometry.location.lng()}})})}}
-function showPage(i){var ss=document.querySelectorAll('[data-section-page]');state.page=Math.max(0,Math.min(i,ss.length-1));ss.forEach(function(x,j){x.classList.toggle('pf-hidden',j!==state.page)});document.querySelectorAll('[data-dot]').forEach(function(d,j){d.classList.toggle('active',j===state.page);d.classList.toggle('done',j<state.page)});E('backBtn').classList.toggle('pf-hidden',state.page===0);E('nextBtn').classList.toggle('pf-hidden',state.page===ss.length-1);E('submitBtn').classList.toggle('pf-hidden',state.page!==ss.length-1);window.scrollTo({top:0,behavior:'smooth'})}E('nextBtn').onclick=function(){showPage(state.page+1)};E('backBtn').onclick=function(){showPage(state.page-1)};
-function setMinDate(){var d=E('bookingDate');if(!d)return;var days=Number((state.form.booking||{}).earliest_availability_days||0),date=new Date();for(var added=0;added<days;){date.setDate(date.getDate()+1);var day=['sunday','monday','tuesday','wednesday','thursday','friday','saturday'][date.getDay()],h=state.hours.find(function(x){return x.day_of_week===day});if(!h||Number(h.is_closed)===0)added++}d.min=date.toISOString().slice(0,10);var max=new Date();max.setDate(max.getDate()+Number((state.form.booking||{}).max_booking_days_ahead||30));d.max=max.toISOString().slice(0,10)}
-function collect(){var data={};document.querySelectorAll('[data-field]').forEach(function(x){var k=x.getAttribute('data-field');if(x.type==='checkbox')data[k]=x.checked?1:0;else if(x.type==='radio'){if(x.checked)data[k]=x.value}else if(x.multiple)data[k]=Array.prototype.slice.call(x.selectedOptions).map(function(o){return o.value});else data[k]=x.value});var a={};document.querySelectorAll('[data-address]').forEach(function(x){a[x.getAttribute('data-address')]=x.value});var line=document.querySelector('[data-address="line1"]');if(line){a.latitude=line.dataset.lat||'';a.longitude=line.dataset.lng||'';data.address=a}document.querySelectorAll('[data-area]').forEach(function(x){var p=x.getAttribute('data-area').split(':');if(!data[p[0]])data[p[0]]={};data[p[0]][p[1]]=x.value});if(E('catalogItemKey'))data._catalog_item_key=E('catalogItemKey').value;if(E('serviceId'))data._service_id=E('serviceId').value;if(E('bookingDate'))data._booking_date=E('bookingDate').value;if(E('bookingTime'))data._booking_time=E('bookingTime').value;if(E('assignedUserId'))data._assigned_user_id=E('assignedUserId').value;return data}
-E('publicForm').onsubmit=function(e){e.preventDefault();var fdata=new FormData();fdata.append('token',token);fdata.append('csrf_token',state.csrf);fdata.append('source',source);fdata.append('data_json',JSON.stringify(collect()));Object.keys(state.files).forEach(function(k){state.files[k].forEach(function(file){fdata.append(k+'[]',file)})});var b=E('submitBtn'),old=b.textContent;b.disabled=true;b.textContent='Submitting...';fetch(API,{method:'POST',body:fdata,credentials:'same-origin',headers:{'Accept':'application/json'}}).then(apiJson).then(function(d){if(d.confirmation_url&&!embed){location.href=d.confirmation_url;return}E('publicForm').classList.add('pf-hidden');E('progress').classList.add('pf-hidden');E('result').classList.remove('pf-hidden');E('result').innerHTML='<h2 style="margin-top:0">'+esc(d.confirmation_title||'Thank you')+'</h2><p class="pf-desc">'+esc(d.confirmation_message||d.message)+'</p>'}).catch(function(err){E('result').classList.remove('pf-hidden');E('result').classList.add('pf-error');E('result').textContent=err.message;b.disabled=false;b.textContent=old})};
-function loadAnalytics(){var code=(state.form.google_analytics_code||'').trim();if(!/^G-[A-Z0-9]+$/i.test(code))return;var s=document.createElement('script');s.async=true;s.src='https://www.googletagmanager.com/gtag/js?id='+encodeURIComponent(code);document.head.appendChild(s);window.dataLayer=window.dataLayer||[];window.gtag=function(){dataLayer.push(arguments)};gtag('js',new Date());gtag('config',code,{anonymize_ip:true})}
-window.rbInitPublicMaps=function(){try{wireAddress()}catch(_){}};function load(){if(!token){E('loading').textContent='This form link is invalid.';return}fetch(API+'?token='+encodeURIComponent(token)+(source?'&source='+encodeURIComponent(source):''),{credentials:'same-origin',headers:{'Accept':'application/json'}}).then(apiJson).then(function(d){state.form=d.form;state.tenant=d.tenant||{};state.services=d.services||[];state.catalogItems=d.catalog_items||[];state.hours=d.business_hours||[];state.csrf=d.csrf_token;E('loading').classList.add('pf-hidden');E('publicForm').classList.remove('pf-hidden');render()}).catch(function(e){E('loading').classList.add('pf-error');E('loading').textContent=e.message})}load();
-})(window,document);
-</script>
-<?php if($mapsKey!==''): ?><script async defer src="https://maps.googleapis.com/maps/api/js?key=<?= htmlspecialchars($mapsKey,ENT_QUOTES,'UTF-8') ?>&libraries=places&callback=rbInitPublicMaps"></script><?php endif; ?>
-</body></html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Request Form · FieldPlx</title>
+    <style>
+        :root {
+            --fp-green: #2f8c25;
+            --fp-text: #0b2f40;
+            --fp-muted: #637986;
+            --fp-border: #d8e1e7;
+            --fp-bg: #f4f4f1
+        }
+
+        * {
+            box-sizing: border-box
+        }
+
+        body {
+            margin: 0;
+            background: var(--fp-bg);
+            color: var(--fp-text);
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif
+        }
+
+        .pf-wrap {
+            max-width: 850px;
+            margin: 32px auto;
+            padding: 0 16px 40px
+        }
+
+        .pf-brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 16px
+        }
+
+        .pf-logo {
+            width: 42px;
+            height: 42px;
+            border-radius: 9px;
+            object-fit: contain;
+            background: #fff
+        }
+
+        .pf-brand strong {
+            font-size: 17px
+        }
+
+        .pf-card {
+            background: #fff;
+            border: 1px solid var(--fp-border);
+            border-radius: 11px;
+            padding: 22px;
+            margin-bottom: 14px
+        }
+
+        .pf-card h1 {
+            margin: 0 0 6px;
+            font-size: 26px
+        }
+
+        .pf-card h2 {
+            margin: 0 0 16px;
+            font-size: 16px
+        }
+
+        .pf-desc {
+            margin: 0;
+            color: var(--fp-muted);
+            font-size: 12px;
+            line-height: 1.5
+        }
+
+        .pf-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 13px
+        }
+
+        .pf-field {
+            margin-bottom: 13px
+        }
+
+        .pf-field.full {
+            grid-column: 1/-1
+        }
+
+        .pf-label {
+            display: block;
+            margin: 0 0 6px;
+            font-size: 11px;
+            color: #385867
+        }
+
+        .pf-label .req {
+            color: #d94242
+        }
+
+        .pf-input,
+        .pf-select,
+        .pf-textarea {
+            width: 100%;
+            border: 1px solid var(--fp-border);
+            border-radius: 8px;
+            background: #fff;
+            color: #173644;
+            font: inherit;
+            font-size: 13px;
+            outline: 0
+        }
+
+        .pf-input,
+        .pf-select {
+            height: 45px;
+            padding: 0 13px
+        }
+
+        .pf-textarea {
+            min-height: 105px;
+            padding: 11px 13px;
+            resize: vertical
+        }
+
+        .pf-input:focus,
+        .pf-select:focus,
+        .pf-textarea:focus {
+            border-color: #74b824;
+            box-shadow: 0 0 0 2px rgba(116, 184, 36, .12)
+        }
+
+        .pf-check {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            color: #607682;
+            font-size: 10px;
+            line-height: 1.45
+        }
+
+        .pf-check input {
+            width: 17px;
+            height: 17px;
+            accent-color: var(--fp-green)
+        }
+
+        .pf-help {
+            margin: 5px 0 0;
+            color: #70838d;
+            font-size: 9px;
+            line-height: 1.4
+        }
+
+        .pf-upload {
+            padding: 20px;
+            border: 1px dashed #cbd7dd;
+            border-radius: 8px;
+            text-align: center
+        }
+
+        .pf-upload input {
+            max-width: 100%
+        }
+
+        .pf-radio {
+            display: flex;
+            gap: 8px;
+            margin: 7px 0;
+            font-size: 11px
+        }
+
+        .pf-radio input {
+            accent-color: var(--fp-green)
+        }
+
+        .pf-area {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px
+        }
+
+        .pf-actions {
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+            margin-top: 16px
+        }
+
+        .pf-btn {
+            min-height: 38px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            padding: 0 15px;
+            border: 1px solid var(--fp-border);
+            border-radius: 8px;
+            background: #fff;
+            color: #2f7f24;
+            font: inherit;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer
+        }
+
+        .pf-btn.primary {
+            background: var(--fp-green);
+            border-color: var(--fp-green);
+            color: #fff
+        }
+
+        .pf-btn:disabled {
+            opacity: .55
+        }
+
+        .pf-status {
+            padding: 16px;
+            border-radius: 9px;
+            background: #eef6eb;
+            color: #245f1e;
+            font-size: 12px
+        }
+
+        .pf-error {
+            background: #fff0f0;
+            color: #9e2929
+        }
+
+        .pf-hidden {
+            display: none !important
+        }
+
+        .pf-progress {
+            display: flex;
+            gap: 6px;
+            margin-bottom: 12px
+        }
+
+        .pf-dot {
+            height: 4px;
+            flex: 1;
+            border-radius: 999px;
+            background: #dce3e7
+        }
+
+        .pf-dot.active,
+        .pf-dot.done {
+            background: var(--fp-green)
+        }
+
+        body.embed {
+            background: #fff
+        }
+
+        .embed .pf-wrap {
+            margin: 0 auto;
+            padding-top: 12px
+        }
+
+        .embed .pf-brand {
+            display: none
+        }
+
+        @media(max-width:650px) {
+            .pf-wrap {
+                margin: 14px auto
+            }
+
+            .pf-card {
+                padding: 16px
+            }
+
+            .pf-grid,
+            .pf-area {
+                grid-template-columns: 1fr
+            }
+
+            .pf-field.full {
+                grid-column: auto
+            }
+        }
+    </style>
+</head>
+
+<body class="<?= $embed ? 'embed' : '' ?>">
+    <div class="pf-wrap">
+        <div class="pf-brand" id="brand"></div>
+        <div id="loading" class="pf-card">Loading form...</div>
+        <form id="publicForm" class="pf-hidden" enctype="multipart/form-data">
+            <div class="pf-card">
+                <h1 id="formName"></h1>
+                <p class="pf-desc" id="formDescription"></p>
+            </div>
+            <div id="progress" class="pf-progress pf-hidden"></div>
+            <div id="sections"></div>
+            <div id="booking"></div>
+            <div class="pf-card">
+                <div class="pf-actions"><button type="button" class="pf-btn pf-hidden" id="backBtn">Back</button><button
+                        type="button" class="pf-btn primary" id="nextBtn">Next</button><button type="submit"
+                        class="pf-btn primary pf-hidden" id="submitBtn">Submit</button></div>
+            </div>
+        </form>
+        <div id="result" class="pf-card pf-hidden"></div>
+    </div>
+    <script>
+        (function () {
+            'use strict'; var token = <?= json_encode($token) ?>, source = <?= json_encode($source) ?>, embed = <?= $embed ? 'true' : 'false' ?>, API = 'api/request-booking-public.php'; var state = { form: null, tenant: null, services: [], catalogItems: [], hours: [], csrf: '', page: 0, files: {}, geocoder: null }; function E(id) { return document.getElementById(id) } function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[c] }) } function apiJson(r) { return r.text().then(function (raw) { if (!raw || !raw.trim()) { throw new Error('The public form API returned an empty response. Check business/api/request-booking-public.php and the database connection.') } var d; try { d = JSON.parse(raw) } catch (e) { throw new Error('The public form API did not return valid JSON (HTTP ' + r.status + ').') } if (!r.ok || !d.success) { var msg = d.message || 'Unable to process the request.'; if (d.debug) msg += ' ' + d.debug; throw new Error(msg) } return d }) } function fieldKey(i) { return i.standard_key || i.key } function label(i) { return esc(i.label || 'Question') + (i.required ? ' <span class="req">*</span>' : '') } function renderItem(i) {
+                var k = esc(fieldKey(i)), t = i.type || 'short_answer', h = i.help ? '<div class="pf-help">' + esc(i.help) + '</div>' : '', req = i.required ? 'required' : '';
+                if (i.kind === 'action' && t === 'products_services_action') { var keys = (i.catalog_keys || []).map(String), items = state.catalogItems.filter(function (x) { return !keys.length || keys.indexOf(String(x.key)) >= 0 }); return '<div class="pf-field full"><label class="pf-label">' + label(i) + '</label><select class="pf-select" id="catalogItemKey" ' + req + '><option value="">Choose a product or service</option>' + items.map(function (x) { return '<option value="' + esc(x.key) + '" data-bookable="' + Number(x.bookable_service_id || 0) + '" data-allow-quantity="' + Number(x.allow_booking_quantity || 0) + '" data-duration="' + Number(x.estimated_duration_minutes || 60) + '">' + esc(x.name) + (i.show_prices && x.unit_price != null ? ' · ' + (i.show_zero_as_free && Number(x.unit_price || 0) === 0 ? 'Free' : esc(x.unit_price)) : '') + '</option>' }).join('') + '</select><input type="hidden" id="serviceId" value=""><div class="pf-field pf-hidden" id="catalogQuantityWrap" style="margin-top:10px"><label class="pf-label">Quantity</label><input class="pf-input" type="number" id="catalogQuantity" min="1" step="1" value="1"></div>' + (!items.length ? '<div class="pf-help">No products or services are currently available.</div>' : '') + '</div>' }
+                if (i.kind === 'action' && (t === 'job_booking_action' || t === 'assessment_booking_action')) { return '<div class="pf-field"><label class="pf-label">Preferred date' + (i.required ? ' <span class="req">*</span>' : '') + '</label><input class="pf-input" type="date" id="bookingDate" ' + req + '></div><div class="pf-field"><label class="pf-label">Preferred time' + (i.required ? ' <span class="req">*</span>' : '') + '</label><select class="pf-select" id="bookingTime" ' + req + '><option value="">Choose a date first</option></select><input type="hidden" id="assignedUserId"></div>' }
+                if (t === 'long_answer') return '<div class="pf-field full"><label class="pf-label">' + label(i) + '</label><textarea class="pf-textarea" data-field="' + k + '" ' + req + '></textarea>' + h + '</div>';
+                if (t === 'dropdown_single' || t === 'dropdown_multiple') return '<div class="pf-field full"><label class="pf-label">' + label(i) + '</label><select class="pf-select" data-field="' + k + '" ' + (t === 'dropdown_multiple' ? 'multiple ' : '') + req + '><option value="">Choose an option</option>' + ((i.options || []).map(function (o) { return '<option value="' + esc(o) + '">' + esc(o) + '</option>' }).join('')) + '</select>' + h + '</div>';
+                if (t === 'checkbox') return '<div class="pf-field full"><label class="pf-check"><input type="checkbox" data-field="' + k + '" value="1" ' + req + '><span>' + label(i) + '</span></label>' + h + '</div>';
+                if (t === 'radio') return '<div class="pf-field full"><label class="pf-label">' + label(i) + '</label>' + ((i.options || []).map(function (o, oi) { return '<label class="pf-radio"><input type="radio" name="' + k + '" data-field="' + k + '" value="' + esc(o) + '" ' + (i.required && oi === 0 ? 'required' : '') + '><span>' + esc(o) + '</span></label>' }).join('')) + h + '</div>';
+                if (t === 'yes_no') return '<div class="pf-field full"><label class="pf-label">' + label(i) + '</label><select class="pf-select" data-field="' + k + '" ' + req + '><option value="">Choose</option><option value="1">Yes</option><option value="0">No</option></select>' + h + '</div>';
+                if (t === 'email') return '<div class="pf-field full"><label class="pf-label">' + label(i) + '</label><input class="pf-input" type="email" data-field="' + k + '" ' + req + '><label class="pf-check" style="margin-top:8px"><input type="checkbox" data-field="email_marketing_consent" value="1"><span>I\'d like to receive marketing emails. Unsubscribe at any time.</span></label>' + h + '</div>';
+                if (t === 'phone') return '<div class="pf-field full"><label class="pf-label">' + label(i) + '</label><input class="pf-input" type="tel" data-field="' + k + '" ' + req + '><div class="pf-help">By providing your phone number, you agree to receive visit reminders and other transactional service messages. Message and data rates may apply. Reply STOP to cancel.</div><label class="pf-check" style="margin-top:8px"><input type="checkbox" data-field="sms_marketing_consent" value="1"><span>I also agree to receive marketing SMS. Reply STOP to opt out.</span></label>' + h + '</div>';
+                if (t === 'number' || t === 'date') return '<div class="pf-field full"><label class="pf-label">' + label(i) + '</label><input class="pf-input" type="' + (t === 'number' ? 'number' : 'date') + '" data-field="' + k + '" ' + req + '>' + h + '</div>';
+                if (t === 'upload_images') return '<div class="pf-field full"><label class="pf-label">' + label(i) + '</label><div class="pf-upload"><input type="file" accept="image/*" multiple data-file-field="' + k + '" ' + req + '><div class="pf-help">Select or drag images to upload. Up to 50MB each.</div></div></div>';
+                if (t === 'address') return '<div class="pf-field full"><label class="pf-label">Street address' + (i.required ? ' <span class="req">*</span>' : '') + '</label><input class="pf-input" data-address="line1" ' + req + '><label class="pf-label" style="margin-top:8px">Unit, apartment, suite, etc. (optional)</label><input class="pf-input" data-address="line2"><div class="pf-area" style="margin-top:8px"><div><label class="pf-label">City</label><input class="pf-input" data-address="city"></div><div><label class="pf-label">Province / State</label><input class="pf-input" data-address="state"></div><div><label class="pf-label">Postal Code</label><input class="pf-input" data-address="postal_code"></div></div></div>';
+                if (t === 'area') return '<div class="pf-field full"><label class="pf-label">' + label(i) + '</label><div class="pf-area"><input class="pf-input" data-area="' + k + ':length" placeholder="Length" ' + req + '><input class="pf-input" data-area="' + k + ':width" placeholder="Width" ' + req + '></div></div>';
+                var cls = i.width === 'half' ? 'pf-field' : 'pf-field full'; return '<div class="' + cls + '"><label class="pf-label">' + label(i) + '</label><input class="pf-input" data-field="' + k + '" ' + req + '>' + h + '</div>'
+            }
+            function render() { var f = state.form, t = state.tenant || {}; document.title = (f.name || 'Request Form') + ' · ' + (t.display_name || 'FieldPlx'); E('brand').innerHTML = (t.logo_path ? '<img class="pf-logo" src="' + esc(t.logo_path) + '" alt="">' : '') + '<strong>' + esc(t.display_name || 'FieldPlx') + '</strong>'; E('formName').textContent = f.name; E('formDescription').textContent = f.description || ''; var sections = f.builder.sections || [], embeddedAction = false; sections.forEach(function (s) { (s.items || []).forEach(function (i) { if (i.kind === 'action') embeddedAction = true }) }); E('sections').innerHTML = sections.map(function (s, si) { return '<section class="pf-card" data-section-page="' + si + '"><h2>' + esc(s.title || 'Section') + '</h2><div class="pf-grid">' + (s.items || []).map(renderItem).join('') + '</div></section>' }).join(''); var acts = f.builder.actions || [], needsBooking = f.form_type === 'job_booking' || f.form_type === 'assessment_booking' || acts.some(function (a) { return a.type === 'add_job_booking' || a.type === 'add_assessment' }), needsService = acts.some(function (a) { return a.type === 'add_products_services' }) || needsBooking; if (!embeddedAction && (needsBooking || needsService)) { var html = '<section class="pf-card"><h2>Booking details</h2><div class="pf-grid">'; if (needsService) html += '<div class="pf-field full"><label class="pf-label">Products and services</label><select class="pf-select" id="serviceId"><option value="">Choose a service</option>' + state.services.map(function (s) { return '<option value="' + Number(s.id) + '">' + esc(s.name) + (s.estimated_price != null ? ' · ' + esc(s.estimated_price) : '') + '</option>' }).join('') + '</select></div>'; if (needsBooking) html += '<div class="pf-field"><label class="pf-label">Preferred date</label><input class="pf-input" type="date" id="bookingDate"></div><div class="pf-field"><label class="pf-label">Preferred time</label><select class="pf-select" id="bookingTime"><option value="">Choose a date first</option></select><input type="hidden" id="assignedUserId"></div>'; html += '</div></section>'; E('booking').innerHTML = html } else E('booking').innerHTML = ''; wireAvailability(); wireFiles(); wireAddress(); if (f.form_pages && sections.length > 1) { E('progress').classList.remove('pf-hidden'); E('progress').innerHTML = sections.map(function (_, i) { return '<div class="pf-dot" data-dot="' + i + '"></div>' }).join(''); showPage(0) } else { E('nextBtn').classList.add('pf-hidden'); E('submitBtn').classList.remove('pf-hidden') } setMinDate(); loadAnalytics(); }
+            function wireAvailability() { var date = E('bookingDate'), time = E('bookingTime'), service = E('serviceId'), catalog = E('catalogItemKey'); function syncCatalogService() { if (!catalog || !service) return; var o = catalog.options[catalog.selectedIndex]; service.value = o ? String(o.getAttribute('data-bookable') || '') : ''; var q = E('catalogQuantityWrap'); if (q) q.classList.toggle('pf-hidden', !(o && Number(o.getAttribute('data-allow-quantity') || 0) === 1)); if (E('catalogQuantity') && (!o || Number(o.getAttribute('data-allow-quantity') || 0) !== 1)) E('catalogQuantity').value = '1' } if (catalog) catalog.addEventListener('change', function () { syncCatalogService(); if (date && date.value) fetchSlots() }); syncCatalogService(); if (!date || !time) return; function fetchSlots() { if (!date.value) { time.innerHTML = '<option value="">Choose a date first</option>'; return } time.disabled = true; time.innerHTML = '<option value="">Loading times...</option>'; var sid = service ? service.value : ''; fetch(API + '?token=' + encodeURIComponent(token) + '&availability_date=' + encodeURIComponent(date.value) + (sid ? '&service_id=' + encodeURIComponent(sid) : ''), { credentials: 'same-origin', headers: { 'Accept': 'application/json' } }).then(apiJson).then(function (d) { time.disabled = false; var slots = d.slots || []; time.innerHTML = '<option value="">' + (slots.length ? 'Choose a time' : 'No times available') + '</option>' + slots.map(function (s) { return '<option value="' + esc(s.time) + '" data-user="' + Number(s.user_id || 0) + '">' + esc(s.label) + '</option>' }).join('') }).catch(function () { time.disabled = false; time.innerHTML = '<option value="">Unable to load times</option>' }) } date.addEventListener('change', fetchSlots); if (service && service.tagName === 'SELECT') service.addEventListener('change', function () { if (date.value) fetchSlots() }); time.addEventListener('change', function () { var o = time.options[time.selectedIndex]; E('assignedUserId').value = o ? o.getAttribute('data-user') || '' : '' }) } function wireFiles() { document.querySelectorAll('[data-file-field]').forEach(function (x) { x.onchange = function () { state.files[x.getAttribute('data-file-field')] = Array.prototype.slice.call(x.files || []) } }) } function wireAddress() { var line = E('sections').querySelector('[data-address="line1"]'); if (line && window.google && google.maps) { state.geocoder = new google.maps.Geocoder(); line.addEventListener('blur', function () { if (!line.value.trim()) return; var parts = [line.value, (E('sections').querySelector('[data-address="city"]') || {}).value, (E('sections').querySelector('[data-address="state"]') || {}).value, (E('sections').querySelector('[data-address="postal_code"]') || {}).value].filter(Boolean).join(', '); state.geocoder.geocode({ address: parts }, function (r, st) { if (st === 'OK' && r[0]) { line.dataset.lat = r[0].geometry.location.lat(); line.dataset.lng = r[0].geometry.location.lng() } }) }) } }
+            function showPage(i) { var ss = document.querySelectorAll('[data-section-page]'); state.page = Math.max(0, Math.min(i, ss.length - 1)); ss.forEach(function (x, j) { x.classList.toggle('pf-hidden', j !== state.page) }); document.querySelectorAll('[data-dot]').forEach(function (d, j) { d.classList.toggle('active', j === state.page); d.classList.toggle('done', j < state.page) }); E('backBtn').classList.toggle('pf-hidden', state.page === 0); E('nextBtn').classList.toggle('pf-hidden', state.page === ss.length - 1); E('submitBtn').classList.toggle('pf-hidden', state.page !== ss.length - 1); window.scrollTo({ top: 0, behavior: 'smooth' }) } E('nextBtn').onclick = function () { showPage(state.page + 1) }; E('backBtn').onclick = function () { showPage(state.page - 1) };
+            function setMinDate() { var d = E('bookingDate'); if (!d) return; var days = Number((state.form.booking || {}).earliest_availability_days || 0), date = new Date(); for (var added = 0; added < days;) { date.setDate(date.getDate() + 1); var day = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][date.getDay()], h = state.hours.find(function (x) { return x.day_of_week === day }); if (!h || Number(h.is_closed) === 0) added++ } d.min = date.toISOString().slice(0, 10); var max = new Date(); max.setDate(max.getDate() + Number((state.form.booking || {}).max_booking_days_ahead || 30)); d.max = max.toISOString().slice(0, 10) }
+            function collect() { var data = {}; document.querySelectorAll('[data-field]').forEach(function (x) { var k = x.getAttribute('data-field'); if (x.type === 'checkbox') data[k] = x.checked ? 1 : 0; else if (x.type === 'radio') { if (x.checked) data[k] = x.value } else if (x.multiple) data[k] = Array.prototype.slice.call(x.selectedOptions).map(function (o) { return o.value }); else data[k] = x.value }); var a = {}; document.querySelectorAll('[data-address]').forEach(function (x) { a[x.getAttribute('data-address')] = x.value }); var line = document.querySelector('[data-address="line1"]'); if (line) { a.latitude = line.dataset.lat || ''; a.longitude = line.dataset.lng || ''; data.address = a } document.querySelectorAll('[data-area]').forEach(function (x) { var p = x.getAttribute('data-area').split(':'); if (!data[p[0]]) data[p[0]] = {}; data[p[0]][p[1]] = x.value }); if (E('catalogItemKey')) data._catalog_item_key = E('catalogItemKey').value; if (E('catalogQuantity')) data._quantity = Math.max(1, Number(E('catalogQuantity').value || 1)); if (E('serviceId')) data._service_id = E('serviceId').value; if (E('bookingDate')) data._booking_date = E('bookingDate').value; if (E('bookingTime')) data._booking_time = E('bookingTime').value; if (E('assignedUserId')) data._assigned_user_id = E('assignedUserId').value; return data }
+            E('publicForm').onsubmit = function (e) { e.preventDefault(); var fdata = new FormData(); fdata.append('token', token); fdata.append('csrf_token', state.csrf); fdata.append('source', source); fdata.append('data_json', JSON.stringify(collect())); Object.keys(state.files).forEach(function (k) { state.files[k].forEach(function (file) { fdata.append(k + '[]', file) }) }); var b = E('submitBtn'), old = b.textContent; b.disabled = true; b.textContent = 'Submitting...'; fetch(API, { method: 'POST', body: fdata, credentials: 'same-origin', headers: { 'Accept': 'application/json' } }).then(apiJson).then(function (d) { if (d.confirmation_url && !embed) { location.href = d.confirmation_url; return } E('publicForm').classList.add('pf-hidden'); E('progress').classList.add('pf-hidden'); E('result').classList.remove('pf-hidden'); E('result').innerHTML = '<h2 style="margin-top:0">' + esc(d.confirmation_title || 'Thank you') + '</h2><p class="pf-desc">' + esc(d.confirmation_message || d.message) + '</p>' }).catch(function (err) { E('result').classList.remove('pf-hidden'); E('result').classList.add('pf-error'); E('result').textContent = err.message; b.disabled = false; b.textContent = old }) };
+            function loadAnalytics() { var code = (state.form.google_analytics_code || '').trim(); if (!/^G-[A-Z0-9]+$/i.test(code)) return; var s = document.createElement('script'); s.async = true; s.src = 'https://www.googletagmanager.com/gtag/js?id=' + encodeURIComponent(code); document.head.appendChild(s); window.dataLayer = window.dataLayer || []; window.gtag = function () { dataLayer.push(arguments) }; gtag('js', new Date()); gtag('config', code, { anonymize_ip: true }) }
+            window.rbInitPublicMaps = function () { try { wireAddress() } catch (_) { } }; function load() { if (!token) { E('loading').textContent = 'This form link is invalid.'; return } fetch(API + '?token=' + encodeURIComponent(token) + (source ? '&source=' + encodeURIComponent(source) : ''), { credentials: 'same-origin', headers: { 'Accept': 'application/json' } }).then(apiJson).then(function (d) { state.form = d.form; state.tenant = d.tenant || {}; state.services = d.services || []; state.catalogItems = d.catalog_items || []; state.hours = d.business_hours || []; state.csrf = d.csrf_token; E('loading').classList.add('pf-hidden'); E('publicForm').classList.remove('pf-hidden'); render() }).catch(function (e) { E('loading').classList.add('pf-error'); E('loading').textContent = e.message }) } load();
+        })(window, document);
+    </script>
+    <?php if ($mapsKey !== ''): ?>
+        <script async defer
+            src="https://maps.googleapis.com/maps/api/js?key=<?= htmlspecialchars($mapsKey, ENT_QUOTES, 'UTF-8') ?>&libraries=places&callback=rbInitPublicMaps"></script>
+    <?php endif; ?>
+</body>
+
+</html>

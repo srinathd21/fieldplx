@@ -1,856 +1,145 @@
 <?php
-declare(strict_types=1);
-
 ob_start();
-ini_set('display_errors', '0');
-ini_set('html_errors', '0');
-ini_set('log_errors', '1');
-header('Cache-Control: no-store');
+ini_set('display_errors','0');ini_set('html_errors','0');ini_set('log_errors','1');
+require_once __DIR__ . '/request-booking-common.php';
+list($tenantId,$userId)=rbRequireAuth();rbRequireCsrf();
 
-require_once __DIR__ . '/../includes/auth.php';
-if (file_exists(__DIR__ . '/../includes/audit.php')) {
-    require_once __DIR__ . '/../includes/audit.php';
+function rbbBaseUrl(){
+    $https=!empty($_SERVER['HTTPS'])&&strtolower((string)$_SERVER['HTTPS'])!=='off';
+    $host=isset($_SERVER['HTTP_HOST'])?(string)$_SERVER['HTTP_HOST']:'';
+    $script=isset($_SERVER['SCRIPT_NAME'])?str_replace('\\','/',(string)$_SERVER['SCRIPT_NAME']):'';
+    $base=preg_replace('#/api/[^/]+$#','',$script);
+    return $host!==''?($https?'https':'http').'://'.$host.$base:$base;
+}
+function rbbForm(PDO $pdo,$tenantId,$id){
+    $systemSelect=rbSchemaReady($pdo)?'c.is_system_form,c.system_key,':'0 AS is_system_form,NULL AS system_key,';
+    $stmt=$pdo->prepare("SELECT c.id,c.tenant_id,c.form_template_id,c.form_type,{$systemSelect}c.public_token,c.slug,c.form_pages,c.is_request_default,c.is_booking_default,c.require_booking_approval,c.service_area_enabled,c.confirmation_title,c.confirmation_message,c.confirmation_url,c.builder_json,c.booking_json,c.efficient_scheduling_json,c.google_business_profile_json,c.google_analytics_code,c.tracking_json,t.name,t.description,t.status FROM request_booking_form_configs c INNER JOIN form_templates t ON t.id=c.form_template_id WHERE c.id=:id AND c.tenant_id=:tenant_id LIMIT 1");
+    $stmt->execute(array(':id'=>$id,':tenant_id'=>$tenantId));return $stmt->fetch(PDO::FETCH_ASSOC);
+}
+function rbbCatalog(PDO $pdo,$tenantId){
+    $allowQty=rbColumnExists($pdo,'product_services','allow_booking_quantity')?'ps.allow_booking_quantity':'0 AS allow_booking_quantity';
+    $taxExempt=rbColumnExists($pdo,'product_services','is_tax_exempt')?'ps.is_tax_exempt':'CASE WHEN ps.tax_percent=0 THEN 1 ELSE 0 END AS is_tax_exempt';
+    $stmt=$pdo->prepare("SELECT ps.id,CONCAT('ps:',ps.id) AS `key`,ps.item_type,ps.name,ps.description,ps.image_path,ps.unit_cost,ps.unit_price,ps.tax_percent,{$taxExempt},ps.is_bookable,ps.estimated_duration_minutes,{$allowQty},bs.id AS bookable_service_id FROM product_services ps LEFT JOIN bookable_services bs ON bs.tenant_id=ps.tenant_id AND bs.product_service_id=ps.id AND bs.is_active=1 WHERE ps.tenant_id=:tenant_id AND ps.status='active' AND ps.deleted_at IS NULL ORDER BY ps.name ASC");
+    $stmt->execute(array(':tenant_id'=>$tenantId));$rows=$stmt->fetchAll(PDO::FETCH_ASSOC);
+    foreach($rows as &$x){$x['id']=(int)$x['id'];$x['unit_cost']=(float)$x['unit_cost'];$x['unit_price']=(float)$x['unit_price'];$x['tax_percent']=(float)$x['tax_percent'];$x['is_tax_exempt']=(int)$x['is_tax_exempt'];$x['is_bookable']=(int)$x['is_bookable'];$x['estimated_duration_minutes']=$x['estimated_duration_minutes']!==null?(int)$x['estimated_duration_minutes']:60;$x['allow_booking_quantity']=(int)$x['allow_booking_quantity'];$x['bookable_service_id']=$x['bookable_service_id']!==null?(int)$x['bookable_service_id']:0;$x['markup_percent']=$x['unit_cost']>0?round((($x['unit_price']-$x['unit_cost'])/$x['unit_cost'])*100,2):0;}
+    unset($x);return $rows;
+}
+function rbbSaveImage($tenantId,$file,$existing){
+    if(!is_array($file)||!isset($file['tmp_name'])||$file['tmp_name']===''||!is_uploaded_file($file['tmp_name']))return $existing;
+    if((int)$file['size']>8*1024*1024)throw new RuntimeException('Product / service image must be 8MB or smaller.');
+    $mime='';if(function_exists('finfo_open')){$fi=finfo_open(FILEINFO_MIME_TYPE);if($fi){$mime=(string)finfo_file($fi,$file['tmp_name']);finfo_close($fi);}}
+    $allowed=array('image/jpeg'=>'jpg','image/png'=>'png','image/webp'=>'webp');if(!isset($allowed[$mime]))throw new RuntimeException('Use a JPG, PNG, or WEBP image.');
+    $root=dirname(__DIR__).'/uploads/request-booking/tenant-'.$tenantId.'/catalog';if(!is_dir($root)&&!@mkdir($root,0775,true)&&!is_dir($root))throw new RuntimeException('Unable to create the product image folder.');
+    $name='catalog-'.date('YmdHis').'-'.substr(bin2hex(random_bytes(6)),0,12).'.'.$allowed[$mime];$dest=$root.'/'.$name;if(!@move_uploaded_file($file['tmp_name'],$dest))throw new RuntimeException('Unable to save the product image.');
+    if($existing&&strpos($existing,'uploads/request-booking/tenant-'.$tenantId.'/catalog/')===0){$old=dirname(__DIR__).'/'.$existing;if(is_file($old))@unlink($old);}return 'uploads/request-booking/tenant-'.$tenantId.'/catalog/'.$name;
+}
+function rbbUpsertBookable(PDO $pdo,$tenantId,$productServiceId,$name,$description,$price,$duration,$active){
+    $stmt=$pdo->prepare("SELECT id FROM bookable_services WHERE tenant_id=:tenant_id AND product_service_id=:product_service_id ORDER BY id ASC LIMIT 1");$stmt->execute(array(':tenant_id'=>$tenantId,':product_service_id'=>$productServiceId));$id=(int)$stmt->fetchColumn();
+    if($id>0){$u=$pdo->prepare("UPDATE bookable_services SET name=:name,description=:description,estimated_price=:price,duration_minutes=:duration,is_active=:active WHERE id=:id AND tenant_id=:tenant_id");$u->execute(array(':name'=>$name,':description'=>$description!==''?$description:null,':price'=>$price,':duration'=>$duration,':active'=>$active?1:0,':id'=>$id,':tenant_id'=>$tenantId));return $id;}
+    if(!$active)return 0;$u=$pdo->prepare("INSERT INTO bookable_services (tenant_id,product_service_id,name,description,estimated_price,duration_minutes,is_active) VALUES (:tenant_id,:product_service_id,:name,:description,:price,:duration,1)");$u->execute(array(':tenant_id'=>$tenantId,':product_service_id'=>$productServiceId,':name'=>$name,':description'=>$description!==''?$description:null,':price'=>$price,':duration'=>$duration));return (int)$pdo->lastInsertId();
 }
 
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
+try{
+    if(!rbSchemaReady($pdo))rbApiRespond(500,false,'Run the request-booking Jobber forms SQL migration first.',array('code'=>'schema_missing'));
+    rbEnsureSystemForms($pdo,$tenantId,$userId);
+    $action=trim((string)rbPost('action','get'));
 
-function rbbapi_out($code, $success, $message, $extra = array())
-{
-    while (ob_get_level() > 0) @ob_end_clean();
-    http_response_code((int)$code);
-    header('Content-Type: application/json; charset=utf-8');
-    echo json_encode(
-        array_merge(array('success' => (bool)$success, 'message' => (string)$message), $extra),
-        JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
-    );
-    exit;
-}
-
-function rbbapi_post($key, $default = '')
-{
-    if (!isset($_POST[$key]) || is_array($_POST[$key])) return $default;
-    return trim((string)$_POST[$key]);
-}
-
-function rbbapi_table(PDO $pdo, $table)
-{
-    static $cache = array();
-    if (array_key_exists($table, $cache)) return $cache[$table];
-    $stmt = $pdo->prepare(
-        "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :table_name"
-    );
-    $stmt->execute(array(':table_name' => $table));
-    $cache[$table] = ((int)$stmt->fetchColumn() > 0);
-    return $cache[$table];
-}
-
-function rbbapi_column(PDO $pdo, $table, $column)
-{
-    static $cache = array();
-    $key = $table . '.' . $column;
-    if (array_key_exists($key, $cache)) return $cache[$key];
-    $stmt = $pdo->prepare(
-        "SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = :table_name AND COLUMN_NAME = :column_name"
-    );
-    $stmt->execute(array(':table_name' => $table, ':column_name' => $column));
-    $cache[$key] = ((int)$stmt->fetchColumn() > 0);
-    return $cache[$key];
-}
-
-function rbbapi_json_decode($value, $default = array())
-{
-    if ($value === null || $value === '') return $default;
-    $decoded = json_decode((string)$value, true);
-    return is_array($decoded) ? $decoded : $default;
-}
-
-function rbbapi_json_encode($value)
-{
-    return json_encode($value, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-}
-
-function rbbapi_csrf()
-{
-    $token = rbbapi_post('csrf_token');
-    if (
-        empty($_SESSION['request_booking_csrf']) ||
-        !is_string($_SESSION['request_booking_csrf']) ||
-        $token === '' ||
-        !hash_equals($_SESSION['request_booking_csrf'], $token)
-    ) {
-        rbbapi_out(419, false, 'Your form session expired. Refresh the page and try again.');
-    }
-}
-
-function rbbapi_require_schema(PDO $pdo)
-{
-    $required = array(
-        'form_templates',
-        'form_fields',
-        'request_booking_form_configs',
-        'request_booking_form_sections',
-        'request_booking_service_areas'
-    );
-    foreach ($required as $table) {
-        if (!rbbapi_table($pdo, $table)) {
-            rbbapi_out(500, false, 'Requests & Bookings database migration is not installed. Run database/request-booking-forms-migration.sql.');
-        }
-    }
-}
-
-function rbbapi_slug($value)
-{
-    $value = strtolower(trim((string)$value));
-    $value = preg_replace('/[^a-z0-9]+/', '-', $value);
-    $value = trim($value, '-');
-    return $value !== '' ? substr($value, 0, 160) : 'form';
-}
-
-function rbbapi_unique_slug(PDO $pdo, $tenantId, $name, $excludeFormId)
-{
-    $base = rbbapi_slug($name);
-    $slug = $base;
-    $counter = 2;
-    while (true) {
-        $stmt = $pdo->prepare(
-            "SELECT COUNT(*)
-             FROM request_booking_form_configs
-             WHERE tenant_id = :tenant_id
-               AND slug = :slug
-               AND form_template_id <> :exclude_form_id"
+    if($action==='get'){
+        $id=max(0,(int)rbPost('id',0));$row=rbbForm($pdo,$tenantId,$id);if(!$row)rbApiRespond(404,false,'Form not found.');
+        $builder=rbJsonDecode($row['builder_json'],array('sections'=>array(),'actions'=>array()));$booking=rbJsonDecode($row['booking_json'],array());$efficient=rbJsonDecode($row['efficient_scheduling_json'],array());$google=rbJsonDecode($row['google_business_profile_json'],array());$tracking=rbJsonDecode($row['tracking_json'],array());
+        $base=rbbBaseUrl();
+        $form=array(
+            'id'=>(int)$row['id'],'form_template_id'=>(int)$row['form_template_id'],'form_type'=>$row['form_type'],'is_system_form'=>(int)$row['is_system_form'],'system_key'=>$row['system_key'],
+            'name'=>$row['name'],'description'=>$row['description'],'status'=>$row['status'],'form_pages'=>(int)$row['form_pages'],'is_request_default'=>(int)$row['is_request_default'],'is_booking_default'=>(int)$row['is_booking_default'],'require_booking_approval'=>(int)$row['require_booking_approval'],'service_area_enabled'=>(int)$row['service_area_enabled'],
+            'confirmation_title'=>$row['confirmation_title'],'confirmation_message'=>$row['confirmation_message'],'confirmation_url'=>$row['confirmation_url'],'builder'=>$builder,'booking'=>$booking,'efficient_scheduling'=>$efficient,'google_business_profile'=>$google,'google_analytics_code'=>$row['google_analytics_code'],'tracking'=>$tracking,
+            'public_url'=>$base.'/request-booking-form.php?token='.rawurlencode($row['public_token']),
+            'embed_code'=>'<iframe src="'.$base.'/request-booking-form.php?token='.rawurlencode($row['public_token']).'&embed=1" style="width:100%;min-height:760px;border:0" loading="lazy"></iframe>'
         );
-        $stmt->execute(array(
-            ':tenant_id' => $tenantId,
-            ':slug' => $slug,
-            ':exclude_form_id' => $excludeFormId
-        ));
-        if ((int)$stmt->fetchColumn() === 0) return $slug;
-        $slug = substr($base, 0, 150) . '-' . $counter;
-        $counter++;
-    }
-}
-
-function rbbapi_token($bytes = 24)
-{
-    return bin2hex(random_bytes((int)$bytes));
-}
-
-function rbbapi_default_builder($formType)
-{
-    $contact = array(
-        'key' => 'contact_information',
-        'title' => 'Contact information',
-        'description' => '',
-        'system' => 1,
-        'items' => array(
-            array('key'=>'first_name','kind'=>'standard','type'=>'short_answer','label'=>'First name','standard_key'=>'first_name','required'=>1,'width'=>'half'),
-            array('key'=>'last_name','kind'=>'standard','type'=>'short_answer','label'=>'Last name','standard_key'=>'last_name','required'=>0,'width'=>'half'),
-            array('key'=>'company_name','kind'=>'standard','type'=>'short_answer','label'=>'Company name','standard_key'=>'company_name','required'=>0,'width'=>'full'),
-            array('key'=>'email','kind'=>'standard','type'=>'email','label'=>'Email','standard_key'=>'email','required'=>1,'width'=>'full'),
-            array('key'=>'email_marketing_consent','kind'=>'standard','type'=>'checkbox','label'=>'I\'d like to receive marketing emails. Unsubscribe at any time.','standard_key'=>'email_marketing_consent','required'=>0,'width'=>'full'),
-            array('key'=>'phone','kind'=>'standard','type'=>'phone','label'=>'Phone','standard_key'=>'phone','required'=>0,'width'=>'full'),
-            array('key'=>'sms_marketing_consent','kind'=>'standard','type'=>'checkbox','label'=>'I also agree to receive marketing SMS. Reply STOP to opt out.','standard_key'=>'sms_marketing_consent','required'=>0,'width'=>'full'),
-            array('key'=>'address','kind'=>'standard','type'=>'address','label'=>'Street address','standard_key'=>'address','required'=>0,'width'=>'full')
-        )
-    );
-    $service = array(
-        'key' => 'service_details',
-        'title' => 'Service details',
-        'description' => '',
-        'system' => 0,
-        'items' => array(
-            array('key'=>'service_details_' . substr(rbbapi_token(4),0,8),'kind'=>'custom','type'=>'long_answer','label'=>'Please provide as much information as you can','required'=>1,'width'=>'full'),
-            array('key'=>'work_images_' . substr(rbbapi_token(4),0,8),'kind'=>'custom','type'=>'upload_images','label'=>'Share images of the work to be done','required'=>0,'width'=>'full'),
-            array('key'=>'lead_source_' . substr(rbbapi_token(4),0,8),'kind'=>'standard','type'=>'dropdown_single','label'=>'How did you hear about us?','standard_key'=>'lead_source','required'=>0,'width'=>'full','options'=>array('Existing Client','Facebook','Flyer','Google','Instagram','Other','Referral','Vehicle Wrap'))
-        )
-    );
-    $actions = array();
-    if ($formType === 'job_booking') {
-        $actions[] = array('key'=>'job_booking','type'=>'add_job_booking','label'=>'Job booking','config'=>array());
-    } elseif ($formType === 'assessment_booking') {
-        $actions[] = array('key'=>'assessment_booking','type'=>'add_assessment','label'=>'Assessment booking','config'=>array());
-    }
-    return array('version'=>1,'sections'=>array($contact,$service),'actions'=>$actions);
-}
-
-function rbbapi_default_booking_settings()
-{
-    return array(
-        'earliest_availability_days' => 1,
-        'max_booking_days_ahead' => 30,
-        'booking_interval_minutes' => 30,
-        'service_id' => null
-    );
-}
-
-function rbbapi_default_efficient_settings()
-{
-    return array(
-        'mode' => 'fixed_buffer',
-        'fixed_buffer_minutes' => 30,
-        'drive_time_limit_minutes' => 30
-    );
-}
-
-function rbbapi_builder_type_to_db($type)
-{
-    $map = array(
-        'short_answer'=>'text','email'=>'text','phone'=>'text','address'=>'text','area'=>'text','yes_no'=>'checkbox',
-        'long_answer'=>'textarea','dropdown_multiple'=>'multiselect','dropdown_single'=>'select','checkbox'=>'checkbox',
-        'radio'=>'radio','number'=>'number','upload_images'=>'photo','date'=>'date'
-    );
-    return isset($map[$type]) ? $map[$type] : 'text';
-}
-
-function rbbapi_sync_form_fields(PDO $pdo, $tenantId, $formId, $builder)
-{
-    $pdo->prepare("DELETE FROM form_fields WHERE form_template_id = :form_id")
-        ->execute(array(':form_id' => $formId));
-    $pdo->prepare(
-        "DELETE FROM request_booking_form_sections
-         WHERE form_template_id = :form_id AND tenant_id = :tenant_id"
-    )->execute(array(':form_id' => $formId, ':tenant_id' => $tenantId));
-
-    $insertSection = $pdo->prepare(
-        "INSERT INTO request_booking_form_sections
-         (tenant_id,form_template_id,section_key,title,description,is_system,sort_order)
-         VALUES(:tenant_id,:form_id,:section_key,:title,:description,:is_system,:sort_order)"
-    );
-    $insertField = $pdo->prepare(
-        "INSERT INTO form_fields
-         (form_template_id,label,field_key,field_type,options_json,placeholder,validation_json,is_required,sort_order)
-         VALUES(:form_id,:label,:field_key,:field_type,:options_json,:placeholder,:validation_json,:is_required,:sort_order)"
-    );
-
-    $fieldOrder = 0;
-    $sections = isset($builder['sections']) && is_array($builder['sections']) ? $builder['sections'] : array();
-    foreach ($sections as $sectionIndex => $section) {
-        if (!is_array($section)) continue;
-        $sectionKey = isset($section['key'])
-            ? preg_replace('/[^a-zA-Z0-9_-]/', '_', substr((string)$section['key'], 0, 120))
-            : 'section_' . ($sectionIndex + 1);
-        if ($sectionKey === '') $sectionKey = 'section_' . ($sectionIndex + 1);
-
-        $insertSection->execute(array(
-            ':tenant_id' => $tenantId,
-            ':form_id' => $formId,
-            ':section_key' => $sectionKey,
-            ':title' => substr(isset($section['title']) ? (string)$section['title'] : 'Section', 0, 190),
-            ':description' => isset($section['description']) && trim((string)$section['description']) !== '' ? (string)$section['description'] : null,
-            ':is_system' => !empty($section['system']) ? 1 : 0,
-            ':sort_order' => $sectionIndex + 1
-        ));
-
-        $items = isset($section['items']) && is_array($section['items']) ? $section['items'] : array();
-        foreach ($items as $item) {
-            if (!is_array($item)) continue;
-            if (isset($item['kind']) && $item['kind'] === 'action') continue;
-            $fieldOrder++;
-
-            $fieldKey = isset($item['key'])
-                ? preg_replace('/[^a-zA-Z0-9_-]/', '_', substr((string)$item['key'], 0, 120))
-                : 'field_' . $fieldOrder;
-            if ($fieldKey === '') $fieldKey = 'field_' . $fieldOrder;
-            $builderType = isset($item['type']) ? (string)$item['type'] : 'short_answer';
-
-            $validation = array(
-                'builder_type' => $builderType,
-                'section_key' => $sectionKey,
-                'item_kind' => isset($item['kind']) ? (string)$item['kind'] : 'custom',
-                'standard_key' => isset($item['standard_key']) ? (string)$item['standard_key'] : null,
-                'help' => isset($item['help']) ? (string)$item['help'] : null,
-                'width' => isset($item['width']) ? (string)$item['width'] : 'full'
-            );
-
-            $insertField->execute(array(
-                ':form_id' => $formId,
-                ':label' => substr(isset($item['label']) ? (string)$item['label'] : 'Question', 0, 190),
-                ':field_key' => $fieldKey,
-                ':field_type' => rbbapi_builder_type_to_db($builderType),
-                ':options_json' => isset($item['options']) && is_array($item['options']) ? rbbapi_json_encode(array_values($item['options'])) : null,
-                ':placeholder' => isset($item['placeholder']) && trim((string)$item['placeholder']) !== '' ? substr((string)$item['placeholder'], 0, 255) : null,
-                ':validation_json' => rbbapi_json_encode($validation),
-                ':is_required' => !empty($item['required']) ? 1 : 0,
-                ':sort_order' => $fieldOrder
-            ));
-        }
-    }
-}
-
-function rbbapi_load_builder($config)
-{
-    $builder = rbbapi_json_decode(isset($config['builder_json']) ? $config['builder_json'] : null, array());
-    if (!isset($builder['sections']) || !is_array($builder['sections'])) {
-        $builder = rbbapi_default_builder(isset($config['form_type']) ? $config['form_type'] : 'request');
-    }
-    if (!isset($builder['actions']) || !is_array($builder['actions'])) {
-        $builder['actions'] = array();
-    }
-    return $builder;
-}
-
-function rbbapi_business_path()
-{
-    $script = isset($_SERVER['SCRIPT_NAME']) ? (string)$_SERVER['SCRIPT_NAME'] : '';
-    if (preg_match('#^(.*?/business)(?:/api)?/[^/]+$#', $script, $matches)) {
-        return rtrim($matches[1], '/');
-    }
-    $dir = rtrim(str_replace('\\', '/', dirname($script)), '/');
-    if (substr($dir, -4) === '/api') $dir = substr($dir, 0, -4);
-    return $dir;
-}
-
-function rbbapi_public_url($token)
-{
-    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
-    $host = isset($_SERVER['HTTP_HOST']) ? (string)$_SERVER['HTTP_HOST'] : '';
-    return $scheme . '://' . $host . rbbapi_business_path() . '/request-booking-form.php?token=' . rawurlencode((string)$token);
-}
-
-function rbbapi_audit(PDO $pdo, $tenantId, $branchId, $userId, $action, $formId, $values)
-{
-    if (!function_exists('tenantAuditLog')) return;
-    try {
-        tenantAuditLog(
-            $pdo,
-            (string)$action,
-            $tenantId,
-            $branchId > 0 ? $branchId : null,
-            $userId,
-            'request_booking_form',
-            $formId,
-            null,
-            $values
-        );
-    } catch (Throwable $e) {
-        error_log('FieldPlx request booking builder audit: ' . $e->getMessage());
-    }
-}
-
-$tenantId = isset($currentTenantId)
-    ? (int)$currentTenantId
-    : (isset($_SESSION['tenant_id']) ? (int)$_SESSION['tenant_id'] : 0);
-$userId = isset($currentTenantUserId)
-    ? (int)$currentTenantUserId
-    : (isset($_SESSION['user_id'])
-        ? (int)$_SESSION['user_id']
-        : (isset($_SESSION['id']) ? (int)$_SESSION['id'] : 0));
-$branchId = isset($currentBranchId)
-    ? (int)$currentBranchId
-    : (isset($_SESSION['branch_id']) ? (int)$_SESSION['branch_id'] : 0);
-
-if ($tenantId <= 0 || $userId <= 0) {
-    rbbapi_out(401, false, 'Your authenticated tenant session is not available.');
-}
-if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
-    rbbapi_out(405, false, 'POST request required.');
-}
-
-rbbapi_csrf();
-rbbapi_require_schema($pdo);
-$action = rbbapi_post('action');
-
-try {
-    if ($action === 'get') {
-        $id = (int)rbbapi_post('id', '0');
-        if ($id <= 0) rbbapi_out(422, false, 'Invalid form.');
-
-        $stmt = $pdo->prepare(
-            "SELECT
-                ft.id AS form_template_id,
-                ft.name,
-                ft.description,
-                ft.related_module,
-                ft.status,
-                ft.created_at AS template_created_at,
-                ft.updated_at AS template_updated_at,
-                c.id AS config_id,
-                c.tenant_id,
-                c.form_type,
-                c.public_token,
-                c.slug,
-                c.form_pages,
-                c.is_request_default,
-                c.is_booking_default,
-                c.require_booking_approval,
-                c.service_area_enabled,
-                c.confirmation_title,
-                c.confirmation_message,
-                c.confirmation_url,
-                c.builder_json,
-                c.booking_json,
-                c.efficient_scheduling_json,
-                c.google_business_profile_json,
-                c.google_analytics_code,
-                c.tracking_json,
-                c.created_at AS config_created_at,
-                c.updated_at AS config_updated_at
-             FROM form_templates ft
-             INNER JOIN request_booking_form_configs c
-                ON c.form_template_id = ft.id
-               AND c.tenant_id = ft.tenant_id
-             WHERE ft.id = :form_id
-               AND ft.tenant_id = :tenant_id
-             LIMIT 1"
-        );
-        $stmt->execute(array(':form_id' => $id, ':tenant_id' => $tenantId));
-        $form = $stmt->fetch(PDO::FETCH_ASSOC);
-        if (!$form) rbbapi_out(404, false, 'Form not found.');
-
-        $form['builder'] = rbbapi_load_builder($form);
-        $form['booking'] = rbbapi_json_decode($form['booking_json'], rbbapi_default_booking_settings());
-        $form['efficient_scheduling'] = rbbapi_json_decode($form['efficient_scheduling_json'], rbbapi_default_efficient_settings());
-        $form['google_business_profile'] = rbbapi_json_decode($form['google_business_profile_json'], array('connected' => 0));
-        $form['tracking'] = rbbapi_json_decode($form['tracking_json'], array('enabled' => 1));
-        $form['public_url'] = rbbapi_public_url($form['public_token']);
-        $form['embed_code'] = '<iframe src="'
-            . htmlspecialchars($form['public_url'], ENT_QUOTES, 'UTF-8')
-            . '&embed=1" style="width:100%;min-height:720px;border:0" loading="lazy"></iframe>';
-
-        foreach (array('builder_json','booking_json','efficient_scheduling_json','google_business_profile_json','tracking_json') as $key) {
-            unset($form[$key]);
-        }
-
-        $services = array();
-        if (rbbapi_table($pdo, 'bookable_services')) {
-            $serviceStmt = $pdo->prepare(
-                "SELECT id,name,description,estimated_price,duration_minutes
-                 FROM bookable_services
-                 WHERE tenant_id = :tenant_id AND is_active = 1
-                 ORDER BY name"
-            );
-            $serviceStmt->execute(array(':tenant_id' => $tenantId));
-            $services = $serviceStmt->fetchAll(PDO::FETCH_ASSOC);
-        }
-
-        $catalogItems = array();
-        $bookableByProductService = array();
-        if (rbbapi_table($pdo, 'bookable_services') && rbbapi_column($pdo, 'bookable_services', 'product_service_id')) {
-            $mapStmt = $pdo->prepare("SELECT id,product_service_id,duration_minutes FROM bookable_services WHERE tenant_id=:tenant_id AND is_active=1 AND product_service_id IS NOT NULL");
-            $mapStmt->execute(array(':tenant_id' => $tenantId));
-            foreach ($mapStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-                $pid = (int)$row['product_service_id'];
-                if ($pid > 0 && !isset($bookableByProductService[$pid])) {
-                    $bookableByProductService[$pid] = array('id'=>(int)$row['id'],'duration_minutes'=>(int)$row['duration_minutes']);
-                }
-            }
-        }
-        if (rbbapi_table($pdo, 'product_services')) {
-            $cols = "id,item_type,name,description";
-            $cols .= rbbapi_column($pdo, 'product_services', 'unit_price') ? ",unit_price" : ",0 AS unit_price";
-            $cols .= rbbapi_column($pdo, 'product_services', 'estimated_duration_minutes') ? ",estimated_duration_minutes" : ",NULL AS estimated_duration_minutes";
-            $sql = "SELECT " . $cols . " FROM product_services WHERE tenant_id=:tenant_id";
-            if (rbbapi_column($pdo, 'product_services', 'deleted_at')) $sql .= " AND deleted_at IS NULL";
-            if (rbbapi_column($pdo, 'product_services', 'status')) $sql .= " AND status='active'";
-            $sql .= " ORDER BY name,id";
-            $catStmt = $pdo->prepare($sql);
-            $catStmt->execute(array(':tenant_id' => $tenantId));
-            foreach ($catStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-                $pid = (int)$row['id'];
-                $bookable = isset($bookableByProductService[$pid]) ? $bookableByProductService[$pid] : null;
-                $catalogItems[] = array(
-                    'key' => 'product_services:' . $pid,
-                    'id' => $pid,
-                    'source_table' => 'product_services',
-                    'item_type' => isset($row['item_type']) ? (string)$row['item_type'] : 'service',
-                    'name' => (string)$row['name'],
-                    'description' => isset($row['description']) ? $row['description'] : null,
-                    'unit_price' => (float)$row['unit_price'],
-                    'bookable_service_id' => $bookable ? (int)$bookable['id'] : null,
-                    'duration_minutes' => $bookable ? (int)$bookable['duration_minutes'] : (isset($row['estimated_duration_minutes']) ? (int)$row['estimated_duration_minutes'] : null)
-                );
-            }
-        }
-        if (rbbapi_table($pdo, 'products')) {
-            $cols = "id,name,description";
-            $cols .= rbbapi_column($pdo, 'products', 'selling_price') ? ",selling_price" : ",0 AS selling_price";
-            $sql = "SELECT " . $cols . " FROM products WHERE tenant_id=:tenant_id";
-            if (rbbapi_column($pdo, 'products', 'deleted_at')) $sql .= " AND deleted_at IS NULL";
-            if (rbbapi_column($pdo, 'products', 'status')) $sql .= " AND status='active'";
-            $sql .= " ORDER BY name,id";
-            $productStmt = $pdo->prepare($sql);
-            $productStmt->execute(array(':tenant_id' => $tenantId));
-            foreach ($productStmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-                $catalogItems[] = array(
-                    'key' => 'products:' . (int)$row['id'],
-                    'id' => (int)$row['id'],
-                    'source_table' => 'products',
-                    'item_type' => 'product',
-                    'name' => (string)$row['name'],
-                    'description' => isset($row['description']) ? $row['description'] : null,
-                    'unit_price' => (float)$row['selling_price'],
-                    'bookable_service_id' => null,
-                    'duration_minutes' => null
-                );
-            }
-        }
-
-        $users = array();
-        if (rbbapi_table($pdo, 'users')) {
-            $userStmt = $pdo->prepare(
-                "SELECT id,first_name,last_name,email
-                 FROM users
-                 WHERE tenant_id = :tenant_id
-                   AND status = 'active'
-                   AND is_bookable = 1
-                 ORDER BY first_name,last_name"
-            );
-            $userStmt->execute(array(':tenant_id' => $tenantId));
-            $users = $userStmt->fetchAll(PDO::FETCH_ASSOC);
-        }
-
-        $areaStmt = $pdo->prepare(
-            "SELECT id,name,address_text,latitude,longitude,radius_km,is_active
-             FROM request_booking_service_areas
-             WHERE tenant_id = :tenant_id
-               AND (branch_id IS NULL OR branch_id = :branch_id)
-             ORDER BY is_active DESC,id ASC
-             LIMIT 1"
-        );
-        $areaStmt->execute(array(':tenant_id' => $tenantId, ':branch_id' => $branchId));
-        $serviceArea = $areaStmt->fetch(PDO::FETCH_ASSOC);
-        if (!$serviceArea) {
-            $serviceArea = array('id'=>0,'address_text'=>'','latitude'=>null,'longitude'=>null,'radius_km'=>25,'is_active'=>1);
-        }
-
-        $googleConnection = null;
-        if (rbbapi_table($pdo, 'integration_connections')) {
-            $googleStmt = $pdo->prepare(
-                "SELECT id,name,provider,status
-                 FROM integration_connections
-                 WHERE tenant_id = :tenant_id
-                   AND status = 'connected'
-                   AND (LOWER(provider) LIKE '%google%' OR LOWER(integration_key) LIKE '%google%')
-                 LIMIT 1"
-            );
-            $googleStmt->execute(array(':tenant_id' => $tenantId));
-            $googleConnection = $googleStmt->fetch(PDO::FETCH_ASSOC);
-            if (!$googleConnection) $googleConnection = null;
-        }
-
-        $tenantStmt = $pdo->prepare(
-            "SELECT display_name,email,phone,website_url,address_line1,address_line2,city,state,postal_code
-             FROM tenants
-             WHERE id = :tenant_id
-             LIMIT 1"
-        );
-        $tenantStmt->execute(array(':tenant_id' => $tenantId));
-        $tenant = $tenantStmt->fetch(PDO::FETCH_ASSOC);
-
-        rbbapi_out(200, true, 'Form loaded.', array(
-            'form' => $form,
-            'services' => $services,
-            'catalog_items' => $catalogItems,
-            'users' => $users,
-            'service_area' => $serviceArea,
-            'google_connection' => $googleConnection,
-            'tenant' => $tenant
-        ));
+        $stmt=$pdo->prepare("SELECT u.id,u.first_name,u.last_name,u.email FROM users u WHERE u.tenant_id=:tenant_id AND u.status='active' AND u.deleted_at IS NULL ORDER BY u.first_name,u.last_name,u.email");$stmt->execute(array(':tenant_id'=>$tenantId));$users=$stmt->fetchAll(PDO::FETCH_ASSOC);
+        $tenantStmt=$pdo->prepare("SELECT t.display_name,t.phone,t.website_url,t.address_line1,t.city,t.state,t.postal_code,c.symbol,p.logo_path,p.main_brand_color,p.accent_color FROM tenants t LEFT JOIN currencies c ON c.id=t.currency_id LEFT JOIN tenant_business_profiles p ON p.tenant_id=t.id WHERE t.id=:tenant_id LIMIT 1");$tenantStmt->execute(array(':tenant_id'=>$tenantId));$tenant=$tenantStmt->fetch(PDO::FETCH_ASSOC);if(!$tenant)$tenant=array('display_name'=>'FieldPlx','symbol'=>'');
+        $areaStmt=$pdo->prepare("SELECT id,address_text,latitude,longitude,radius_km FROM request_booking_service_areas WHERE tenant_id=:tenant_id AND is_active=1 ORDER BY id DESC LIMIT 1");$areaStmt->execute(array(':tenant_id'=>$tenantId));$area=$areaStmt->fetch(PDO::FETCH_ASSOC);if(!$area)$area=array();
+        $googleConnection=null;if(rbTableExists($pdo,'integration_connections')){$g=$pdo->prepare("SELECT id,provider,status FROM integration_connections WHERE tenant_id=:tenant_id AND provider LIKE '%google%' ORDER BY id DESC LIMIT 1");$g->execute(array(':tenant_id'=>$tenantId));$googleConnection=$g->fetch(PDO::FETCH_ASSOC);}
+        rbApiRespond(200,true,'Form loaded.',array('form'=>$form,'catalog_items'=>rbbCatalog($pdo,$tenantId),'services'=>array(),'users'=>$users,'tenant'=>$tenant,'currency'=>array('symbol'=>isset($tenant['symbol'])?$tenant['symbol']:''),'service_area'=>$area,'google_connection'=>$googleConnection));
     }
 
-    if ($action === 'save') {
-        $id = (int)rbbapi_post('id', '0');
-        if ($id <= 0) rbbapi_out(422, false, 'Invalid form.');
-
-        $name = substr(rbbapi_post('name'), 0, 190);
-        if ($name === '') rbbapi_out(422, false, 'Form title is required.');
-        $description = rbbapi_post('description');
-
-        $builder = rbbapi_json_decode(rbbapi_post('builder_json', '{}'), array());
-        if (empty($builder['sections']) || !is_array($builder['sections'])) {
-            rbbapi_out(422, false, 'The form must contain at least one section.');
+    if($action==='save'){
+        $id=max(0,(int)rbPost('id',0));$row=rbbForm($pdo,$tenantId,$id);if(!$row)rbApiRespond(404,false,'Form not found.');
+        $name=trim((string)rbPost('name',$row['name']));if($name==='')rbApiRespond(422,false,'Form title is required.');
+        $description=(string)rbPost('description','');$builder=rbJsonDecode(rbPost('builder_json',''),null);if(!is_array($builder)||!isset($builder['sections'])||!is_array($builder['sections']))rbApiRespond(422,false,'Form builder data is invalid.');
+        $booking=rbJsonDecode(rbPost('booking_json','{}'),array());$efficient=rbJsonDecode(rbPost('efficient_scheduling_json','{}'),array());$google=rbJsonDecode(rbPost('google_business_profile_json','{}'),array());$tracking=rbJsonDecode(rbPost('tracking_json','{}'),array());
+        $formPages=(int)rbPost('form_pages',0)===1;$requestDefault=(int)rbPost('is_request_default',0)===1;$bookingDefault=(int)rbPost('is_booking_default',0)===1;
+        if($row['form_type']!=='request')$requestDefault=false;if($row['form_type']==='request')$bookingDefault=false;
+        /* Keep at least one request default and one booking default per tenant. */
+        if($row['form_type']==='request' && !$requestDefault && (int)$row['is_request_default']===1){
+            $check=$pdo->prepare("SELECT COUNT(*) FROM request_booking_form_configs WHERE tenant_id=:tenant_id AND id<>:id AND is_request_default=1");
+            $check->execute(array(':tenant_id'=>$tenantId,':id'=>$id));
+            if((int)$check->fetchColumn()===0)$requestDefault=true;
         }
-        if (!isset($builder['actions']) || !is_array($builder['actions'])) {
-            $builder['actions'] = array();
+        if($row['form_type']!=='request' && !$bookingDefault && (int)$row['is_booking_default']===1){
+            $check=$pdo->prepare("SELECT COUNT(*) FROM request_booking_form_configs WHERE tenant_id=:tenant_id AND id<>:id AND is_booking_default=1");
+            $check->execute(array(':tenant_id'=>$tenantId,':id'=>$id));
+            if((int)$check->fetchColumn()===0)$bookingDefault=true;
         }
-
-        $booking = rbbapi_json_decode(rbbapi_post('booking_json', '{}'), rbbapi_default_booking_settings());
-        $efficient = rbbapi_json_decode(rbbapi_post('efficient_scheduling_json', '{}'), rbbapi_default_efficient_settings());
-        $google = rbbapi_json_decode(rbbapi_post('google_business_profile_json', '{}'), array('connected' => 0));
-        $tracking = rbbapi_json_decode(rbbapi_post('tracking_json', '{}'), array('enabled' => 1));
-
-        $formPages = rbbapi_post('form_pages') === '1' ? 1 : 0;
-        $requestDefault = rbbapi_post('is_request_default') === '1' ? 1 : 0;
-        $bookingDefault = rbbapi_post('is_booking_default') === '1' ? 1 : 0;
-        $approval = rbbapi_post('require_booking_approval') === '1' ? 1 : 0;
-        $serviceAreaEnabled = rbbapi_post('service_area_enabled') === '1' ? 1 : 0;
-        $confirmTitle = substr(rbbapi_post('confirmation_title'), 0, 190);
-        $confirmMessage = rbbapi_post('confirmation_message');
-        $confirmUrl = substr(rbbapi_post('confirmation_url'), 0, 1000);
-        $gaCode = substr(rbbapi_post('google_analytics_code'), 0, 120);
-
-        $check = $pdo->prepare(
-            "SELECT c.form_type
-             FROM request_booking_form_configs c
-             INNER JOIN form_templates ft ON ft.id = c.form_template_id
-             WHERE c.form_template_id = :form_id
-               AND c.tenant_id = :config_tenant_id
-               AND ft.tenant_id = :template_tenant_id
-             LIMIT 1"
-        );
-        $check->execute(array(
-            ':form_id' => $id,
-            ':config_tenant_id' => $tenantId,
-            ':template_tenant_id' => $tenantId
-        ));
-        $formType = $check->fetchColumn();
-        if ($formType === false) rbbapi_out(404, false, 'Form not found.');
-        if ($formType === 'request') $bookingDefault = 0;
-
         $pdo->beginTransaction();
-
-        if ($requestDefault) {
-            $clearRequest = $pdo->prepare(
-                "UPDATE request_booking_form_configs
-                 SET is_request_default = 0
-                 WHERE tenant_id = :tenant_id AND form_template_id <> :form_id"
-            );
-            $clearRequest->execute(array(':tenant_id' => $tenantId, ':form_id' => $id));
-        }
-        if ($bookingDefault) {
-            $clearBooking = $pdo->prepare(
-                "UPDATE request_booking_form_configs
-                 SET is_booking_default = 0
-                 WHERE tenant_id = :tenant_id AND form_template_id <> :form_id"
-            );
-            $clearBooking->execute(array(':tenant_id' => $tenantId, ':form_id' => $id));
-        }
-
-        $templateUpdate = $pdo->prepare(
-            "UPDATE form_templates
-             SET name = :name,
-                 description = :description,
-                 status = 'active',
-                 updated_at = NOW()
-             WHERE id = :form_id AND tenant_id = :tenant_id"
-        );
-        $templateUpdate->execute(array(
-            ':name' => $name,
-            ':description' => $description !== '' ? $description : null,
-            ':form_id' => $id,
-            ':tenant_id' => $tenantId
-        ));
-
-        $slug = rbbapi_unique_slug($pdo, $tenantId, $name, $id);
-        $configUpdate = $pdo->prepare(
-            "UPDATE request_booking_form_configs
-             SET slug = :slug,
-                 form_pages = :form_pages,
-                 is_request_default = :request_default,
-                 is_booking_default = :booking_default,
-                 require_booking_approval = :booking_approval,
-                 service_area_enabled = :service_area_enabled,
-                 confirmation_title = :confirmation_title,
-                 confirmation_message = :confirmation_message,
-                 confirmation_url = :confirmation_url,
-                 builder_json = :builder_json,
-                 booking_json = :booking_json,
-                 efficient_scheduling_json = :efficient_json,
-                 google_business_profile_json = :google_json,
-                 google_analytics_code = :google_analytics_code,
-                 tracking_json = :tracking_json,
-                 updated_by = :updated_by,
-                 updated_at = NOW()
-             WHERE tenant_id = :tenant_id AND form_template_id = :form_id"
-        );
-        $configUpdate->execute(array(
-            ':slug' => $slug,
-            ':form_pages' => $formPages,
-            ':request_default' => $requestDefault,
-            ':booking_default' => $bookingDefault,
-            ':booking_approval' => $approval,
-            ':service_area_enabled' => $serviceAreaEnabled,
-            ':confirmation_title' => $confirmTitle !== '' ? $confirmTitle : null,
-            ':confirmation_message' => $confirmMessage !== '' ? $confirmMessage : null,
-            ':confirmation_url' => $confirmUrl !== '' ? $confirmUrl : null,
-            ':builder_json' => rbbapi_json_encode($builder),
-            ':booking_json' => rbbapi_json_encode($booking),
-            ':efficient_json' => rbbapi_json_encode($efficient),
-            ':google_json' => rbbapi_json_encode($google),
-            ':google_analytics_code' => $gaCode !== '' ? $gaCode : null,
-            ':tracking_json' => rbbapi_json_encode($tracking),
-            ':updated_by' => $userId,
-            ':tenant_id' => $tenantId,
-            ':form_id' => $id
-        ));
-
-        rbbapi_sync_form_fields($pdo, $tenantId, $id, $builder);
-        $pdo->commit();
-
-        rbbapi_audit($pdo, $tenantId, $branchId, $userId, 'REQUEST_BOOKING_FORM_UPDATED', $id, array(
-            'name' => $name,
-            'form_type' => $formType
-        ));
-        rbbapi_out(200, true, 'Form saved successfully.', array('id' => $id));
+        try{
+            if($requestDefault)$pdo->prepare("UPDATE request_booking_form_configs SET is_request_default=0 WHERE tenant_id=:tenant_id")->execute(array(':tenant_id'=>$tenantId));
+            if($bookingDefault)$pdo->prepare("UPDATE request_booking_form_configs SET is_booking_default=0 WHERE tenant_id=:tenant_id")->execute(array(':tenant_id'=>$tenantId));
+            $pdo->prepare("UPDATE form_templates SET name=:name,description=:description,related_module=:related_module WHERE id=:template_id AND tenant_id=:tenant_id")->execute(array(':name'=>substr($name,0,190),':description'=>trim($description)!==''?$description:null,':related_module'=>rbRelatedModule($row['form_type']),':template_id'=>(int)$row['form_template_id'],':tenant_id'=>$tenantId));
+            $slug=rbUniqueSlug($pdo,$tenantId,$name,$id);
+            $stmt=$pdo->prepare("UPDATE request_booking_form_configs SET slug=:slug,form_pages=:form_pages,is_request_default=:request_default,is_booking_default=:booking_default,require_booking_approval=:approval,service_area_enabled=:service_area,confirmation_title=:confirmation_title,confirmation_message=:confirmation_message,confirmation_url=:confirmation_url,builder_json=:builder_json,booking_json=:booking_json,efficient_scheduling_json=:efficient_json,google_business_profile_json=:google_json,google_analytics_code=:ga_code,tracking_json=:tracking_json,updated_by=:updated_by WHERE id=:id AND tenant_id=:tenant_id");
+            $stmt->execute(array(':slug'=>$slug,':form_pages'=>$formPages?1:0,':request_default'=>$requestDefault?1:0,':booking_default'=>$bookingDefault?1:0,':approval'=>(int)rbPost('require_booking_approval',0)===1?1:0,':service_area'=>(int)rbPost('service_area_enabled',0)===1?1:0,':confirmation_title'=>trim((string)rbPost('confirmation_title',''))!==''?(string)rbPost('confirmation_title',''):null,':confirmation_message'=>trim((string)rbPost('confirmation_message',''))!==''?(string)rbPost('confirmation_message',''):null,':confirmation_url'=>trim((string)rbPost('confirmation_url',''))!==''?(string)rbPost('confirmation_url',''):null,':builder_json'=>json_encode($builder,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES),':booking_json'=>json_encode($booking,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES),':efficient_json'=>json_encode($efficient,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES),':google_json'=>json_encode($google,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES),':ga_code'=>trim((string)rbPost('google_analytics_code',''))!==''?trim((string)rbPost('google_analytics_code','')):null,':tracking_json'=>json_encode($tracking,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES),':updated_by'=>$userId,':id'=>$id,':tenant_id'=>$tenantId));
+            rbSyncBuilderTables($pdo,$tenantId,(int)$row['form_template_id'],$builder);$pdo->commit();
+        }catch(Throwable $e){if($pdo->inTransaction())$pdo->rollBack();throw $e;}
+        rbApiRespond(200,true,'Form saved.');
     }
 
-    if ($action === 'save_service_area') {
-        $id = (int)rbbapi_post('id', '0');
-        $address = substr(rbbapi_post('address_text'), 0, 500);
-        $lat = rbbapi_post('latitude');
-        $lng = rbbapi_post('longitude');
-        $radius = (float)rbbapi_post('radius_km', '25');
-        if ($radius < 1) $radius = 1;
-        if ($radius > 500) $radius = 500;
-
-        $latValue = $lat === '' ? null : (float)$lat;
-        $lngValue = $lng === '' ? null : (float)$lng;
-        if ($latValue !== null && ($latValue < -90 || $latValue > 90)) rbbapi_out(422, false, 'Latitude is invalid.');
-        if ($lngValue !== null && ($lngValue < -180 || $lngValue > 180)) rbbapi_out(422, false, 'Longitude is invalid.');
-
-        if ($id > 0) {
-            $stmt = $pdo->prepare(
-                "UPDATE request_booking_service_areas
-                 SET address_text = :address_text,
-                     latitude = :latitude,
-                     longitude = :longitude,
-                     radius_km = :radius_km,
-                     is_active = 1,
-                     updated_by = :updated_by,
-                     updated_at = NOW()
-                 WHERE id = :area_id AND tenant_id = :tenant_id"
-            );
-            $stmt->execute(array(
-                ':address_text' => $address !== '' ? $address : null,
-                ':latitude' => $latValue,
-                ':longitude' => $lngValue,
-                ':radius_km' => $radius,
-                ':updated_by' => $userId,
-                ':area_id' => $id,
-                ':tenant_id' => $tenantId
-            ));
-        } else {
-            $stmt = $pdo->prepare(
-                "INSERT INTO request_booking_service_areas
-                 (tenant_id,branch_id,name,address_text,latitude,longitude,radius_km,is_active,created_by,updated_by)
-                 VALUES
-                 (:tenant_id,:branch_id,'Primary service area',:address_text,:latitude,:longitude,:radius_km,1,:created_by,:updated_by)"
-            );
-            $stmt->execute(array(
-                ':tenant_id' => $tenantId,
-                ':branch_id' => $branchId > 0 ? $branchId : null,
-                ':address_text' => $address !== '' ? $address : null,
-                ':latitude' => $latValue,
-                ':longitude' => $lngValue,
-                ':radius_km' => $radius,
-                ':created_by' => $userId,
-                ':updated_by' => $userId
-            ));
-            $id = (int)$pdo->lastInsertId();
-        }
-
-        if (rbbapi_table($pdo, 'booking_settings')) {
-            $rules = rbbapi_json_encode(array(
-                'service_area_id' => $id,
-                'address' => $address,
-                'latitude' => $latValue,
-                'longitude' => $lngValue,
-                'radius_km' => $radius
-            ));
-
-            if ($branchId > 0) {
-                $find = $pdo->prepare(
-                    "SELECT id FROM booking_settings
-                     WHERE tenant_id = :tenant_id AND branch_id = :branch_id LIMIT 1"
-                );
-                $find->execute(array(':tenant_id' => $tenantId, ':branch_id' => $branchId));
-            } else {
-                $find = $pdo->prepare(
-                    "SELECT id FROM booking_settings
-                     WHERE tenant_id = :tenant_id AND branch_id IS NULL LIMIT 1"
-                );
-                $find->execute(array(':tenant_id' => $tenantId));
-            }
-            $bookingSettingsId = (int)$find->fetchColumn();
-
-            if ($bookingSettingsId > 0) {
-                $update = $pdo->prepare(
-                    "UPDATE booking_settings
-                     SET service_area_rules_json = :rules_json, updated_at = NOW()
-                     WHERE id = :booking_settings_id"
-                );
-                $update->execute(array(':rules_json' => $rules, ':booking_settings_id' => $bookingSettingsId));
-            } else {
-                $insert = $pdo->prepare(
-                    "INSERT INTO booking_settings(tenant_id,branch_id,service_area_rules_json)
-                     VALUES(:tenant_id,:branch_id,:rules_json)"
-                );
-                $insert->execute(array(
-                    ':tenant_id' => $tenantId,
-                    ':branch_id' => $branchId > 0 ? $branchId : null,
-                    ':rules_json' => $rules
-                ));
-            }
-        }
-
-        rbbapi_out(200, true, 'Service area saved.', array('id' => $id));
+    if($action==='save_service_area'){
+        $id=max(0,(int)rbPost('id',0));$address=trim((string)rbPost('address_text',''));$lat=trim((string)rbPost('latitude',''));$lng=trim((string)rbPost('longitude',''));$radius=max(1,min(250,(float)rbPost('radius_km',25)));
+        if($id>0){$stmt=$pdo->prepare("UPDATE request_booking_service_areas SET address_text=:address,latitude=:lat,longitude=:lng,radius_km=:radius,updated_by=:user_id,is_active=1 WHERE id=:id AND tenant_id=:tenant_id");$stmt->execute(array(':address'=>$address!==''?$address:null,':lat'=>$lat!==''?$lat:null,':lng'=>$lng!==''?$lng:null,':radius'=>$radius,':user_id'=>$userId,':id'=>$id,':tenant_id'=>$tenantId));}
+        else{$stmt=$pdo->prepare("INSERT INTO request_booking_service_areas (tenant_id,name,address_text,latitude,longitude,radius_km,is_active,created_by,updated_by) VALUES (:tenant_id,'Primary service area',:address,:lat,:lng,:radius,1,:user_id,:user_id)");$stmt->execute(array(':tenant_id'=>$tenantId,':address'=>$address!==''?$address:null,':lat'=>$lat!==''?$lat:null,':lng'=>$lng!==''?$lng:null,':radius'=>$radius,':user_id'=>$userId));$id=(int)$pdo->lastInsertId();}
+        rbApiRespond(200,true,'Service area saved.',array('id'=>$id));
     }
 
-    if ($action === 'google_business_connection') {
-        $id = (int)rbbapi_post('id', '0');
-        $connect = rbbapi_post('connect') === '1';
-        if ($id <= 0) rbbapi_out(422, false, 'Invalid form.');
-
-        $formStmt = $pdo->prepare(
-            "SELECT google_business_profile_json
-             FROM request_booking_form_configs
-             WHERE form_template_id = :form_id AND tenant_id = :tenant_id
-             LIMIT 1"
-        );
-        $formStmt->execute(array(':form_id' => $id, ':tenant_id' => $tenantId));
-        $raw = $formStmt->fetchColumn();
-        if ($raw === false) rbbapi_out(404, false, 'Form not found.');
-
-        if ($connect) {
-            $connection = null;
-            if (rbbapi_table($pdo, 'integration_connections')) {
-                $connectionStmt = $pdo->prepare(
-                    "SELECT id,name,provider
-                     FROM integration_connections
-                     WHERE tenant_id = :tenant_id
-                       AND status = 'connected'
-                       AND (LOWER(provider) LIKE '%google%' OR LOWER(integration_key) LIKE '%google%')
-                     LIMIT 1"
-                );
-                $connectionStmt->execute(array(':tenant_id' => $tenantId));
-                $connection = $connectionStmt->fetch(PDO::FETCH_ASSOC);
+    if($action==='google_business_connection'){
+        $id=max(0,(int)rbPost('id',0));$row=rbbForm($pdo,$tenantId,$id);if(!$row)rbApiRespond(404,false,'Form not found.');
+        $connect=(int)rbPost('connect',0)===1;
+        if($connect){
+            $connection=null;
+            if(rbTableExists($pdo,'integration_connections')){
+                $stmt=$pdo->prepare("SELECT id,provider,status FROM integration_connections WHERE tenant_id=:tenant_id AND provider LIKE '%google%' AND status='connected' ORDER BY id DESC LIMIT 1");
+                $stmt->execute(array(':tenant_id'=>$tenantId));
+                $connection=$stmt->fetch(PDO::FETCH_ASSOC);
             }
-            if (!$connection) {
-                rbbapi_out(422, false, 'Connect Google in Account Connections before connecting this form.');
-            }
-            $google = array(
-                'connected' => 1,
-                'connection_id' => (int)$connection['id'],
-                'connected_at' => date('c')
-            );
-        } else {
-            $google = array('connected' => 0);
+            if(!$connection)rbApiRespond(422,false,'Connect Google in Account Connections before connecting this form.');
+            $google=array('connected'=>1,'integration_connection_id'=>(int)$connection['id'],'provider'=>$connection['provider']);
+            $message='Google Business Profile connected to this form.';
+        }else{
+            $google=array('connected'=>0);
+            $message='Google Business Profile connection removed from this form.';
         }
-
-        $update = $pdo->prepare(
-            "UPDATE request_booking_form_configs
-             SET google_business_profile_json = :google_json,
-                 updated_by = :updated_by,
-                 updated_at = NOW()
-             WHERE form_template_id = :form_id AND tenant_id = :tenant_id"
-        );
-        $update->execute(array(
-            ':google_json' => rbbapi_json_encode($google),
-            ':updated_by' => $userId,
-            ':form_id' => $id,
-            ':tenant_id' => $tenantId
-        ));
-
-        rbbapi_out(200, true, $connect
-            ? 'Form connected to the available Google integration.'
-            : 'Form connection removed.');
+        $stmt=$pdo->prepare("UPDATE request_booking_form_configs SET google_business_profile_json=:google_json,updated_by=:updated_by WHERE id=:id AND tenant_id=:tenant_id");
+        $stmt->execute(array(':google_json'=>json_encode($google,JSON_UNESCAPED_UNICODE|JSON_UNESCAPED_SLASHES),':updated_by'=>$userId,':id'=>$id,':tenant_id'=>$tenantId));
+        rbApiRespond(200,true,$message,array('google_business_profile'=>$google));
     }
 
-    rbbapi_out(400, false, 'Unknown builder action.');
-} catch (Throwable $e) {
-    if ($pdo->inTransaction()) $pdo->rollBack();
-    error_log('FieldPlx request booking builder API: ' . $e->getMessage());
-    rbbapi_out(500, false, 'Unable to process the form builder request. ' . $e->getMessage());
-}
+    if($action==='save_catalog_item'){
+        $catalogId=max(0,(int)rbPost('catalog_id',0));$wasExisting=$catalogId>0;$name=trim((string)rbPost('name',''));if($name==='')rbApiRespond(422,false,'Name is required.');
+        $itemType=trim((string)rbPost('item_type','service'));if(!in_array($itemType,array('service','product','material','fee'),true))$itemType='service';
+        $description=trim((string)rbPost('description',''));$cost=max(0,(float)rbPost('unit_cost',0));$price=max(0,(float)rbPost('unit_price',0));$duration=max(15,min(720,(int)rbPost('duration_minutes',60)));$taxExempt=(int)rbPost('tax_exempt',0)===1;$allowQty=(int)rbPost('allow_quantity',0)===1;$isBookable=$itemType==='service'?1:0;
+        $existingPath=null;if($catalogId>0){$s=$pdo->prepare("SELECT image_path FROM product_services WHERE id=:id AND tenant_id=:tenant_id AND deleted_at IS NULL LIMIT 1");$s->execute(array(':id'=>$catalogId,':tenant_id'=>$tenantId));$existingPath=$s->fetchColumn();if($existingPath===false)rbApiRespond(404,false,'Product / service not found.');}
+        $imagePath=rbbSaveImage($tenantId,isset($_FILES['image'])?$_FILES['image']:null,$existingPath!==false?$existingPath:null);
+        $hasTaxExempt=rbColumnExists($pdo,'product_services','is_tax_exempt');$hasQty=rbColumnExists($pdo,'product_services','allow_booking_quantity');
+        if($catalogId>0){
+            $sql="UPDATE product_services SET item_type=:item_type,name=:name,description=:description,unit_cost=:unit_cost,unit_price=:unit_price,tax_percent=:tax_percent,is_bookable=:is_bookable,estimated_duration_minutes=:duration,image_path=:image_path";
+            if($hasTaxExempt)$sql.=",is_tax_exempt=:is_tax_exempt";if($hasQty)$sql.=",allow_booking_quantity=:allow_quantity";$sql.=" WHERE id=:id AND tenant_id=:tenant_id AND deleted_at IS NULL";$stmt=$pdo->prepare($sql);
+            $p=array(':item_type'=>$itemType,':name'=>substr($name,0,190),':description'=>$description!==''?$description:null,':unit_cost'=>$cost,':unit_price'=>$price,':tax_percent'=>$taxExempt?0:(float)rbPost('tax_percent',0),':is_bookable'=>$isBookable,':duration'=>$duration,':image_path'=>$imagePath!==''?$imagePath:null,':id'=>$catalogId,':tenant_id'=>$tenantId);if($hasTaxExempt)$p[':is_tax_exempt']=$taxExempt?1:0;if($hasQty)$p[':allow_quantity']=$allowQty?1:0;$stmt->execute($p);
+        }else{
+            $cols="tenant_id,item_type,name,description,unit_name,unit_cost,unit_price,tax_percent,is_bookable,estimated_duration_minutes,status,image_path";$vals=":tenant_id,:item_type,:name,:description,:unit_name,:unit_cost,:unit_price,:tax_percent,:is_bookable,:duration,'active',:image_path";if($hasTaxExempt){$cols.=',is_tax_exempt';$vals.=',:is_tax_exempt';}if($hasQty){$cols.=',allow_booking_quantity';$vals.=',:allow_quantity';}$stmt=$pdo->prepare("INSERT INTO product_services ($cols) VALUES ($vals)");$p=array(':tenant_id'=>$tenantId,':item_type'=>$itemType,':name'=>substr($name,0,190),':description'=>$description!==''?$description:null,':unit_name'=>$itemType==='service'?'Service':'Unit',':unit_cost'=>$cost,':unit_price'=>$price,':tax_percent'=>$taxExempt?0:(float)rbPost('tax_percent',0),':is_bookable'=>$isBookable,':duration'=>$duration,':image_path'=>$imagePath!==''?$imagePath:null);if($hasTaxExempt)$p[':is_tax_exempt']=$taxExempt?1:0;if($hasQty)$p[':allow_quantity']=$allowQty?1:0;$stmt->execute($p);$catalogId=(int)$pdo->lastInsertId();
+        }
+        rbbUpsertBookable($pdo,$tenantId,$catalogId,$name,$description,$price,$duration,$isBookable===1);
+        $items=rbbCatalog($pdo,$tenantId);$item=null;foreach($items as $x){if((int)$x['id']===$catalogId){$item=$x;break;}}
+        rbApiRespond(200,true,$wasExisting?'Product / service updated and added.':'Product / service created and added.',array('item'=>$item,'catalog_items'=>$items));
+    }
+
+    rbApiRespond(400,false,'Unsupported action.');
+}catch(Throwable $e){if($pdo instanceof PDO&&$pdo->inTransaction())$pdo->rollBack();error_log('FieldPlx request-booking builder API: '.$e->getMessage());rbApiRespond(500,false,'Unable to update this form right now.');}
